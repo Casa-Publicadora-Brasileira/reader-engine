@@ -1,13 +1,13 @@
-package com.cpb.reader.engine
+package com.readerengine.core
 
-import com.cpb.reader.engine.bridge.FirestorePayloadCodec
-import com.cpb.reader.engine.bridge.ReaderJsBridge
-import com.cpb.reader.engine.model.HighlightStyle
-import com.cpb.reader.engine.model.InitialBookState
-import com.cpb.reader.engine.session.ReaderCommand
-import com.cpb.reader.engine.session.ReaderEngine
-import com.cpb.reader.engine.session.ReaderEvent
-import com.cpb.reader.engine.session.ReaderUiEffect
+import com.readerengine.core.bridge.PayloadCodec
+import com.readerengine.core.bridge.ReaderJsBridge
+import com.readerengine.core.model.HighlightStyle
+import com.readerengine.core.model.InitialBookState
+import com.readerengine.core.session.ReaderCommand
+import com.readerengine.core.session.ReaderEngine
+import com.readerengine.core.session.ReaderEvent
+import com.readerengine.core.session.ReaderUiEffect
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -36,7 +36,7 @@ class ReaderEngineTest {
     }
 
     @Test
-    fun parsesJsonFixtureAndNavigates() = runTest {
+    fun parsesJsonFixtureNavigatesSearchesAndBookmarks() = runTest {
         val bytes = readFixture("noite-clara.json")
         val session = engine.open(
             name = "noite-clara.json",
@@ -56,10 +56,12 @@ class ReaderEngineTest {
             session.events.collect { events.add(it) }
         }
 
+        // Navigation
         session.dispatch(ReaderCommand.NextPage)
         assertEquals(1, session.state.value.pageIndex)
         assertTrue(events.any { it is ReaderEvent.ProgressUpdated && it.progress.pageIndex == 1 })
 
+        // Scroll update
         session.dispatch(
             ReaderCommand.UpdateScroll(
                 scrollY = 450,
@@ -70,6 +72,24 @@ class ReaderEngineTest {
         val progress = session.state.value.progress
         assertEquals(450, progress.scrollY)
         assertTrue(progress.totalPercentage in 0f..100f)
+
+        // Bookmarks
+        assertFalse(session.state.value.hasBookmarkAtCurrentPage)
+        session.dispatch(ReaderCommand.ToggleBookmark(label = "Meu marcador"))
+        assertTrue(session.state.value.hasBookmarkAtCurrentPage)
+        assertEquals(1, session.state.value.bookmarks.size)
+        assertTrue(events.any { it is ReaderEvent.BookmarksChanged && it.bookmarks.size == 1 })
+
+        val bookmarkId = session.state.value.bookmarks.first().id
+        session.dispatch(ReaderCommand.GoToPage(0))
+        assertEquals(0, session.state.value.pageIndex)
+        session.dispatch(ReaderCommand.GoToBookmark(bookmarkId))
+        assertEquals(1, session.state.value.pageIndex)
+
+        // Full-text search
+        val searchResults = session.search("noite")
+        assertTrue(searchResults.isNotEmpty())
+        assertTrue(searchResults.first().snippet.contains("noite", ignoreCase = true))
 
         job.cancel()
     }
@@ -130,7 +150,7 @@ class ReaderEngineTest {
     }
 
     @Test
-    fun emitsHighlightAndFormEventsForHostPersistence() = runTest {
+    fun emitsHighlightFormAndGenericCustomUriEvents() = runTest {
         val bytes = readFixture("sample.hpub")
         val session = engine.open(
             name = "sample.hpub",
@@ -170,7 +190,7 @@ class ReaderEngineTest {
         assertNotNull(scrollEffect)
         assertEquals(340, scrollEffect.scrollYPx)
 
-        // Simulate WebView callback for Escola Sabatina form inputs
+        // Simulate WebView callback for interactive form inputs
         val rawFormJson = """{"annotations":[{"content":"Nota sabatina","index":0}],"answers":[{"content":"Sim","index":0}]}"""
         session.onPageFormReported(rawFormJson)
 
@@ -181,29 +201,35 @@ class ReaderEngineTest {
         assertEquals(rawFormJson, formEvent.rawJsonPayload)
         assertEquals("Nota sabatina", formEvent.formState.annotations[0].content)
 
-        // Intercept verse:// URL
-        val intercepted = session.handleUrlNavigation("verse://?q=Joao+3:16")
-        assertTrue(intercepted)
-        val verseEffect = effects.filterIsInstance<ReaderUiEffect.OpenVerseModal>().lastOrNull()
+        // Intercept custom URI schemes generically (works for verse://, footnote://, audio://, etc.)
+        assertTrue(session.handleUrlNavigation("verse://?q=Joao+3:16"))
+        val verseEffect = effects.filterIsInstance<ReaderUiEffect.OpenCustomUri>().lastOrNull()
         assertNotNull(verseEffect)
-        assertEquals("Joao 3:16", verseEffect.referenceTitle)
+        assertEquals("verse", verseEffect.scheme)
+        assertEquals("Joao 3:16", verseEffect.title)
+
+        assertTrue(session.handleUrlNavigation("footnote://?q=Nota+de+rodape+1"))
+        val footnoteEffect = effects.filterIsInstance<ReaderUiEffect.OpenCustomUri>().lastOrNull()
+        assertNotNull(footnoteEffect)
+        assertEquals("footnote", footnoteEffect.scheme)
+        assertEquals("Nota de rodape 1", footnoteEffect.title)
 
         eventJob.cancel()
         effectJob.cancel()
     }
 
     @Test
-    fun firestorePayloadCodecCompressesLargePayloadsAndRoundTrips() {
+    fun payloadCodecCompressesLargePayloadsAndRoundTrips() {
         val small = "type:textContent|1\$10\$1\$yellow\$"
-        val encodedSmall = FirestorePayloadCodec.encodeIfNeeded(small)
-        assertFalse(encodedSmall.startsWith(FirestorePayloadCodec.GZIP_PREFIX))
-        assertEquals(small, FirestorePayloadCodec.decodeIfNeeded(encodedSmall))
+        val encodedSmall = PayloadCodec.encodeIfNeeded(small)
+        assertFalse(PayloadCodec.isCompressed(encodedSmall))
+        assertEquals(small, PayloadCodec.decodeIfNeeded(encodedSmall))
 
         val large = "type:textContent|100\$200\$1\$yellow\$|".repeat(8_000)
-        assertTrue(large.encodeToByteArray().size > FirestorePayloadCodec.DEFAULT_COMPRESS_THRESHOLD_BYTES)
-        val encodedLarge = FirestorePayloadCodec.encodeIfNeeded(large)
-        assertTrue(encodedLarge.startsWith(FirestorePayloadCodec.GZIP_PREFIX))
-        assertEquals(large, FirestorePayloadCodec.decodeIfNeeded(encodedLarge))
+        assertTrue(large.encodeToByteArray().size > PayloadCodec.DEFAULT_COMPRESS_THRESHOLD_BYTES)
+        val encodedLarge = PayloadCodec.encodeIfNeeded(large)
+        assertTrue(PayloadCodec.isCompressed(encodedLarge))
+        assertEquals(large, PayloadCodec.decodeIfNeeded(encodedLarge))
     }
 
     @Test

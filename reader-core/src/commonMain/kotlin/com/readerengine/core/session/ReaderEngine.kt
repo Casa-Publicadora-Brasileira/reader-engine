@@ -1,12 +1,12 @@
-package com.cpb.reader.engine.session
+package com.readerengine.core.session
 
-import com.cpb.reader.engine.model.InitialBookState
-import com.cpb.reader.engine.parser.FormatParser
-import com.cpb.reader.engine.parser.ParserRegistry
-import com.cpb.reader.engine.parser.Source
+import com.readerengine.core.model.InitialBookState
+import com.readerengine.core.parser.FormatParser
+import com.readerengine.core.parser.ParserRegistry
+import com.readerengine.core.parser.Source
 
 /**
- * Ponto de entrada principal da biblioteca KMP para os 4 apps (2 Android e 2 iOS).
+ * Ponto de entrada principal e universal da biblioteca KMP `:reader-core`.
  */
 class ReaderEngine(
     private val registry: ParserRegistry = ParserRegistry.default(),

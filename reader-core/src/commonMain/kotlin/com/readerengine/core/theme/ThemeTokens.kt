@@ -1,6 +1,6 @@
-package com.cpb.reader.engine.theme
+package com.readerengine.core.theme
 
-import com.cpb.reader.engine.error.ReaderException
+import com.readerengine.core.error.ReaderException
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -59,7 +59,7 @@ data class ThemeTokens(
 ) {
     /**
      * Gera o CSS injetado no HTML da WebView respeitando escala de fonte, família de fonte customizada
-     * e modo noturno (`#131313` usado no CPBBooks e EscolaSabatina).
+     * e modo noturno.
      */
     fun toContentCss(
         fontScale: Float = 1.0f,

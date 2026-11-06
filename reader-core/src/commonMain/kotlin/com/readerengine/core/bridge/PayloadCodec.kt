@@ -1,4 +1,4 @@
-package com.cpb.reader.engine.bridge
+package com.readerengine.core.bridge
 
 import okio.Buffer
 import okio.ByteString.Companion.decodeBase64
@@ -8,13 +8,15 @@ import okio.GzipSource
 import okio.buffer
 
 /**
- * Utilitário multiplataforma (`commonMain`) compatível com o formato `"gz:<base64>"`
- * usado no Firestore pelo `EscolaSabatina` (e disponível para `CPBBooks` e iOS)
- * para evitar estourar o limite de 1 MiB por documento do Firestore.
+ * Utilitário multiplataforma (`commonMain`) para compressão/descompressão transparente
+ * no formato `"gz:<base64>"` para payloads grandes (como grifos ou formulários extensos),
+ * compatível com bancos de documentos com limite de payload (ex: Firestore 1 MiB, REST, SQLite).
  */
-object FirestorePayloadCodec {
+object PayloadCodec {
     const val GZIP_PREFIX = "gz:"
     const val DEFAULT_COMPRESS_THRESHOLD_BYTES = 200_000
+
+    fun isCompressed(payload: String): Boolean = payload.startsWith(GZIP_PREFIX)
 
     fun encodeIfNeeded(
         raw: String,

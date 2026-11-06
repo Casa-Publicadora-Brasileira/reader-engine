@@ -1,27 +1,32 @@
-package com.cpb.reader.engine.session
+package com.readerengine.core.session
 
-import com.cpb.reader.engine.bridge.FirestorePayloadCodec
-import com.cpb.reader.engine.bridge.InterceptedUrl
-import com.cpb.reader.engine.bridge.ReaderJsBridge
-import com.cpb.reader.engine.error.ReaderException
-import com.cpb.reader.engine.model.HighlightItem
-import com.cpb.reader.engine.model.HighlightStyle
-import com.cpb.reader.engine.model.InitialBookState
-import com.cpb.reader.engine.model.Metadata
-import com.cpb.reader.engine.model.PageFormState
-import com.cpb.reader.engine.model.Publication
-import com.cpb.reader.engine.model.ReadingProgress
-import com.cpb.reader.engine.model.TocItem
-import com.cpb.reader.engine.provider.normalizeHref
-import com.cpb.reader.engine.theme.ThemeTokens
+import com.readerengine.core.bridge.InterceptedUrl
+import com.readerengine.core.bridge.PayloadCodec
+import com.readerengine.core.bridge.ReaderJsBridge
+import com.readerengine.core.error.ReaderException
+import com.readerengine.core.model.Bookmark
+import com.readerengine.core.model.HighlightItem
+import com.readerengine.core.model.HighlightStyle
+import com.readerengine.core.model.InitialBookState
+import com.readerengine.core.model.Metadata
+import com.readerengine.core.model.PageFormState
+import com.readerengine.core.model.Publication
+import com.readerengine.core.model.ReadingProgress
+import com.readerengine.core.model.SearchResult
+import com.readerengine.core.model.TocItem
+import com.readerengine.core.provider.normalizeHref
+import com.readerengine.core.search.BookSearchEngine
+import com.readerengine.core.theme.ThemeTokens
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 
-/** Estado reativo completo observado pela UI nativa (Compose / SwiftUI). */
+/** Estado reativo completo observado pela UI nativa (Compose / SwiftUI / View / UIKit). */
 data class ReaderState(
     val documentId: String,
     val metadata: Metadata,
@@ -38,11 +43,13 @@ data class ReaderState(
     val currentPageSerializedHighlights: String,
     val currentPageHighlights: List<HighlightItem>,
     val currentPageFormState: PageFormState,
+    val bookmarks: List<Bookmark>,
+    val hasBookmarkAtCurrentPage: Boolean,
 )
 
 /**
- * Eventos de domínio observáveis pelos 4 apps para sincronização com seus respectivos Backends
- * (Firestore `highlights` e `annotations`, API REST ou SharedPreferences/UserDefaults).
+ * Eventos de domínio observáveis pelo app host para sincronização com qualquer backend
+ * (SQLite/Room, CoreData, REST API, Firestore ou SharedPreferences/UserDefaults).
  */
 sealed interface ReaderEvent {
     data class ProgressUpdated(
@@ -53,8 +60,8 @@ sealed interface ReaderEvent {
         val documentId: String,
         val pageIndex: Int,
         val rawSerializedHighlights: String,
-        /** Payload pronto para gravar no Firestore (comprimido com prefixo `gz:` se >= 200KB). */
-        val firestoreValue: String,
+        /** Payload pronto para persistência (comprimido automaticamente com prefixo `gz:` se >= 200KB). */
+        val compressedPayload: String,
         val summaryItems: List<HighlightItem>,
     ) : ReaderEvent
 
@@ -62,9 +69,15 @@ sealed interface ReaderEvent {
         val documentId: String,
         val pageIndex: Int,
         val rawJsonPayload: String,
-        /** Payload pronto para gravar no Firestore (comprimido com prefixo `gz:` se >= 200KB). */
-        val firestoreValue: String,
+        /** Payload pronto para persistência (comprimido automaticamente com prefixo `gz:` se >= 200KB). */
+        val compressedPayload: String,
         val formState: PageFormState,
+    ) : ReaderEvent
+
+    data class BookmarksChanged(
+        val documentId: String,
+        val bookmarks: List<Bookmark>,
+        val serializedJson: String,
     ) : ReaderEvent
 
     data class PreferencesChanged(
@@ -78,9 +91,15 @@ sealed interface ReaderEvent {
 
 /** Efeitos pontuais de UI disparados pela sessão para a tela nativa executar. */
 sealed interface ReaderUiEffect {
-    data class OpenVerseModal(
-        val referenceTitle: String,
-        val verseText: String?,
+    /**
+     * Disparado quando o usuário clica em um link com esquema customizado no livro
+     * (ex: `verse://?q=...`, `footnote://...`, `audio://...`, `glossary://...`).
+     */
+    data class OpenCustomUri(
+        val scheme: String,
+        val rawUrl: String,
+        val title: String,
+        val content: String?,
     ) : ReaderUiEffect
 
     data class OpenExternalUrl(
@@ -122,12 +141,17 @@ sealed interface ReaderCommand {
     data object RemoveSelectedHighlight : ReaderCommand
     data class SelectHighlightItem(val item: HighlightItem) : ReaderCommand
     data class RemoveHighlightItem(val highlightId: Int) : ReaderCommand
+    data class ToggleBookmark(val label: String? = null, val timestampEpochMs: Long = 0L) : ReaderCommand
+    data class RemoveBookmark(val bookmarkId: String) : ReaderCommand
+    data class GoToBookmark(val bookmarkId: String) : ReaderCommand
 }
 
 class ReaderSession(
     private val publication: Publication,
     initialBookState: InitialBookState = InitialBookState(),
 ) {
+    private val json = Json { ignoreUnknownKeys = true }
+
     private val documentId: String = initialBookState.documentId.ifBlank {
         publication.metadata.identifier ?: publication.metadata.title
     }
@@ -149,7 +173,7 @@ class ReaderSession(
 
     private val pageSerializedHighlights = LinkedHashMap<Int, String>().apply {
         initialBookState.savedPageHighlights.forEach { (page, raw) ->
-            put(page, FirestorePayloadCodec.decodeIfNeeded(raw))
+            put(page, PayloadCodec.decodeIfNeeded(raw))
         }
     }
 
@@ -160,6 +184,8 @@ class ReaderSession(
             put(page, ReaderJsBridge.parsePageFormState(raw))
         }
     }
+
+    private val bookmarks = initialBookState.savedBookmarks.toMutableList()
 
     private val _events = MutableSharedFlow<ReaderEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<ReaderEvent> = _events.asSharedFlow()
@@ -202,12 +228,45 @@ class ReaderSession(
                 currentPageSerializedHighlights = pageSerializedHighlights[startPage].orEmpty(),
                 currentPageHighlights = pageHighlightSummaries[startPage].orEmpty(),
                 currentPageFormState = pageFormStates[startPage] ?: PageFormState(),
+                bookmarks = bookmarks.toList(),
+                hasBookmarkAtCurrentPage = bookmarks.any { it.pageIndex == startPage },
             ),
         )
         state = _state.asStateFlow()
     }
 
     fun publication(): Publication = publication
+
+    /**
+     * Realiza busca textual case-insensitive em todos os capítulos do livro,
+     * retornando trechos com contexto (`snippet`), índice da página e posição relativa.
+     */
+    fun search(query: String, maxResults: Int = 50): List<SearchResult> =
+        BookSearchEngine.search(
+            publication = publication,
+            resolvedToc = resolvedToc,
+            query = query,
+            maxResults = maxResults,
+        )
+
+    /** Exporta a lista de marcadores (Bookmarks) como JSON. */
+    fun exportBookmarksJson(): String =
+        json.encodeToString(ListSerializer(Bookmark.serializer()), bookmarks)
+
+    /** Importa uma lista de marcadores (Bookmarks) a partir de um JSON salvo pelo app host. */
+    fun importBookmarksJson(rawJson: String): ReaderState {
+        val parsed = runCatching {
+            json.decodeFromString(ListSerializer(Bookmark.serializer()), rawJson)
+        }.getOrDefault(emptyList())
+        bookmarks.clear()
+        bookmarks.addAll(parsed)
+        val current = _state.value
+        _state.value = current.copy(
+            bookmarks = bookmarks.toList(),
+            hasBookmarkAtCurrentPage = bookmarks.any { it.pageIndex == current.pageIndex },
+        )
+        return _state.value
+    }
 
     /** Despacha um comando da UI e retorna o novo `ReaderState`. */
     fun dispatch(command: ReaderCommand): ReaderState {
@@ -321,6 +380,40 @@ class ReaderSession(
                     ReaderUiEffect.EvaluateJs(ReaderJsBridge.removeHighlightByIdCommand(command.highlightId)),
                 )
             }
+
+            is ReaderCommand.ToggleBookmark -> {
+                val existingIdx = bookmarks.indexOfFirst { it.pageIndex == current.pageIndex }
+                if (existingIdx >= 0) {
+                    bookmarks.removeAt(existingIdx)
+                } else {
+                    val defaultLabel = command.label
+                        ?: resolvedToc.firstOrNull { it.spineIndex == current.pageIndex }?.title
+                        ?: "Página ${current.pageIndex + 1}"
+                    bookmarks.add(
+                        Bookmark(
+                            id = "bm-${current.pageIndex}-${bookmarks.size + 1}",
+                            pageIndex = current.pageIndex,
+                            scrollY = current.scrollY,
+                            label = defaultLabel,
+                            createdAtEpochMs = command.timestampEpochMs,
+                        ),
+                    )
+                }
+                syncBookmarksStateAndEmit()
+            }
+
+            is ReaderCommand.RemoveBookmark -> {
+                if (bookmarks.removeAll { it.id == command.bookmarkId }) {
+                    syncBookmarksStateAndEmit()
+                }
+            }
+
+            is ReaderCommand.GoToBookmark -> {
+                val target = bookmarks.firstOrNull { it.id == command.bookmarkId }
+                if (target != null) {
+                    navigateToPageInternal(target.pageIndex, scrollY = target.scrollY)
+                }
+            }
         }
 
         return _state.value
@@ -329,14 +422,14 @@ class ReaderSession(
     /**
      * Chamado pela plataforma quando o WebView retorna os dados de `readerJS.getHighlights()`
      * e opcionalmente `readerJS.summaryHighlights()`.
-     * Atualiza o estado da sessão e emite `ReaderEvent.PageHighlightsChanged` para o App salvar no Firestore.
+     * Atualiza o estado da sessão e emite `ReaderEvent.PageHighlightsChanged`.
      */
     fun onPageHighlightsReported(
         rawSerializedHighlights: String,
         rawSummaryJson: String? = null,
         pageIndex: Int = _state.value.pageIndex,
     ) {
-        val cleanSerialized = FirestorePayloadCodec.decodeIfNeeded(
+        val cleanSerialized = PayloadCodec.decodeIfNeeded(
             ReaderJsBridge.unquoteJsEvaluation(rawSerializedHighlights),
         )
         val summaryList = if (rawSummaryJson != null) {
@@ -355,13 +448,13 @@ class ReaderSession(
             )
         }
 
-        val firestoreValue = FirestorePayloadCodec.encodeIfNeeded(cleanSerialized)
+        val compressedPayload = PayloadCodec.encodeIfNeeded(cleanSerialized)
         _events.tryEmit(
             ReaderEvent.PageHighlightsChanged(
                 documentId = documentId,
                 pageIndex = pageIndex,
                 rawSerializedHighlights = cleanSerialized,
-                firestoreValue = firestoreValue,
+                compressedPayload = compressedPayload,
                 summaryItems = summaryList,
             ),
         )
@@ -383,15 +476,15 @@ class ReaderSession(
     }
 
     /**
-     * Chamado pela plataforma quando o WebView retorna o JSON de `getAllModifications()`
+     * Chamado pela plataforma quando o WebView retorna o JSON de formulários/anotações da página
      * (`{"annotations": [...], "answers": [...]}`).
-     * Atualiza o estado e emite `ReaderEvent.PageFormChanged` para o App salvar na coleção `annotations` do Firestore.
+     * Atualiza o estado e emite `ReaderEvent.PageFormChanged`.
      */
     fun onPageFormReported(
         rawModificationsJson: String,
         pageIndex: Int = _state.value.pageIndex,
     ) {
-        val cleanJson = FirestorePayloadCodec.decodeIfNeeded(
+        val cleanJson = PayloadCodec.decodeIfNeeded(
             ReaderJsBridge.unquoteJsEvaluation(rawModificationsJson),
         )
         val formState = ReaderJsBridge.parsePageFormState(cleanJson)
@@ -402,22 +495,21 @@ class ReaderSession(
         }
 
         val canonicalJson = if (cleanJson.startsWith("{")) cleanJson else ReaderJsBridge.serializePageFormState(formState)
-        val firestoreValue = FirestorePayloadCodec.encodeIfNeeded(canonicalJson)
+        val compressedPayload = PayloadCodec.encodeIfNeeded(canonicalJson)
 
         _events.tryEmit(
             ReaderEvent.PageFormChanged(
                 documentId = documentId,
                 pageIndex = pageIndex,
                 rawJsonPayload = canonicalJson,
-                firestoreValue = firestoreValue,
+                compressedPayload = compressedPayload,
                 formState = formState,
             ),
         )
     }
 
     /**
-     * Injeta dados vindos assincronamente do Firestore para uma página específica
-     * (por exemplo, quando o App faz o fetch de `highlights/{docId|uid}` ao abrir a página).
+     * Injeta dados vindos assincronamente do backend para uma página específica.
      */
     fun restorePageCloudData(
         pageIndex: Int,
@@ -425,7 +517,7 @@ class ReaderSession(
         annotationsJson: String? = null,
     ) {
         if (serializedHighlights != null) {
-            val decoded = FirestorePayloadCodec.decodeIfNeeded(serializedHighlights)
+            val decoded = PayloadCodec.decodeIfNeeded(serializedHighlights)
             pageSerializedHighlights[pageIndex] = decoded
             if (pageIndex == _state.value.pageIndex) {
                 _state.value = _state.value.copy(currentPageSerializedHighlights = decoded)
@@ -444,17 +536,20 @@ class ReaderSession(
     }
 
     /**
-     * Intercepta qualquer URL clicada na WebView (`verse://`, `http://`, links internos de capítulos com `#anchor`)
+     * Intercepta qualquer URL clicada na WebView (esquemas customizados como `verse://`, `footnote://`,
+     * links externos `http://` ou links internos de capítulos com `#anchor`)
      * e emite o `ReaderUiEffect` ou navegação correspondente.
      * Retorna `true` se o clique foi tratado pela engine.
      */
     fun handleUrlNavigation(url: String): Boolean {
         return when (val intercepted = ReaderJsBridge.parseSpecialUrl(url)) {
-            is InterceptedUrl.BibleVerse -> {
+            is InterceptedUrl.CustomUri -> {
                 _uiEffects.tryEmit(
-                    ReaderUiEffect.OpenVerseModal(
-                        referenceTitle = intercepted.referenceTitle,
-                        verseText = intercepted.verseText,
+                    ReaderUiEffect.OpenCustomUri(
+                        scheme = intercepted.scheme,
+                        rawUrl = intercepted.rawUrl,
+                        title = intercepted.title,
+                        content = intercepted.content,
                     ),
                 )
                 true
@@ -467,7 +562,7 @@ class ReaderSession(
 
             InterceptedUrl.InvalidHighlightOnInput -> {
                 _uiEffects.tryEmit(
-                    ReaderUiEffect.ShowMessage("Marcação inválida! Não é possível marcar uma resposta!"),
+                    ReaderUiEffect.ShowMessage("Marcação inválida neste campo."),
                 )
                 true
             }
@@ -533,11 +628,28 @@ class ReaderSession(
             currentPageSerializedHighlights = pageSerializedHighlights[targetPageIndex].orEmpty(),
             currentPageHighlights = pageHighlightSummaries[targetPageIndex].orEmpty(),
             currentPageFormState = pageFormStates[targetPageIndex] ?: PageFormState(),
+            hasBookmarkAtCurrentPage = bookmarks.any { it.pageIndex == targetPageIndex },
         )
         _events.tryEmit(ReaderEvent.ProgressUpdated(newProgress))
         if (scrollY > 0) {
             _uiEffects.tryEmit(ReaderUiEffect.ScrollToY(scrollYPx = scrollY))
         }
+    }
+
+    private fun syncBookmarksStateAndEmit() {
+        val current = _state.value
+        val listCopy = bookmarks.toList()
+        _state.value = current.copy(
+            bookmarks = listCopy,
+            hasBookmarkAtCurrentPage = listCopy.any { it.pageIndex == current.pageIndex },
+        )
+        _events.tryEmit(
+            ReaderEvent.BookmarksChanged(
+                documentId = documentId,
+                bookmarks = listCopy,
+                serializedJson = exportBookmarksJson(),
+            ),
+        )
     }
 
     private fun emitPreferencesChanged(state: ReaderState) {

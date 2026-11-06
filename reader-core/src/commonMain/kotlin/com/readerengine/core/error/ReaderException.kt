@@ -1,4 +1,4 @@
-package com.cpb.reader.engine.error
+package com.readerengine.core.error
 
 sealed class ReaderException(override val message: String, cause: Throwable? = null) : Exception(message, cause) {
     class UnsupportedFormat(name: String) : ReaderException("Formato não suportado para '$name'")

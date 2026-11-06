@@ -1,10 +1,10 @@
-package com.cpb.reader.engine.bridge
+package com.readerengine.core.bridge
 
-import com.cpb.reader.engine.model.FormEntry
-import com.cpb.reader.engine.model.HighlightItem
-import com.cpb.reader.engine.model.HighlightStyle
-import com.cpb.reader.engine.model.PageFormState
-import com.cpb.reader.engine.theme.ThemeTokens
+import com.readerengine.core.model.FormEntry
+import com.readerengine.core.model.HighlightItem
+import com.readerengine.core.model.HighlightStyle
+import com.readerengine.core.model.PageFormState
+import com.readerengine.core.theme.ThemeTokens
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -16,8 +16,8 @@ import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Centraliza a geração de scripts JavaScript, injeção de HTML/CSS,
- * parse de respostas do `evaluateJavascript` e interceptação de links (`verse://`, capítulos, HTTP),
- * mantendo 100% de compatibilidade com `readerJS` (Rangy/Baker) usado no `CPBBooks` e `EscolaSabatina`.
+ * parse de respostas do `evaluateJavascript` e interceptação de links (esquemas customizados, capítulos internos, HTTP),
+ * mantendo compatibilidade tanto com HTML/EPUB genéricos (via polyfill automático) quanto com `readerJS` (Rangy/Baker).
  */
 object ReaderJsBridge {
 
@@ -38,7 +38,7 @@ object ReaderJsBridge {
         "javascript:(function(){if(typeof readerJS!=='undefined'){return readerJS.removeHighlight($highlightId)||'[]';}return '[]';})()"
 
     fun setHighlightsCommand(serializedHighlights: String): String {
-        val decoded = FirestorePayloadCodec.decodeIfNeeded(serializedHighlights)
+        val decoded = PayloadCodec.decodeIfNeeded(serializedHighlights)
         val escaped = escapeJsSingleQuoted(decoded)
         return "javascript:(function(){if(typeof readerJS!=='undefined'){readerJS.setHighlights('$escaped');}})();"
     }
@@ -70,15 +70,15 @@ object ReaderJsBridge {
     }
 
     /**
-     * Injeta o CSS do tema, classes de tamanho/modo noturno e um polyfill `readerJS` leve
-     * (caso o HTML do livro não tenha o script legado embutido).
+     * Injeta o CSS do tema, classes opcionais de tamanho/modo noturno e um polyfill `readerJS` leve
+     * (para que livros EPUB/HTML comuns tenham suporte imediato a marcações sem exigir scripts embarcados).
      */
     fun injectThemeAndBridge(
         rawHtml: String,
         theme: ThemeTokens,
         fontScale: Float,
         fontFamily: String = "Default",
-        fontSizeClass: String = "ESFontSize2",
+        fontSizeClass: String = "",
         isNightMode: Boolean = false,
     ): String {
         val css = theme.toContentCss(
@@ -87,11 +87,14 @@ object ReaderJsBridge {
             isNightMode = isNightMode,
         )
         val classes = buildString {
-            append(fontSizeClass)
-            if (isNightMode) append(" nightMode")
+            if (fontSizeClass.isNotBlank()) append(fontSizeClass.trim())
+            if (isNightMode) {
+                if (isNotEmpty()) append(' ')
+                append("nightMode")
+            }
         }.trim()
 
-        val htmlWithClass = if (rawHtml.contains("<html ", ignoreCase = true)) {
+        val htmlWithClass = if (classes.isNotEmpty() && rawHtml.contains("<html ", ignoreCase = true)) {
             rawHtml.replaceFirst(Regex("<html\\s+", RegexOption.IGNORE_CASE), "<html class=\"$classes\" ")
         } else {
             rawHtml
@@ -104,8 +107,10 @@ object ReaderJsBridge {
                 htmlWithClass.replaceFirst(Regex("</head>", RegexOption.IGNORE_CASE), "$headInjection</head>")
             htmlWithClass.contains("<body", ignoreCase = true) ->
                 htmlWithClass.replaceFirst(Regex("<body", RegexOption.IGNORE_CASE), "<head>$headInjection</head><body")
-            else ->
-                "<!doctype html><html class=\"$classes\"><head>$headInjection</head><body>$htmlWithClass</body></html>"
+            else -> {
+                val classAttr = if (classes.isNotEmpty()) " class=\"$classes\"" else ""
+                "<!doctype html><html$classAttr><head>$headInjection</head><body>$htmlWithClass</body></html>"
+            }
         }
     }
 
@@ -165,11 +170,11 @@ object ReaderJsBridge {
     }
 
     /**
-     * Faz o parse do JSON retornado por `getAllModifications()` ou salvo na coleção `"annotations"` do Firestore:
+     * Faz o parse do JSON de formulários/anotações da página:
      * `{"annotations": [{"content": "...", "index": 0}], "answers": [{"content": "...", "index": 0}]}`
      */
-    fun parsePageFormState(rawJsOrFirestoreValue: String?): PageFormState {
-        val decoded = FirestorePayloadCodec.decodeIfNeeded(unquoteJsEvaluation(rawJsOrFirestoreValue)).trim()
+    fun parsePageFormState(rawJsOrStoredValue: String?): PageFormState {
+        val decoded = PayloadCodec.decodeIfNeeded(unquoteJsEvaluation(rawJsOrStoredValue)).trim()
         if (decoded.isEmpty() || decoded == "null") return PageFormState()
 
         return try {
@@ -186,18 +191,29 @@ object ReaderJsBridge {
         json.encodeToString(PageFormState.serializer(), state)
 
     /**
-     * Analisa URLs customizadas disparadas pela WebView (`verse://?q=...`, `http://`, `https://`, `highlight://`).
+     * Analisa qualquer URL disparada pela WebView:
+     * - Links externos (`http://`, `https://`, `mailto:`, `tel:`)
+     * - Esquemas internos reservados (`highlight://`, `clipboard://`, `book://`, `file://`)
+     * - Qualquer esquema customizado do livro (`verse://?q=...`, `footnote://...`, `audio://...`, `glossary://...`)
+     * - Caminhos relativos para outros capítulos do spine (`ch2.xhtml#sec1`)
      */
     fun parseSpecialUrl(url: String): InterceptedUrl {
         val trimmed = url.trim()
+        val scheme = trimmed.substringBefore("://", missingDelimiterValue = "").lowercase()
+
         return when {
-            trimmed.startsWith("verse://", ignoreCase = true) -> parseVerseUrl(trimmed)
-            trimmed.startsWith("http://", ignoreCase = true) ||
-                trimmed.startsWith("https://", ignoreCase = true) -> InterceptedUrl.ExternalWebUrl(trimmed)
-            trimmed.startsWith("highlight://", ignoreCase = true) -> InterceptedUrl.InvalidHighlightOnInput
-            trimmed.startsWith("clipboard://", ignoreCase = true) -> InterceptedUrl.ClipboardAction
+            scheme == "http" || scheme == "https" || trimmed.startsWith("mailto:", ignoreCase = true) || trimmed.startsWith("tel:", ignoreCase = true) ->
+                InterceptedUrl.ExternalWebUrl(trimmed)
+
+            scheme == "highlight" -> InterceptedUrl.InvalidHighlightOnInput
+            scheme == "clipboard" -> InterceptedUrl.ClipboardAction
+
+            scheme.isNotEmpty() && scheme != "file" && scheme != "book" && !scheme.contains('/') ->
+                parseCustomSchemeUrl(scheme, trimmed)
+
             else -> {
                 val cleanPath = trimmed
+                    .removePrefix("book://content/")
                     .removePrefix("file:////")
                     .removePrefix("file:///")
                     .removePrefix("file://")
@@ -208,18 +224,43 @@ object ReaderJsBridge {
         }
     }
 
-    private fun parseVerseUrl(url: String): InterceptedUrl.BibleVerse {
-        val queryPart = url.substringAfter("verse://?q=", missingDelimiterValue = "")
-            .ifEmpty { url.substringAfter("verse://", missingDelimiterValue = "") }
-        val decoded = percentDecode(queryPart)
+    private fun parseCustomSchemeUrl(scheme: String, url: String): InterceptedUrl.CustomUri {
+        val afterScheme = url.substringAfter("://", missingDelimiterValue = "")
+        val queryPayload = if (afterScheme.contains("?q=")) {
+            afterScheme.substringAfter("?q=")
+        } else if (afterScheme.startsWith("?")) {
+            afterScheme.removePrefix("?")
+        } else {
+            afterScheme
+        }
+        val decoded = percentDecode(queryPayload)
         return try {
             val array = json.parseToJsonElement(decoded) as? JsonArray
             val firstObj = array?.firstOrNull() as? JsonObject
-            val title = firstObj?.get("title")?.jsonPrimitive?.contentOrNull.orEmpty()
-            val text = firstObj?.get("text")?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-            InterceptedUrl.BibleVerse(referenceTitle = title, verseText = text)
+            if (firstObj != null) {
+                val title = firstObj["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val text = firstObj["text"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                InterceptedUrl.CustomUri(
+                    scheme = scheme,
+                    rawUrl = url,
+                    title = title,
+                    content = text,
+                )
+            } else {
+                InterceptedUrl.CustomUri(
+                    scheme = scheme,
+                    rawUrl = url,
+                    title = decoded,
+                    content = null,
+                )
+            }
         } catch (_: Exception) {
-            InterceptedUrl.BibleVerse(referenceTitle = decoded, verseText = null)
+            InterceptedUrl.CustomUri(
+                scheme = scheme,
+                rawUrl = url,
+                title = decoded,
+                content = null,
+            )
         }
     }
 
@@ -303,7 +344,13 @@ object ReaderJsBridge {
 }
 
 sealed interface InterceptedUrl {
-    data class BibleVerse(val referenceTitle: String, val verseText: String?) : InterceptedUrl
+    data class CustomUri(
+        val scheme: String,
+        val rawUrl: String,
+        val title: String,
+        val content: String?,
+    ) : InterceptedUrl
+
     data class ExternalWebUrl(val url: String) : InterceptedUrl
     data class InternalResource(val href: String, val anchor: String?) : InterceptedUrl
     data object InvalidHighlightOnInput : InterceptedUrl

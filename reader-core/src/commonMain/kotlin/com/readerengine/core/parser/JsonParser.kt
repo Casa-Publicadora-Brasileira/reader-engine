@@ -1,11 +1,11 @@
-package com.cpb.reader.engine.parser
+package com.readerengine.core.parser
 
-import com.cpb.reader.engine.error.ReaderException
-import com.cpb.reader.engine.model.Metadata
-import com.cpb.reader.engine.model.Publication
-import com.cpb.reader.engine.model.Resource
-import com.cpb.reader.engine.model.TocEntry
-import com.cpb.reader.engine.provider.MemoryResourceProvider
+import com.readerengine.core.error.ReaderException
+import com.readerengine.core.model.Metadata
+import com.readerengine.core.model.Publication
+import com.readerengine.core.model.Resource
+import com.readerengine.core.model.TocEntry
+import com.readerengine.core.provider.MemoryResourceProvider
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject

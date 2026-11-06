@@ -49,7 +49,7 @@ kotlin {
 }
 
 android {
-    namespace = "com.cpb.reader.engine"
+    namespace = "com.readerengine.core"
     compileSdk = 35
 
     defaultConfig {

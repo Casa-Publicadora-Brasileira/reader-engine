@@ -15,6 +15,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -25,14 +27,31 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -52,16 +71,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.cpb.reader.engine.model.HighlightStyle
-import com.cpb.reader.engine.model.InitialBookState
-import com.cpb.reader.engine.model.ReadingProgress
-import com.cpb.reader.engine.session.ReaderCommand
-import com.cpb.reader.engine.session.ReaderEngine
-import com.cpb.reader.engine.session.ReaderEvent
-import com.cpb.reader.engine.session.ReaderSession
-import com.cpb.reader.engine.session.ReaderUiEffect
+import com.readerengine.core.model.Bookmark
+import com.readerengine.core.model.HighlightStyle
+import com.readerengine.core.model.InitialBookState
+import com.readerengine.core.model.ReadingProgress
+import com.readerengine.core.model.SearchResult
+import com.readerengine.core.session.ReaderCommand
+import com.readerengine.core.session.ReaderEngine
+import com.readerengine.core.session.ReaderEvent
+import com.readerengine.core.session.ReaderSession
+import com.readerengine.core.session.ReaderUiEffect
 import java.io.ByteArrayInputStream
 
 private const val BOOK_BASE_URL = "book://content/"
@@ -77,8 +99,8 @@ class ScrollProgressInterface(
 }
 
 /**
- * Local host store demonstrating how each host app (CPB Books / Escola Sabatina)
- * listens to [ReaderEvent] and persists to its own local storage or Firestore backend.
+ * Local host store demonstrating how any app listens to [ReaderEvent]
+ * and persists to its own local storage or remote backend.
  */
 class HostBookPersistenceStore(context: Context) {
     private val prefs: SharedPreferences =
@@ -106,9 +128,9 @@ class HostBookPersistenceStore(context: Context) {
         )
     }
 
-    fun savePageHighlight(documentId: String, pageIndex: Int, firestoreValue: String) {
+    fun savePageHighlight(documentId: String, pageIndex: Int, compressedPayload: String) {
         prefs.edit()
-            .putString("${documentId}_hl_$pageIndex", firestoreValue)
+            .putString("${documentId}_hl_$pageIndex", compressedPayload)
             .apply()
     }
 
@@ -122,6 +144,15 @@ class HostBookPersistenceStore(context: Context) {
         }
         return result
     }
+
+    fun saveBookmarksJson(documentId: String, json: String) {
+        prefs.edit()
+            .putString("${documentId}_bookmarks", json)
+            .apply()
+    }
+
+    fun loadBookmarksJson(documentId: String): String? =
+        prefs.getString("${documentId}_bookmarks", null)
 }
 
 class MainActivity : ComponentActivity() {
@@ -265,6 +296,10 @@ private fun ReaderScreen(
     var activeSample by remember { mutableStateOf<String?>(null) }
     var lastEventSummary by remember { mutableStateOf("Aguardando eventos...") }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var showBookmarks by remember { mutableStateOf(false) }
+    var isSearchExpanded by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<SearchResult>>(emptyList()) }
 
     val readerState = session?.state?.collectAsState()?.value
     var sliderFontScale by remember(readerState?.fontScale) {
@@ -282,13 +317,17 @@ private fun ReaderScreen(
                         "ProgressUpdated(pág=${event.progress.pageNumber}/${event.progress.totalPages}, ${event.progress.totalPercentage.toInt()}%)"
                 }
                 is ReaderEvent.PageHighlightsChanged -> {
-                    hostStore.savePageHighlight(event.documentId, event.pageIndex, event.firestoreValue)
+                    hostStore.savePageHighlight(event.documentId, event.pageIndex, event.compressedPayload)
                     lastEventSummary =
                         "PageHighlightsChanged(pág=${event.pageIndex + 1}, itens=${event.summaryItems.size})"
                 }
                 is ReaderEvent.PageFormChanged -> {
                     lastEventSummary =
                         "PageFormChanged(pág=${event.pageIndex + 1}, notas=${event.formState.annotations.size}, resp=${event.formState.answers.size})"
+                }
+                is ReaderEvent.BookmarksChanged -> {
+                    hostStore.saveBookmarksJson(event.documentId, event.serializedJson)
+                    lastEventSummary = "BookmarksChanged(total=${event.bookmarks.size})"
                 }
                 is ReaderEvent.PreferencesChanged -> {
                     lastEventSummary =
@@ -298,7 +337,7 @@ private fun ReaderScreen(
         }
     }
 
-    // Collect one-shot UI effects (JS execution, scroll, verse modal)
+    // Collect one-shot UI effects (JS execution, scroll, custom URI schemes)
     LaunchedEffect(session) {
         val currentSession = session ?: return@LaunchedEffect
         currentSession.uiEffects.collect { effect ->
@@ -309,8 +348,8 @@ private fun ReaderScreen(
                 is ReaderUiEffect.ScrollToY -> {
                     webViewRef?.scrollTo(0, effect.scrollYPx)
                 }
-                is ReaderUiEffect.OpenVerseModal -> {
-                    lastEventSummary = "OpenVerseModal(${effect.referenceTitle})"
+                is ReaderUiEffect.OpenCustomUri -> {
+                    lastEventSummary = "OpenCustomUri(${effect.scheme}://${effect.title})"
                 }
                 is ReaderUiEffect.OpenExternalUrl -> {
                     lastEventSummary = "OpenExternalUrl(${effect.url})"
@@ -337,8 +376,10 @@ private fun ReaderScreen(
                     savedPageHighlights = savedHighlights,
                 ),
             )
+            hostStore.loadBookmarksJson(documentId)?.let { opened.importBookmarksJson(it) }
             session = opened
             activeSample = sampleId
+            searchResults = emptyList()
             error = null
         }.onFailure {
             error = it.message ?: it.toString()
@@ -371,6 +412,7 @@ private fun ReaderScreen(
             val index = state?.pageIndex ?: 0
             val total = state?.spineLen ?: 0
             val percent = state?.progress?.totalPercentage?.toInt() ?: 0
+            val hasBookmark = state?.hasBookmarkAtCurrentPage ?: false
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -378,6 +420,16 @@ private fun ReaderScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                IconButton(
+                    onClick = { session?.dispatch(ReaderCommand.ToggleBookmark()) },
+                    enabled = state != null,
+                ) {
+                    Icon(
+                        imageVector = if (hasBookmark) Icons.Filled.Star else Icons.Outlined.Star,
+                        contentDescription = if (hasBookmark) "Remover marcador" else "Adicionar marcador",
+                        tint = if (hasBookmark) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
                 OutlinedButton(
                     onClick = { session?.dispatch(ReaderCommand.PrevPage) },
                     enabled = state != null && index > 0,
@@ -428,8 +480,7 @@ private fun ReaderScreen(
                     Text(
                         text = readerState?.let {
                             val authorsText = it.metadata.authors.joinToString()
-                            val authorLabel = if (authorsText.isBlank()) "CPB" else authorsText
-                            "${it.metadata.title} · $authorLabel"
+                            if (authorsText.isBlank()) it.metadata.title else "${it.metadata.title} · $authorsText"
                         } ?: "Abra um arquivo .epub / .hpub / .json",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
@@ -503,6 +554,129 @@ private fun ReaderScreen(
                     modifier = Modifier.height(36.dp),
                 ) {
                     Text("Grifar")
+                }
+            }
+
+            // Full-text search bar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { isSearchExpanded = !isSearchExpanded }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Search,
+                    contentDescription = "Buscar",
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Buscar no livro",
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    imageVector = if (isSearchExpanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            AnimatedVisibility(visible = isSearchExpanded) {
+                Column {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = { Text("Digite sua busca...") },
+                        singleLine = true,
+                        trailingIcon = {
+                            IconButton(
+                                onClick = {
+                                    searchResults = session?.search(searchQuery).orEmpty()
+                                },
+                            ) {
+                                Icon(imageVector = Icons.Filled.Search, contentDescription = "Buscar")
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (searchResults.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        LazyColumn(
+                            modifier = Modifier.height(140.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            items(searchResults) { result ->
+                                Surface(
+                                    onClick = {
+                                        session?.dispatch(ReaderCommand.GoToPage(result.pageIndex))
+                                        isSearchExpanded = false
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                    shape = MaterialTheme.shapes.small,
+                                ) {
+                                    Column(modifier = Modifier.padding(8.dp)) {
+                                        Text(
+                                            text = result.chapterTitle,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = result.snippet,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Bookmarks bar
+            val bookmarks = readerState?.bookmarks.orEmpty()
+            if (bookmarks.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showBookmarks = !showBookmarks }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Marcadores (${bookmarks.size})",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Icon(
+                        imageVector = if (showBookmarks) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                AnimatedVisibility(visible = showBookmarks) {
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        items(bookmarks, key = { it.id }) { bm ->
+                            BookmarkChip(
+                                bookmark = bm,
+                                isCurrentPage = bm.pageIndex == readerState?.pageIndex,
+                                onClick = { session?.dispatch(ReaderCommand.GoToBookmark(bm.id)) },
+                                onRemove = { session?.dispatch(ReaderCommand.RemoveBookmark(bm.id)) },
+                            )
+                        }
+                    }
                 }
             }
 
@@ -582,4 +756,43 @@ private fun ReaderScreen(
             )
         }
     }
+}
+
+@Composable
+private fun BookmarkChip(
+    bookmark: Bookmark,
+    isCurrentPage: Boolean,
+    onClick: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    AssistChip(
+        onClick = onClick,
+        label = {
+            Text(
+                text = bookmark.label ?: "Página ${bookmark.pageIndex + 1}",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        leadingIcon = {
+            Icon(
+                imageVector = Icons.Filled.Star,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = if (isCurrentPage) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
+        trailingIcon = {
+            IconButton(
+                onClick = onRemove,
+                modifier = Modifier.size(18.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "Remover marcador",
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+        },
+    )
 }

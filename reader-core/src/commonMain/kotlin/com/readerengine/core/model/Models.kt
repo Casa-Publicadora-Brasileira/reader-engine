@@ -1,6 +1,6 @@
-package com.cpb.reader.engine.model
+package com.readerengine.core.model
 
-import com.cpb.reader.engine.theme.ThemeTokens
+import com.readerengine.core.theme.ThemeTokens
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlin.math.max
@@ -28,7 +28,7 @@ data class TocEntry(
     val children: List<TocEntry> = emptyList(),
 )
 
-/** Item do Índice / Sumário resolvido para o spine (substitui IndexReader nos apps). */
+/** Item do Índice / Sumário resolvido para o spine. */
 @Serializable
 data class TocItem(
     val title: String,
@@ -61,8 +61,8 @@ class Publication(
 
 /**
  * Posição exata e progresso de leitura unificados:
- * - Atende `ReaderReadingPositionStore` (pageIndex + scrollY) do EscolaSabatina
- * - Atende `Progress2` (totalPercentage 0..100, pageNumber, totalPages, chapterTitle, lastUpdate) do CPBBooks
+ * - Suporta persistência por página + scroll (`pageIndex` + `scrollY`)
+ * - Suporta percentual global `0..100%` (`totalPercentage`, `pageNumber`, `totalPages`, `chapterTitle`)
  */
 @Serializable
 data class ReadingProgress(
@@ -78,8 +78,7 @@ data class ReadingProgress(
 ) {
     companion object {
         /**
-         * Calcula o percentual global (0..100%) combinando o índice da página no spine e o scroll atual,
-         * mantendo paridade com `BakerEpubView.calculateProgress()`.
+         * Calcula o percentual global (0..100%) combinando o índice da página no spine e o scroll atual.
          */
         fun calculatePercentage(
             pageIndex: Int,
@@ -107,7 +106,7 @@ data class ReadingProgress(
     }
 }
 
-/** Estilos e cores de marcação suportados pelos 4 apps (compatível com HighlightNew / HighLight). */
+/** Estilos e cores de marcação suportados nativamente e via CSS/Rangy. */
 @Serializable
 enum class HighlightStyle(val jsColorArg: String, val legacyTypeValue: String) {
     @SerialName("highlight_yellow")
@@ -153,8 +152,7 @@ enum class HighlightStyle(val jsColorArg: String, val legacyTypeValue: String) {
 }
 
 /**
- * Representa um item de destaque extraído via `readerJS.summaryHighlights()`
- * (substitui `HighlightNew` em CPBBooks e EscolaSabatina).
+ * Representa um item de destaque extraído da página (`summaryHighlights`).
  */
 @Serializable
 data class HighlightItem(
@@ -169,7 +167,27 @@ data class HighlightItem(
         get() = (scrollPositionY.toInt() - 300).coerceAtLeast(0)
 }
 
-/** Item individual de resposta ou anotação nas caixas de texto (substitui AnswerFirestore / AnnotationFirestore). */
+/** Marcador de página universal (Bookmark) para qualquer livro/capítulo. */
+@Serializable
+data class Bookmark(
+    val id: String,
+    val pageIndex: Int,
+    val scrollY: Int = 0,
+    val label: String? = null,
+    val createdAtEpochMs: Long = 0L,
+)
+
+/** Resultado de busca textual no livro (`ReaderSession.search`). */
+@Serializable
+data class SearchResult(
+    val pageIndex: Int,
+    val chapterTitle: String,
+    val snippet: String,
+    val matchIndex: Int,
+    val progression: Float,
+)
+
+/** Item individual de resposta ou anotação em páginas interativas / apostilas / lições. */
 @Serializable
 data class FormEntry(
     val content: String,
@@ -177,8 +195,7 @@ data class FormEntry(
 )
 
 /**
- * Estado completo de anotações e respostas de uma página da lição/livro,
- * mantendo 100% de compatibilidade com o JSON salvo na coleção `"annotations"` do Firestore:
+ * Estado completo de anotações e respostas de formulários em uma página HTML interativa:
  * `{"annotations": [{"content": "...", "index": 0}], "answers": [{"content": "...", "index": 0}]}`
  */
 @Serializable
@@ -197,11 +214,14 @@ data class InitialBookState(
     val initialScrollY: Int = 0,
     val isNightMode: Boolean = false,
     val fontFamily: String = "Default",
-    val fontSizeClass: String = "ESFontSize2",
+    /** Classe CSS opcional aplicada ao `<html>` (ex: `"ESFontSize2"` em apps legados ou vazio `""` em apps genéricos). */
+    val fontSizeClass: String = "",
     val fontScale: Float = 1.0f,
     val theme: ThemeTokens? = null,
-    /** Mapa `pageIndex -> string serializada Rangy` vindo de `highlights/{docId|uid}` no Firestore. */
+    /** Mapa `pageIndex -> string serializada Rangy` (aceita texto puro ou comprimido `gz:`). */
     val savedPageHighlights: Map<Int, String> = emptyMap(),
-    /** Mapa `pageIndex -> JSON annotations/answers` vindo de `annotations/{docId|uid}` no Firestore. */
+    /** Mapa `pageIndex -> JSON annotations/answers` (aceita texto puro ou comprimido `gz:`). */
     val savedPageForms: Map<Int, String> = emptyMap(),
+    /** Lista inicial de marcadores de página (Bookmarks) do usuário. */
+    val savedBookmarks: List<Bookmark> = emptyList(),
 )

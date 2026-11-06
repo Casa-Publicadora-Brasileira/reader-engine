@@ -1,7 +1,7 @@
-package com.cpb.reader.engine.provider
+package com.readerengine.core.provider
 
-import com.cpb.reader.engine.error.ReaderException
-import com.cpb.reader.engine.model.ResourceProvider
+import com.readerengine.core.error.ReaderException
+import com.readerengine.core.model.ResourceProvider
 import okio.Buffer
 import okio.Inflater
 import okio.InflaterSource

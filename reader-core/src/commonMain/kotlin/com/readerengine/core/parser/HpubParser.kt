@@ -1,23 +1,21 @@
-package com.cpb.reader.engine.parser
+package com.readerengine.core.parser
 
-import com.cpb.reader.engine.error.ReaderException
-import com.cpb.reader.engine.model.Metadata
-import com.cpb.reader.engine.model.Publication
-import com.cpb.reader.engine.model.Resource
-import com.cpb.reader.engine.model.TocEntry
-import com.cpb.reader.engine.provider.ZipResourceProvider
-import com.cpb.reader.engine.provider.normalizeHref
+import com.readerengine.core.error.ReaderException
+import com.readerengine.core.model.Metadata
+import com.readerengine.core.model.Publication
+import com.readerengine.core.model.Resource
+import com.readerengine.core.model.TocEntry
+import com.readerengine.core.provider.ZipResourceProvider
+import com.readerengine.core.provider.normalizeHref
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
- * Parser HPUB (Baker Framework): pacote ZIP com `book.json` listando as páginas HTML em `contents`,
- * utilizado pelo app EscolaSabatina.
+ * Parser HPUB (Baker Framework): pacote ZIP com `book.json` listando as páginas HTML em `contents`.
  */
 class HpubParser : FormatParser {
     override val id: String = "hpub"
@@ -66,7 +64,6 @@ class HpubParser : FormatParser {
             }
         }
 
-        // Caso o HPUB possua index.html (padrão EscolaSabatina), enriquece o TOC caso book.json só tenha nomes de arquivo
         val indexEntries = parseIndexHtmlIfPresent(zip)
         val finalToc = if (indexEntries.isNotEmpty() && toc.all { it.title == it.href }) {
             indexEntries

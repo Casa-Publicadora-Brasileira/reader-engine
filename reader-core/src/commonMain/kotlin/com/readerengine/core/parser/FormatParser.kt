@@ -1,7 +1,7 @@
-package com.cpb.reader.engine.parser
+package com.readerengine.core.parser
 
-import com.cpb.reader.engine.error.ReaderException
-import com.cpb.reader.engine.model.Publication
+import com.readerengine.core.error.ReaderException
+import com.readerengine.core.model.Publication
 
 class Source(
     val name: String,

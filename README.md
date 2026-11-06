@@ -1,244 +1,66 @@
-# reader-engine
+# reader-engine (Kotlin Multiplatform)
 
-Engine de leitura headless em Rust (EPUB, HPUB, JSON próprio e formatos customizados), exposta como library para **Android**, **iOS** e **Web**.
+Motor de leitura multiplataforma (**Kotlin Multiplatform — KMP**) unificado para os aplicativos Android e iOS (**CPB Books** e **Escola Sabatina**).
 
-Contrato em todas as plataformas: o **app fornece `(nome, bytes)`** — a engine não lê o filesystem.
+O `:reader-core` encapsula toda a engenharia do leitor (parsers de **EPUB**, **HPUB / Baker Framework** e **JSON**, resolução de recursos ZIP em memória via Okio, ponte JS compatível com `readerJS` / Rangy, cálculo de progresso de leitura e codec `gz:` para payloads do Firestore), expondo fluxos reativos (`StateFlow<ReaderState>`, `SharedFlow<ReaderEvent>`, `SharedFlow<ReaderUiEffect>`) para que cada aplicativo host cuide apenas da sua **UI nativa** e da **persistência no seu próprio backend**.
 
-Release atual: [**v0.1.0**](https://github.com/andreAlvesCarvalhojr/reader-engine/releases/tag/v0.1.0)
+---
 
-```
-crates/
-  reader-core / reader-epub / reader-hpub / reader-json
-  reader-ffi     UniFFI (Kotlin + Swift)
-  reader-wasm    wasm-bindgen (browser)
-  reader-demo    demo HTTP (Axum)
-platforms/
-  android/       AAR (:reader-engine) + app demo
-  ios/           Swift Package + XCFramework
-  web/           UI estática + WASM
+## Estrutura do Projeto
+
+```text
+reader-engine/
+├── settings.gradle.kts
+├── build.gradle.kts
+├── gradle/libs.versions.toml
+├── fixtures/                          # Arquivos de teste (.epub, .hpub, .json)
+├── reader-core/                       # Biblioteca KMP (:reader-core -> Android AAR / iOS XCFramework / JVM)
+│   └── src/
+│       ├── commonMain/kotlin/com/cpb/reader/engine/
+│       │   ├── bridge/                # ReaderJsBridge (readerJS.*) & FirestorePayloadCodec (gz:)
+│       │   ├── error/                 # ReaderException
+│       │   ├── model/                 # Publication, ReadingProgress, HighlightItem, PageFormState...
+│       │   ├── parser/                # EpubParser, HpubParser, JsonParser, ParserRegistry
+│       │   ├── provider/              # ZipResourceProvider (Okio), MemoryResourceProvider
+│       │   ├── session/               # ReaderEngine, ReaderSession, ReaderState, ReaderEvent, ReaderCommand
+│       │   └── theme/                 # ThemeTokens, DesignSystem
+│       └── commonTest/kotlin/com/cpb/reader/engine/
+│           └── ReaderEngineTest.kt    # Testes unitários multiplataforma
+└── sample-android/                    # App Android de demonstração (:sample-android) em Jetpack Compose
 ```
 
 ---
 
-## Como usar — Android
+## Arquitetura Reativa Desacoplada
 
-**Sem token / PAT / GITHUB_ACTOR.** O desenvolvedor só adiciona o repositório Maven e o `implementation`.
+Cada aplicativo host (CPB Books Android/iOS, Escola Sabatina Android/iOS) possui seu próprio backend e regras de sincronização. O `:reader-core` **não faz chamadas de rede**:
 
-### 1. Repositório Maven (público)
-
-Em `settings.gradle.kts`:
-
-```kotlin
-dependencyResolutionManagement {
-    repositories {
-        google()
-        mavenCentral()
-        maven {
-            url = uri("https://reader-engine-maven.vercel.app/")
-        }
-    }
-}
-```
-
-### 2. Dependência
-
-Em `app/build.gradle.kts`:
-
-```kotlin
-dependencies {
-    implementation("com.github.andreAlvesCarvalhojr:reader-engine:0.1.0")
-}
-```
-
-Sync Gradle — pronto. Nada de `gradle.properties` com credenciais.
-
-### 3. Alternativa — AAR local
-
-1. Baixe o AAR do Release (ou do Maven acima) e coloque em `app/libs/`
-2. Dependências:
-
-```kotlin
-dependencies {
-    implementation(files("libs/reader-engine-release.aar"))
-    implementation("net.java.dev.jna:jna:5.15.0@aar")
-}
-```
-
-### 4. Código no app
-
-```kotlin
-import uniffi.reader_ffi.ReaderEngine
-import android.webkit.WebView
-
-fun openBook(webView: WebView, fileName: String, bytes: ByteArray) {
-    val session = ReaderEngine().open(fileName, bytes)
-    val html = session.currentHtml()
-    webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
-
-    // session.next() / session.prev() / session.goTo(index)
-    // session.setFontScale(1.2f)
-    // session.setThemeJson(themeJson)
-    // session.search("texto")
-}
-```
-
-Os bytes vêm de `assets`, Storage Access Framework, download, etc.
-
-Mais detalhes: [`platforms/android/README.md`](platforms/android/README.md).
+1. **Hidratação na abertura (`InitialBookState`)**:
+   O app host busca do seu armazenamento local/Firestore o progresso salvo, marcações (`Map<Int, String>`) e anotações/respostas de lição (`Map<Int, String>`) e passa para `ReaderEngine.open(fileName, bytes, initialState)`.
+2. **Estado de UI (`StateFlow<ReaderState>`)**:
+   A UI nativa (Compose / View / SwiftUI / UIKit) observa `session.state` para renderizar o capítulo atual, sumário (`toc`), lista de marcações da página (`HighlightItem`), progresso (`0..100%`) e modo noturno.
+3. **Eventos de Persistência (`SharedFlow<ReaderEvent>`)**:
+   Sempre que o usuário avança/rola a página, cria/remove um grifo ou preenche uma pergunta/anotação da lição, a sessão emite:
+   - `ReaderEvent.ProgressChanged(progress)`
+   - `ReaderEvent.PageHighlightsChanged(bookId, pageIndex, serializedRangy, items)`
+   - `ReaderEvent.PageFormChanged(bookId, pageIndex, rawFormJson, parsed)`
+   - `ReaderEvent.ChapterCompleted(bookId, pageIndex)`
 
 ---
 
-## Como usar — iOS
+## Comandos Principais
 
-### 1. Opção rápida — pacote local (desenvolvimento)
-
-No Mac, na raiz deste repo:
-
+### Executar testes unitários do `:reader-core`
 ```bash
-./scripts/ios-build-xcframework.sh
+./gradlew :reader-core:jvmTest
 ```
 
-No Xcode do **seu app**:
-
-1. File → Add Package Dependencies…
-2. Add Local… → selecione `platforms/ios`
-3. Adicione o produto **ReaderEngine** ao target
-
-### 2. Opção release — binary do GitHub
-
-1. No seu `Package.swift` (ou Package Dependencies do Xcode), use o XCFramework publicado:
-
-```swift
-// Exemplo de binaryTarget (checksum da v0.1.0)
-.binaryTarget(
-    name: "ReaderFfiFFI",
-    url: "https://github.com/andreAlvesCarvalhojr/reader-engine/releases/download/v0.1.0/ReaderFfiFFI.xcframework.zip",
-    checksum: "b02f22ed40f9766c2907573b5da3a8b31a00271a03d6685ab0cea37ae8d7b3c1"
-)
-```
-
-2. Inclua também as fontes Swift geradas pelo UniFFI (pasta `Sources/ReaderFfi` após o build do script, ou clone este repo e aponte o pacote para `platforms/ios` com o `Package.swift` atualizado para o `url` acima).
-
-> O `Package.swift` em `platforms/ios` usa path local por padrão (`build/ReaderFfiFFI.xcframework`). Para consumo remoto, troque o `binaryTarget` pelo bloco `url` + `checksum` acima.
-
-Assets: [Release v0.1.0](https://github.com/andreAlvesCarvalhojr/reader-engine/releases/tag/v0.1.0).
-
-### 3. Código no app (SwiftUI / UIKit)
-
-```swift
-import ReaderEngine
-import WebKit
-
-func openBook(webView: WKWebView, fileName: String, data: Data) throws {
-    let engine = ReaderEngine()
-    let session = try engine.open(name: fileName, bytes: data)
-    let html = try session.currentHtml()
-    webView.loadHTMLString(html, baseURL: nil)
-
-    // session.next() / session.prev() / session.goTo(spineIndex: 0)
-    // session.setFontScale(scale: 1.2)
-}
-```
-
-Mais detalhes: [`platforms/ios/README.md`](platforms/ios/README.md).
-
----
-
-## Como usar — Web (WASM)
-
-### 1. Build do pacote WASM
-
+### Compilar o aplicativo de exemplo Android (`:sample-android`)
 ```bash
-# precisa de wasm-pack: cargo install wasm-pack
-./scripts/build-web.sh
+./gradlew :sample-android:assembleDebug
 ```
 
-Gera `platforms/web/pkg/` (não versionado no git).
-
-### 2. Sirva por HTTP (não use `file://`)
-
+### Gerar o `XCFramework` para iOS
 ```bash
-python3 -m http.server 8788 --directory platforms/web
-# abra http://127.0.0.1:8788
+./gradlew :reader-core:assembleReaderCoreXCFramework
 ```
-
-### 3. Integrar no seu front
-
-```js
-import init, { WasmReaderEngine } from "./pkg/reader_wasm.js";
-
-await init();
-const engine = new WasmReaderEngine();
-
-// bytes = Uint8Array de um .epub / .json / .hpub
-const session = engine.open("livro.epub", bytes);
-const snap = session.snapshot();
-document.querySelector("iframe").srcdoc = session.currentHtml();
-
-session.next();
-session.setTheme("material3"); // material3 | hig | fluent
-session.setFontScale(1.2);
-```
-
-A UI pronta em `platforms/web` já inclui amostras, picker de arquivo, sumário, busca e bookmarks.
-
-Mais detalhes: [`platforms/web/README.md`](platforms/web/README.md).
-
----
-
-## Como usar — Demo Rust (servidor local)
-
-```bash
-cargo run -p reader-demo
-# http://127.0.0.1:8787
-```
-
-Útil para testar parsers/temas sem app mobile.
-
----
-
-## Desenvolvimento neste repositório
-
-Requer Rust 1.85+ (`rust-toolchain.toml`).
-
-```bash
-cargo test --workspace
-cargo clippy --workspace --all-targets
-```
-
-### Rebuild Android (neste monorepo)
-
-```bash
-export ANDROID_HOME="$HOME/Library/Android/sdk"   # Mac
-./scripts/android-build-rust.sh
-cd platforms/android && ./gradlew :reader-engine:assembleRelease :app:assembleDebug
-```
-
-### Publicar nova versão
-
-```bash
-git tag v0.2.0
-git push origin v0.2.0
-```
-
-O workflow `publish-mobile.yml`:
-
-- AAR → layout Maven em **`mvn-repo`** + deploy público em [reader-engine-maven.vercel.app](https://reader-engine-maven.vercel.app/) (consumo Gradle sem login)
-- AAR + XCFramework → assets no GitHub Release
-- GitHub Packages fica como espelho opcional (não é necessário para apps consumidores)
-
----
-
-## Formato customizado
-
-```rust
-let mut reg = Registry::new();
-reg.register(Box::new(EpubParser)).register(Box::new(MyParser));
-let publication = reg.open(Source { name: "livro.xyz".into(), bytes })?;
-```
-
-## Próximos passos
-
-1. App demo iOS (SwiftUI + WKWebView).
-2. Empacotar `platforms/web` (PWA / CDN).
-3. Mais fixtures e ContentHost compartilhado.

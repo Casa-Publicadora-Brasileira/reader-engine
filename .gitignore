@@ -1,12 +1,8 @@
-/target
-Cargo.lock.bak
+.gradle/
+.kotlin/
 .idea/
-.vs/
-*.swp
+build/
+**/build/
+local.properties
+*.iml
 .DS_Store
-
-# Local test fixtures (do not commit large/user data)
-fixtures/local/
-
-# wasm-pack output for platforms/web
-platforms/web/pkg/

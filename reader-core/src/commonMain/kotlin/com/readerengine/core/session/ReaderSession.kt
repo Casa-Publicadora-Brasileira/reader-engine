@@ -14,6 +14,7 @@ import com.readerengine.core.model.Metadata
 import com.readerengine.core.model.PageFormState
 import com.readerengine.core.model.Publication
 import com.readerengine.core.model.ReaderStrings
+import com.readerengine.core.model.ReadingMode
 import com.readerengine.core.model.ReadingProgress
 import com.readerengine.core.model.SearchResult
 import com.readerengine.core.model.TocEntry
@@ -21,12 +22,17 @@ import com.readerengine.core.model.TocItem
 import com.readerengine.core.provider.normalizeHref
 import com.readerengine.core.search.BookSearchEngine
 import com.readerengine.core.theme.ThemeTokens
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlin.math.abs
@@ -50,6 +56,9 @@ public data class ReaderState(
     val pageIndex: Int,
     val spineLen: Int,
     val scrollY: Int,
+    val currentSubPage: Int = 0,
+    val totalSubPages: Int = 1,
+    val readingMode: ReadingMode = ReadingMode.SCROLL,
     val progress: ReadingProgress,
     val toc: List<TocItem>,
     val theme: ThemeTokens,
@@ -102,6 +111,7 @@ public sealed interface ReaderEvent {
         val fontSizeClass: String,
         val fontScale: Float,
         val isNightMode: Boolean,
+        val readingMode: ReadingMode = ReadingMode.SCROLL,
         val theme: ThemeTokens,
     ) : ReaderEvent
 }
@@ -155,6 +165,7 @@ public sealed interface ReaderCommand {
     public data class SetFontFamily(val fontFamily: String) : ReaderCommand
     public data class SetFontSizeClass(val fontSizeClass: String) : ReaderCommand
     public data class SetNightMode(val enabled: Boolean) : ReaderCommand
+    public data class SetReadingMode(val mode: ReadingMode) : ReaderCommand
     public data class ApplyHighlightStyle(val style: HighlightStyle) : ReaderCommand
     public data object RemoveSelectedHighlight : ReaderCommand
     public data class SelectHighlightItem(val item: HighlightItem) : ReaderCommand
@@ -170,6 +181,7 @@ public class ReaderSession(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val strings: ReaderStrings = initialBookState.strings
+    private val watchScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
 
     private val documentId: String = initialBookState.documentId.ifBlank {
         publication.metadata.identifier?.takeIf { it.isNotBlank() }
@@ -236,6 +248,9 @@ public class ReaderSession(
                 pageIndex = startPage,
                 spineLen = publication.spine.size,
                 scrollY = startScroll,
+                currentSubPage = 0,
+                totalSubPages = 1,
+                readingMode = initialBookState.readingMode,
                 progress = initialProgress,
                 toc = resolvedToc,
                 theme = startTheme,
@@ -254,6 +269,47 @@ public class ReaderSession(
     }
 
     public fun publication(): Publication = publication
+
+    /**
+     * Observador ergonômico para iOS/Swift (`ReaderCore.xcframework`): emite o `ReaderState` atual
+     * imediatamente e a cada atualização subsequente até que `FlowSubscription.cancel()` seja chamado.
+     */
+    public fun watchState(onEach: (ReaderState) -> Unit): FlowSubscription {
+        val job = watchScope.launch {
+            state.collect { onEach(it) }
+        }
+        return FlowSubscription { job.cancel() }
+    }
+
+    /**
+     * Observador ergonômico para iOS/Swift: recebe todos os `ReaderEvent` de persistência
+     * até que `FlowSubscription.cancel()` seja chamado.
+     */
+    public fun watchEvents(onEach: (ReaderEvent) -> Unit): FlowSubscription {
+        val job = watchScope.launch {
+            events.collect { onEach(it) }
+        }
+        return FlowSubscription { job.cancel() }
+    }
+
+    /**
+     * Observador ergonômico para iOS/Swift: recebe os efeitos pontuais de UI (`ReaderUiEffect`)
+     * até que `FlowSubscription.cancel()` seja chamado.
+     */
+    public fun watchUiEffects(onEach: (ReaderUiEffect) -> Unit): FlowSubscription {
+        val job = watchScope.launch {
+            uiEffects.collect { onEach(it) }
+        }
+        return FlowSubscription { job.cancel() }
+    }
+
+    /** Encerra todos os observadores ativos criados via `watchState`/`watchEvents`/`watchUiEffects`. */
+    public fun close() {
+        watchScope.cancel()
+    }
+
+    /** Sobrecarga concisa para iOS/Swift sem argumentos default. */
+    public fun search(query: String): List<SearchResult> = search(query, maxResults = 50)
 
     /**
      * Realiza busca textual case-insensitive e insensível a acentos em todos os capítulos do livro,
@@ -295,16 +351,30 @@ public class ReaderSession(
 
         when (command) {
             ReaderCommand.NextPage -> {
-                val nextIdx = (current.pageIndex + 1).coerceAtMost(lastIndex)
-                if (nextIdx != current.pageIndex || current.scrollY != 0) {
-                    navigateToPageInternal(nextIdx, scrollY = 0)
+                if (current.readingMode == ReadingMode.PAGINATED &&
+                    current.currentSubPage + 1 < current.totalSubPages
+                ) {
+                    val nextSub = current.currentSubPage + 1
+                    _state.value = current.copy(currentSubPage = nextSub)
+                    _uiEffects.tryEmit(ReaderUiEffect.EvaluateJs(ReaderJsBridge.SCRIPT_NEXT_SUB_PAGE))
+                } else {
+                    val nextIdx = (current.pageIndex + 1).coerceAtMost(lastIndex)
+                    if (nextIdx != current.pageIndex || current.scrollY != 0) {
+                        navigateToPageInternal(nextIdx, scrollY = 0)
+                    }
                 }
             }
 
             ReaderCommand.PrevPage -> {
-                val prevIdx = (current.pageIndex - 1).coerceAtLeast(0)
-                if (prevIdx != current.pageIndex || current.scrollY != 0) {
-                    navigateToPageInternal(prevIdx, scrollY = 0)
+                if (current.readingMode == ReadingMode.PAGINATED && current.currentSubPage > 0) {
+                    val prevSub = current.currentSubPage - 1
+                    _state.value = current.copy(currentSubPage = prevSub)
+                    _uiEffects.tryEmit(ReaderUiEffect.EvaluateJs(ReaderJsBridge.SCRIPT_PREV_SUB_PAGE))
+                } else {
+                    val prevIdx = (current.pageIndex - 1).coerceAtLeast(0)
+                    if (prevIdx != current.pageIndex || current.scrollY != 0) {
+                        navigateToPageInternal(prevIdx, scrollY = 0)
+                    }
                 }
             }
 
@@ -387,6 +457,18 @@ public class ReaderSession(
                 emitPreferencesChanged(updated)
             }
 
+            is ReaderCommand.SetReadingMode -> {
+                val updated = current.copy(
+                    readingMode = command.mode,
+                    currentSubPage = 0,
+                )
+                _state.value = updated
+                _uiEffects.tryEmit(
+                    ReaderUiEffect.EvaluateJs(ReaderJsBridge.setReadingModeCommand(command.mode)),
+                )
+                emitPreferencesChanged(updated)
+            }
+
             is ReaderCommand.ApplyHighlightStyle -> {
                 _uiEffects.tryEmit(
                     ReaderUiEffect.EvaluateJs(ReaderJsBridge.highlightSelectionCommand(command.style)),
@@ -457,6 +539,18 @@ public class ReaderSession(
         }
 
         return _state.value
+    }
+
+    /**
+     * Atualiza a contagem de sub-páginas (colunas horizontais) quando em `ReadingMode.PAGINATED`.
+     */
+    public fun onSubPageReported(currentSubPage: Int, totalSubPages: Int) {
+        val safeTotal = totalSubPages.coerceAtLeast(1)
+        val safeCurrent = currentSubPage.coerceIn(0, safeTotal - 1)
+        _state.value = _state.value.copy(
+            currentSubPage = safeCurrent,
+            totalSubPages = safeTotal,
+        )
     }
 
     /**
@@ -663,11 +757,14 @@ public class ReaderSession(
         }
     }
 
+    /** Sobrecarga concisa para iOS/Swift sem argumentos default. */
+    public fun currentDocument(): RenderedDocument = currentDocument(schemeBase = DEFAULT_BOOK_BASE_URL)
+
     /**
      * Retorna o documento HTML da página atual juntamente com seu `href` e `baseUrl` do capítulo
      * (ex.: `book://content/OEBPS/`), garantindo resolução correta de imagens, fontes e CSS relativos.
      */
-    public fun currentDocument(schemeBase: String = DEFAULT_BOOK_BASE_URL): RenderedDocument {
+    public fun currentDocument(schemeBase: String): RenderedDocument {
         val current = _state.value
         val href = publication.spine.getOrNull(current.pageIndex)
             ?: throw ReaderException.InvalidContent("Spine vazio ou índice inválido (${current.pageIndex})")
@@ -679,6 +776,8 @@ public class ReaderSession(
             fontFamily = current.fontFamily,
             fontSizeClass = current.fontSizeClass,
             isNightMode = current.isNightMode,
+            readingMode = current.readingMode,
+            layout = publication.metadata.layout,
         )
         return RenderedDocument(
             html = html,
@@ -687,8 +786,11 @@ public class ReaderSession(
         )
     }
 
+    /** Sobrecarga concisa para iOS/Swift sem argumentos default. */
+    public fun currentBaseUrl(): String = currentBaseUrl(schemeBase = DEFAULT_BOOK_BASE_URL)
+
     /** Retorna a URL base (com barra final) correspondente ao diretório do capítulo atual. */
-    public fun currentBaseUrl(schemeBase: String = DEFAULT_BOOK_BASE_URL): String {
+    public fun currentBaseUrl(schemeBase: String): String {
         val cleanBase = if (schemeBase.endsWith('/')) schemeBase else "$schemeBase/"
         val dir = currentChapterDir()
         return if (dir.isEmpty()) cleanBase else "$cleanBase$dir"
@@ -831,6 +933,8 @@ public class ReaderSession(
         _state.value = current.copy(
             pageIndex = targetPageIndex,
             scrollY = scrollY,
+            currentSubPage = 0,
+            totalSubPages = 1,
             progress = newProgress,
             currentPageSerializedHighlights = pageSerializedHighlights[targetPageIndex].orEmpty(),
             currentPageHighlights = pageHighlightSummaries[targetPageIndex].orEmpty(),
@@ -868,6 +972,7 @@ public class ReaderSession(
                 fontSizeClass = state.fontSizeClass,
                 fontScale = state.fontScale,
                 isNightMode = state.isNightMode,
+                readingMode = state.readingMode,
                 theme = state.theme,
             ),
         )

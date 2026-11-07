@@ -2,6 +2,22 @@
 
 Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 
+## [0.3.0] - 2026-11-07
+
+### Added
+- **Streaming de Arquivos Grandes em Disco (`Okio FileSystem` + `FileHandle`)**:
+  - `ReaderEngine.open(path: Path, fileSystem: FileSystem, initialState: InitialBookState)` e `ZipResourceProvider.fromPath(...)`, lendo apenas o EOCD e o Central Directory por acesso aleatório sem carregar arquivos `.epub` / `.hpub` de centenas de MB na memória RAM.
+- **Ergonomia Nativa para iOS / Swift (`FlowSubscription`)**:
+  - `ReaderSession.watchState`, `watchEvents`, `watchUiEffects` e `close()`, além de sobrecargas sem parâmetros default (`open(name, bytes)`, `open(path)`, `search(query)`, `currentDocument()`) para exportação limpa em Objective-C/Swift (`ReaderCore.xcframework`).
+- **Paginação Horizontal CSS Multi-Column (`ReadingMode.PAGINATED`), EPUB 3 Fixed-Layout e MathML**:
+  - `ReadingMode.SCROLL` vs. `ReadingMode.PAGINATED` com `ReaderCommand.SetReadingMode`, suporte a sub-páginas horizontais (`currentSubPage`, `totalSubPages`, `readerJS.nextSubPage()`, `readerJS.prevSubPage()`);
+  - Extração de `RenditionLayout` (`REFLOWABLE`, `PRE_PAGINATED`), `RenditionOrientation` e `RenditionSpread` do `.opf`;
+  - Regras de estilização dedicadas para blocos matemáticos `<math>` (MathML).
+- **Pipeline de Proteção de Conteúdo / DRM (`ContentProtection.kt`)**:
+  - `EpubEncryptionParser` para leitura de `META-INF/encryption.xml`;
+  - `StandardEpubFontDeobfuscator` com suporte oficial a fontes ofuscadas **IDPF** (`http://www.idpf.org/2008/embedding`) e **Adobe** (`http://ns.adobe.com/pdf/enc#RC`);
+  - Gancho extensível `ContentDecryptor` e `DecryptingResourceProvider` para integração com provedores Readium LCP ou DRM customizado.
+
 ## [0.2.0] - 2026-11-07
 
 ### Added

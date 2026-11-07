@@ -78,7 +78,7 @@ public object ReaderJsBridge {
 
     public fun setReadingModeCommand(mode: ReadingMode): String {
         val isPaginated = mode == ReadingMode.PAGINATED
-        return "javascript:(function(){var h=document.documentElement;if(h){if($isPaginated){h.classList.add('reader-paginated');}else{h.classList.remove('reader-paginated');window.scrollTo(0,0);}}})();"
+        return "javascript:(function(){var h=document.documentElement;if(h){if($isPaginated){h.classList.add('reader-paginated');if(typeof readerJS!=='undefined'&&readerJS.getSubPageState){return readerJS.getSubPageState();}}else{h.classList.remove('reader-paginated');if(typeof readerJS!=='undefined'&&readerJS.resetSubPage){readerJS.resetSubPage();}else if(document.body){document.body.style.transform='';document.body.style.transition='';}window.scrollTo(0,0);}}return '{\"subPage\":0,\"totalSubPages\":1}';})();"
     }
 
     public fun scrollToYCommand(scrollYPx: Int, anchor: String? = null): String {

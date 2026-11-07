@@ -195,17 +195,27 @@ class HostBookPersistenceStore(context: Context) {
     fun loadBookmarksJson(documentId: String): String? =
         prefs.getString("${documentId}_bookmarks", null)
 
-    fun savePreferences(fontScale: Float, isNightMode: Boolean, fontFamily: String) {
+    fun savePreferences(
+        fontScale: Float,
+        isNightMode: Boolean,
+        fontFamily: String,
+        readingMode: ReadingMode,
+    ) {
         prefs.edit()
             .putFloat("pref_font_scale", fontScale)
             .putBoolean("pref_night_mode", isNightMode)
             .putString("pref_font_family", fontFamily)
+            .putString("pref_reading_mode", readingMode.name)
             .apply()
     }
 
     fun loadFontScale(): Float = prefs.getFloat("pref_font_scale", 1.0f)
     fun loadNightMode(): Boolean = prefs.getBoolean("pref_night_mode", false)
     fun loadFontFamily(): String = prefs.getString("pref_font_family", "Default") ?: "Default"
+    fun loadReadingMode(): ReadingMode =
+        runCatching {
+            ReadingMode.valueOf(prefs.getString("pref_reading_mode", ReadingMode.SCROLL.name) ?: ReadingMode.SCROLL.name)
+        }.getOrDefault(ReadingMode.SCROLL)
 }
 
 class MainActivity : ComponentActivity() {

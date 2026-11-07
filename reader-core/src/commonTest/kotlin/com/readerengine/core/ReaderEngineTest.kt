@@ -179,14 +179,20 @@ class ReaderEngineTest {
         assertEquals("book://content/OEBPS/", epubSession.currentBaseUrl())
         assertTrue(epubSession.currentHtml().contains("Chapter 1: With Image"))
         assertTrue(epubSession.readResource("images/cover.png").isNotEmpty())
+        epubSession.close()
 
         val hpubSession = engine.open(path = virtualHpubPath, fileSystem = fakeFs)
         assertEquals("HPUB Fixture", hpubSession.state.value.metadata.title)
         assertTrue(hpubSession.state.value.documentId.startsWith("doc-"))
+        hpubSession.close()
+
+        // Verify zero open FileHandles leaked after session.close()
+        fakeFs.checkNoOpenFiles()
 
         // Also test opening directly from real FileSystem.SYSTEM via concise overload
         val systemSession = engine.open(fixturePath("sample.epub"))
         assertEquals("EPUB Fixture", systemSession.state.value.metadata.title)
+        systemSession.close()
     }
 
     @Test
@@ -248,6 +254,8 @@ class ReaderEngineTest {
         assertTrue(paginatedHtml.contains("reader-paginated"))
         assertTrue(paginatedHtml.contains("column-width:calc(100vw - 32px)"))
         assertTrue(paginatedHtml.contains("math{font-family:"))
+        assertTrue(ReaderJsBridge.setReadingModeCommand(ReadingMode.SCROLL).contains("resetSubPage"))
+        assertEquals(1 to 4, ReaderJsBridge.parseSubPageState("\"{\\\"subPage\\\":1,\\\"totalSubPages\\\":4}\""))
 
         session.onSubPageReported(currentSubPage = 0, totalSubPages = 3)
         assertEquals(0, session.state.value.currentSubPage)

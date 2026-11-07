@@ -6,6 +6,7 @@ import android.content.SharedPreferences
 import android.content.res.AssetManager
 import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -65,6 +66,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,6 +76,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.readerengine.core.bridge.ReaderJsBridge
 import com.readerengine.core.model.Bookmark
 import com.readerengine.core.model.HighlightStyle
 import com.readerengine.core.model.InitialBookState
@@ -84,23 +87,37 @@ import com.readerengine.core.session.ReaderEngine
 import com.readerengine.core.session.ReaderEvent
 import com.readerengine.core.session.ReaderSession
 import com.readerengine.core.session.ReaderUiEffect
+import com.readerengine.core.session.RenderedDocument
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 
 private const val BOOK_BASE_URL = "book://content/"
 
-/** JavaScript interface for receiving scroll position from WebView. */
+/** JavaScript interface for receiving real scroll metrics from WebView. */
 class ScrollProgressInterface(
-    private val onProgressChanged: (Float) -> Unit,
+    private val onScrollMetricsChanged: (scrollY: Int, contentHeightPx: Int, viewportHeightPx: Int) -> Unit,
 ) {
     @JavascriptInterface
+    fun onScrollChanged(scrollY: Int, contentHeightPx: Int, viewportHeightPx: Int) {
+        onScrollMetricsChanged(
+            scrollY.coerceAtLeast(0),
+            contentHeightPx.coerceAtLeast(0),
+            viewportHeightPx.coerceAtLeast(0),
+        )
+    }
+
+    @JavascriptInterface
     fun reportProgress(progress: Float) {
-        onProgressChanged(progress.coerceIn(0f, 1f))
+        val clamped = progress.coerceIn(0f, 1f)
+        onScrollMetricsChanged((clamped * 1000).toInt(), 1200, 200)
     }
 }
 
 /**
  * Local host store demonstrating how any app listens to [ReaderEvent]
- * and persists to its own local storage or remote backend.
+ * and persists to its own local storage or remote backend without fixed page limits.
  */
 class HostBookPersistenceStore(context: Context) {
     private val prefs: SharedPreferences =
@@ -134,12 +151,35 @@ class HostBookPersistenceStore(context: Context) {
             .apply()
     }
 
-    fun loadHighlights(documentId: String, maxPages: Int = 64): Map<Int, String> {
+    fun loadHighlights(documentId: String): Map<Int, String> {
+        val prefix = "${documentId}_hl_"
         val result = mutableMapOf<Int, String>()
-        for (page in 0 until maxPages) {
-            val raw = prefs.getString("${documentId}_hl_$page", null)
-            if (!raw.isNullOrBlank()) {
-                result[page] = raw
+        for ((key, value) in prefs.all) {
+            if (key.startsWith(prefix) && value is String && value.isNotBlank()) {
+                val pageIdx = key.removePrefix(prefix).toIntOrNull()
+                if (pageIdx != null) {
+                    result[pageIdx] = value
+                }
+            }
+        }
+        return result
+    }
+
+    fun savePageForm(documentId: String, pageIndex: Int, compressedPayload: String) {
+        prefs.edit()
+            .putString("${documentId}_form_$pageIndex", compressedPayload)
+            .apply()
+    }
+
+    fun loadPageForms(documentId: String): Map<Int, String> {
+        val prefix = "${documentId}_form_"
+        val result = mutableMapOf<Int, String>()
+        for ((key, value) in prefs.all) {
+            if (key.startsWith(prefix) && value is String && value.isNotBlank()) {
+                val pageIdx = key.removePrefix(prefix).toIntOrNull()
+                if (pageIdx != null) {
+                    result[pageIdx] = value
+                }
             }
         }
         return result
@@ -153,6 +193,18 @@ class HostBookPersistenceStore(context: Context) {
 
     fun loadBookmarksJson(documentId: String): String? =
         prefs.getString("${documentId}_bookmarks", null)
+
+    fun savePreferences(fontScale: Float, isNightMode: Boolean, fontFamily: String) {
+        prefs.edit()
+            .putFloat("pref_font_scale", fontScale)
+            .putBoolean("pref_night_mode", isNightMode)
+            .putString("pref_font_family", fontFamily)
+            .apply()
+    }
+
+    fun loadFontScale(): Float = prefs.getFloat("pref_font_scale", 1.0f)
+    fun loadNightMode(): Boolean = prefs.getBoolean("pref_night_mode", false)
+    fun loadFontFamily(): String = prefs.getString("pref_font_family", "Default") ?: "Default"
 }
 
 class MainActivity : ComponentActivity() {
@@ -160,6 +212,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val engine = ReaderEngine()
         val samples = bundledSamples() + localSamples(assets)
+        val initialIntentUri = intent?.data
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
@@ -175,18 +228,34 @@ class MainActivity : ComponentActivity() {
                     ReaderScreen(
                         engine = engine,
                         samples = samples,
+                        initialIntentUri = initialIntentUri,
                         readAsset = { path -> assets.open(path).use { it.readBytes() } },
                         readUri = { uri ->
                             contentResolver.openInputStream(uri)?.use { it.readBytes() }
                                 ?: error("Não foi possível ler $uri")
                         },
-                        displayName = { uri ->
-                            uri.lastPathSegment ?: "book.bin"
-                        },
+                        displayName = { uri -> resolveDisplayName(uri) },
                     )
                 }
             }
         }
+    }
+
+    private fun resolveDisplayName(uri: Uri): String {
+        if (uri.scheme == "content") {
+            runCatching {
+                contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (idx >= 0) {
+                            val name = cursor.getString(idx)
+                            if (!name.isNullOrBlank()) return name
+                        }
+                    }
+                }
+            }
+        }
+        return uri.lastPathSegment?.substringAfterLast('/') ?: "book.epub"
     }
 }
 
@@ -233,6 +302,21 @@ private class BookResourceWebViewClient(
         val url = request?.url?.toString() ?: return false
         val session = sessionProvider() ?: return false
         return session.handleUrlNavigation(url)
+    }
+
+    override fun onPageFinished(view: WebView?, url: String?) {
+        super.onPageFinished(view, url)
+        val webView = view ?: return
+        val session = sessionProvider() ?: return
+        val state = session.state.value
+        if (state.currentPageSerializedHighlights.isNotBlank()) {
+            val restoreCmd = ReaderJsBridge.setHighlightsCommand(state.currentPageSerializedHighlights)
+            webView.evaluateJavascript(restoreCmd.removePrefix("javascript:"), null)
+        }
+        if (state.scrollY > 0) {
+            val scrollCmd = ReaderJsBridge.scrollToYCommand(state.scrollY)
+            webView.evaluateJavascript(scrollCmd.removePrefix("javascript:"), null)
+        }
     }
 
     override fun shouldInterceptRequest(
@@ -284,11 +368,13 @@ private class BookResourceWebViewClient(
 private fun ReaderScreen(
     engine: ReaderEngine,
     samples: List<SampleBook>,
+    initialIntentUri: Uri?,
     readAsset: (String) -> ByteArray,
     readUri: (Uri) -> ByteArray,
     displayName: (Uri) -> String,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val hostStore = remember { HostBookPersistenceStore(context) }
 
     var session by remember { mutableStateOf<ReaderSession?>(null) }
@@ -322,6 +408,7 @@ private fun ReaderScreen(
                         "PageHighlightsChanged(pág=${event.pageIndex + 1}, itens=${event.summaryItems.size})"
                 }
                 is ReaderEvent.PageFormChanged -> {
+                    hostStore.savePageForm(event.documentId, event.pageIndex, event.compressedPayload)
                     lastEventSummary =
                         "PageFormChanged(pág=${event.pageIndex + 1}, notas=${event.formState.annotations.size}, resp=${event.formState.answers.size})"
                 }
@@ -330,6 +417,7 @@ private fun ReaderScreen(
                     lastEventSummary = "BookmarksChanged(total=${event.bookmarks.size})"
                 }
                 is ReaderEvent.PreferencesChanged -> {
+                    hostStore.savePreferences(event.fontScale, event.isNightMode, event.fontFamily)
                     lastEventSummary =
                         "PreferencesChanged(escala=${event.fontScale}, noite=${event.isNightMode})"
                 }
@@ -343,10 +431,27 @@ private fun ReaderScreen(
         currentSession.uiEffects.collect { effect ->
             when (effect) {
                 is ReaderUiEffect.EvaluateJs -> {
-                    webViewRef?.evaluateJavascript(effect.script.removePrefix("javascript:"), null)
+                    val webView = webViewRef ?: return@collect
+                    val rawScript = effect.script.removePrefix("javascript:")
+                    webView.evaluateJavascript(rawScript) {
+                        if (rawScript.contains("highlightSelection") ||
+                            rawScript.contains("unHighlightSelection") ||
+                            rawScript.contains("removeHighlight")
+                        ) {
+                            webView.evaluateJavascript("readerJS.getHighlights()") { serializedRaw ->
+                                webView.evaluateJavascript("readerJS.summaryHighlights()") { summaryRaw ->
+                                    currentSession.onPageHighlightsReported(
+                                        rawSerializedHighlights = serializedRaw ?: "",
+                                        rawSummaryJson = summaryRaw,
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
                 is ReaderUiEffect.ScrollToY -> {
-                    webViewRef?.scrollTo(0, effect.scrollYPx)
+                    val scrollCmd = ReaderJsBridge.scrollToYCommand(effect.scrollYPx, effect.anchor)
+                    webViewRef?.evaluateJavascript(scrollCmd.removePrefix("javascript:"), null)
                 }
                 is ReaderUiEffect.OpenCustomUri -> {
                     lastEventSummary = "OpenCustomUri(${effect.scheme}://${effect.title})"
@@ -361,28 +466,43 @@ private fun ReaderScreen(
         }
     }
 
-    fun openBytes(name: String, bytes: ByteArray, sampleId: String?) {
-        runCatching {
-            val documentId = sampleId ?: name.substringBeforeLast('.')
-            val savedProgress = hostStore.loadProgress(documentId)
-            val savedHighlights = hostStore.loadHighlights(documentId)
-            val opened = engine.open(
-                name = name,
-                bytes = bytes,
-                initialState = InitialBookState(
-                    documentId = documentId,
-                    initialPageIndex = savedProgress?.pageIndex ?: 0,
-                    initialScrollY = savedProgress?.scrollY ?: 0,
-                    savedPageHighlights = savedHighlights,
-                ),
-            )
-            hostStore.loadBookmarksJson(documentId)?.let { opened.importBookmarksJson(it) }
-            session = opened
-            activeSample = sampleId
-            searchResults = emptyList()
-            error = null
-        }.onFailure {
-            error = it.message ?: it.toString()
+    fun openBookAsync(
+        sampleId: String?,
+        loadNameAndBytes: () -> Pair<String, ByteArray>,
+    ) {
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val (name, bytes) = loadNameAndBytes()
+                    val documentId = sampleId ?: name.substringBeforeLast('.')
+                    val savedProgress = hostStore.loadProgress(documentId)
+                    val savedHighlights = hostStore.loadHighlights(documentId)
+                    val savedForms = hostStore.loadPageForms(documentId)
+                    val opened = engine.open(
+                        name = name,
+                        bytes = bytes,
+                        initialState = InitialBookState(
+                            documentId = documentId,
+                            initialPageIndex = savedProgress?.pageIndex ?: 0,
+                            initialScrollY = savedProgress?.scrollY ?: 0,
+                            isNightMode = hostStore.loadNightMode(),
+                            fontScale = hostStore.loadFontScale(),
+                            fontFamily = hostStore.loadFontFamily(),
+                            savedPageHighlights = savedHighlights,
+                            savedPageForms = savedForms,
+                        ),
+                    )
+                    hostStore.loadBookmarksJson(documentId)?.let { opened.importBookmarksJson(it) }
+                    opened
+                }
+            }.onSuccess { opened ->
+                session = opened
+                activeSample = sampleId
+                searchResults = emptyList()
+                error = null
+            }.onFailure {
+                error = it.message ?: it.toString()
+            }
         }
     }
 
@@ -390,16 +510,23 @@ private fun ReaderScreen(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        runCatching {
-            openBytes(displayName(uri), readUri(uri), sampleId = null)
-        }.onFailure {
-            error = it.message ?: it.toString()
+        openBookAsync(sampleId = null) {
+            displayName(uri) to readUri(uri)
         }
     }
 
-    LaunchedEffect(samples) {
-        val first = samples.firstOrNull() ?: return@LaunchedEffect
-        openBytes(first.fileName, readAsset(first.assetPath), first.id)
+    LaunchedEffect(samples, initialIntentUri) {
+        if (session != null) return@LaunchedEffect
+        if (initialIntentUri != null) {
+            openBookAsync(sampleId = null) {
+                displayName(initialIntentUri) to readUri(initialIntentUri)
+            }
+        } else {
+            val first = samples.firstOrNull() ?: return@LaunchedEffect
+            openBookAsync(sampleId = first.id) {
+                first.fileName to readAsset(first.assetPath)
+            }
+        }
     }
 
     Scaffold(
@@ -510,7 +637,9 @@ private fun ReaderScreen(
                     FilterChip(
                         selected = activeSample == sample.id,
                         onClick = {
-                            openBytes(sample.fileName, readAsset(sample.assetPath), sample.id)
+                            openBookAsync(sampleId = sample.id) {
+                                sample.fileName to readAsset(sample.assetPath)
+                            }
                         },
                         label = { Text(sample.title) },
                     )
@@ -592,7 +721,13 @@ private fun ReaderScreen(
                         trailingIcon = {
                             IconButton(
                                 onClick = {
-                                    searchResults = session?.search(searchQuery).orEmpty()
+                                    val active = session ?: return@IconButton
+                                    val q = searchQuery
+                                    scope.launch {
+                                        searchResults = withContext(Dispatchers.Default) {
+                                            active.search(q)
+                                        }
+                                    }
                                 },
                             ) {
                                 Icon(imageVector = Icons.Filled.Search, contentDescription = "Buscar")
@@ -613,7 +748,12 @@ private fun ReaderScreen(
                             items(searchResults) { result ->
                                 Surface(
                                     onClick = {
-                                        session?.dispatch(ReaderCommand.GoToPage(result.pageIndex))
+                                        val loc = result.locator
+                                        if (loc != null) {
+                                            session?.dispatch(ReaderCommand.GoToLocator(loc))
+                                        } else {
+                                            session?.dispatch(ReaderCommand.GoToPage(result.pageIndex))
+                                        }
                                         isSearchExpanded = false
                                     },
                                     modifier = Modifier.fillMaxWidth(),
@@ -701,14 +841,16 @@ private fun ReaderScreen(
             )
             Spacer(modifier = Modifier.height(4.dp))
 
-            val currentHtml = remember(
+            val currentDoc: RenderedDocument? = remember(
                 session,
                 readerState?.pageIndex,
                 readerState?.fontScale,
+                readerState?.fontFamily,
+                readerState?.fontSizeClass,
                 readerState?.isNightMode,
                 readerState?.theme,
             ) {
-                session?.currentHtml().orEmpty()
+                session?.currentDocument(BOOK_BASE_URL)
             }
 
             @SuppressLint("SetJavaScriptEnabled")
@@ -722,16 +864,16 @@ private fun ReaderScreen(
                         settings.javaScriptEnabled = true
                         settings.allowFileAccess = false
                         settings.allowContentAccess = false
-                        setBackgroundColor(0xFFF3FAF7.toInt())
+                        setBackgroundColor(0xFF131313.toInt())
                         addJavascriptInterface(
-                            ScrollProgressInterface { ratio ->
+                            ScrollProgressInterface { scrollY, contentHeightPx, viewportHeightPx ->
                                 post {
-                                    val scaledY = (ratio * 1000).toInt()
                                     session?.dispatch(
                                         ReaderCommand.UpdateScroll(
-                                            scrollY = scaledY,
-                                            contentHeightPx = 1200,
-                                            viewportHeightPx = 200,
+                                            scrollY = scrollY,
+                                            contentHeightPx = contentHeightPx,
+                                            viewportHeightPx = viewportHeightPx,
+                                            timestampEpochMs = System.currentTimeMillis(),
                                         ),
                                     )
                                 }
@@ -742,11 +884,14 @@ private fun ReaderScreen(
                     }
                 },
                 update = { webView ->
-                    if (webView.tag != currentHtml) {
-                        webView.tag = currentHtml
+                    val doc = currentDoc
+                    val bgColor = if (readerState?.isNightMode == true) 0xFF131313.toInt() else 0xFFF3FAF7.toInt()
+                    webView.setBackgroundColor(bgColor)
+                    if (doc != null && webView.tag != doc) {
+                        webView.tag = doc
                         webView.loadDataWithBaseURL(
-                            BOOK_BASE_URL,
-                            currentHtml.ifBlank { "<html><body></body></html>" },
+                            doc.baseUrl,
+                            doc.html.ifBlank { "<html><body></body></html>" },
                             "text/html",
                             "utf-8",
                             null,

@@ -12,13 +12,14 @@ import okio.buffer
  * no formato `"gz:<base64>"` para payloads grandes (como grifos ou formulários extensos),
  * compatível com bancos de documentos com limite de payload (ex: Firestore 1 MiB, REST, SQLite).
  */
-object PayloadCodec {
-    const val GZIP_PREFIX = "gz:"
-    const val DEFAULT_COMPRESS_THRESHOLD_BYTES = 200_000
+public object PayloadCodec {
+    public const val GZIP_PREFIX: String = "gz:"
+    public const val DEFAULT_COMPRESS_THRESHOLD_BYTES: Int = 200_000
+    public const val DEFAULT_MAX_DECODED_BYTES: Int = 16 * 1024 * 1024
 
-    fun isCompressed(payload: String): Boolean = payload.startsWith(GZIP_PREFIX)
+    public fun isCompressed(payload: String): Boolean = payload.startsWith(GZIP_PREFIX)
 
-    fun encodeIfNeeded(
+    public fun encodeIfNeeded(
         raw: String,
         thresholdBytes: Int = DEFAULT_COMPRESS_THRESHOLD_BYTES,
     ): String {
@@ -38,15 +39,28 @@ object PayloadCodec {
         }
     }
 
-    fun decodeIfNeeded(stored: String): String {
+    public fun decodeIfNeeded(
+        stored: String,
+        maxDecodedBytes: Int = DEFAULT_MAX_DECODED_BYTES,
+    ): String {
         if (!stored.startsWith(GZIP_PREFIX)) return stored
         val base64Part = stored.removePrefix(GZIP_PREFIX).trim()
         val decodedBytes = base64Part.decodeBase64() ?: return stored
 
         return try {
             val sourceBuffer = Buffer().write(decodedBytes)
+            val outBuffer = Buffer()
             GzipSource(sourceBuffer).buffer().use { gzipSource ->
-                gzipSource.readUtf8()
+                var total = 0L
+                while (true) {
+                    val read = gzipSource.read(outBuffer, 8192L)
+                    if (read == -1L) break
+                    total += read
+                    if (total > maxDecodedBytes.toLong()) {
+                        return stored
+                    }
+                }
+                outBuffer.readUtf8()
             }
         } catch (_: Exception) {
             stored

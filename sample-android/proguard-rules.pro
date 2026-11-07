@@ -1,2 +1,5 @@
--keep class com.sun.jna.** { *; }
--keep class uniffi.reader_ffi.** { *; }
+# Keep @JavascriptInterface methods exposed to WebView
+-keepattributes *Annotation*
+-keepclassmembers class com.readerengine.app.ScrollProgressInterface {
+    @android.webkit.JavascriptInterface <methods>;
+}

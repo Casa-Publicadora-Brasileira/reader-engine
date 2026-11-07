@@ -8,6 +8,7 @@ import com.readerengine.core.session.ReaderCommand
 import com.readerengine.core.session.ReaderEngine
 import com.readerengine.core.session.ReaderEvent
 import com.readerengine.core.session.ReaderUiEffect
+import com.readerengine.core.theme.ThemeTokens
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -29,6 +30,8 @@ class ReaderEngineTest {
         val candidates = listOf(
             "fixtures/$name".toPath(),
             "../fixtures/$name".toPath(),
+            "sample-android/src/main/assets/samples/$name".toPath(),
+            "../sample-android/src/main/assets/samples/$name".toPath(),
         )
         val path = candidates.firstOrNull { FileSystem.SYSTEM.exists(it) }
             ?: error("Fixture not found: $name")
@@ -95,7 +98,7 @@ class ReaderEngineTest {
     }
 
     @Test
-    fun parsesEpubFixtureAndReadsResources() = runTest {
+    fun parsesEpubFixtureRendersHtmlAndResolvesRelativeResources() = runTest {
         val bytes = readFixture("sample.epub")
         val session = engine.open(
             name = "sample.epub",
@@ -109,14 +112,29 @@ class ReaderEngineTest {
         assertEquals(2, state.toc.size)
         assertEquals("Um", state.toc[0].title)
 
+        // Regression test for C1: currentHtml() and currentDocument() must not crash on EPUB HTML with </head>
+        val doc = session.currentDocument()
+        assertTrue(doc.html.contains("reader-engine-theme"))
+        assertEquals("book://content/OEBPS/", doc.baseUrl)
+
         val firstHref = session.publication().spine.first()
         val ch1Bytes = session.readResource(firstHref)
         assertTrue(ch1Bytes.decodeToString().isNotBlank())
         assertEquals("application/xhtml+xml", session.resourceMediaType(firstHref))
+
+        // Regression test for C2: relative resource resolution inside OEBPS/
+        val withImageBytes = readFixture("sample-with-image.epub")
+        val imgSession = engine.open("sample-with-image.epub", withImageBytes)
+        assertEquals("book://content/OEBPS/", imgSession.currentBaseUrl())
+        assertTrue(imgSession.currentHtml().contains("Chapter 1: With Image"))
+        assertTrue(imgSession.readResource("styles/main.css").decodeToString().isNotBlank())
+        assertTrue(imgSession.readResource("images/cover.png").isNotEmpty())
+        assertEquals("text/css", imgSession.resourceMediaType("styles/main.css"))
+        assertEquals("image/png", imgSession.resourceMediaType("images/cover.png"))
     }
 
     @Test
-    fun parsesHpubFixtureAndRestoresInitialState() = runTest {
+    fun parsesHpubFixtureRendersHtmlAndRestoresInitialState() = runTest {
         val bytes = readFixture("sample.hpub")
         val initialHighlights = mapOf(
             0 to "type:textContent|10\$25\$1\$yellow\$",
@@ -140,6 +158,7 @@ class ReaderEngineTest {
         assertEquals("HPUB Fixture", state.metadata.title)
         assertEquals(1, state.pageIndex)
         assertEquals(240, state.progress.scrollY)
+        assertTrue(session.currentHtml().contains("reader-engine-theme"))
 
         // Go back to page 0 and verify stored highlights and forms are restored
         session.dispatch(ReaderCommand.GoToPage(0))
@@ -233,7 +252,7 @@ class ReaderEngineTest {
     }
 
     @Test
-    fun readerJsBridgeGeneratesCompatibleScripts() {
+    fun readerJsBridgeGeneratesCompatibleScriptsAndPreventsInjection() {
         assertTrue(
             ReaderJsBridge.highlightSelectionCommand(HighlightStyle.YELLOW)
                 .contains("readerJS.highlightSelection('yellow')"),
@@ -242,5 +261,24 @@ class ReaderEngineTest {
             ReaderJsBridge.setNightModeCommand(true)
                 .contains("nightMode(true)"),
         )
+
+        // Regression test for S1: double-quote injection in setFontSizeClassCommand
+        val maliciousSize = """ESFontSize2");alert(1);//"""
+        val sizeCmd = ReaderJsBridge.setFontSizeClassCommand(maliciousSize)
+        assertFalse(sizeCmd.contains("alert(1);"))
+        assertTrue(sizeCmd.contains("""setFontSize("ESFontSize2alert1")"""))
+
+        // Regression test for S2: CSS / script injection via fontFamily
+        val maliciousFont = "serif;}</style><script>alert(1)</script><style>"
+        val injectedHtml = ReaderJsBridge.injectThemeAndBridge(
+            rawHtml = "<html><head><title>T</title></head><body><p>Hello</p></body></html>",
+            theme = ThemeTokens.fluent(),
+            fontScale = 1.0f,
+            fontFamily = maliciousFont,
+            fontSizeClass = """bad" onclick="alert(1)""",
+            isNightMode = true,
+        )
+        assertFalse(injectedHtml.contains("<script>alert(1)</script>"))
+        assertFalse(injectedHtml.contains("onclick="))
     }
 }

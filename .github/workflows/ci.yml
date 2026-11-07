@@ -9,70 +9,9 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
-
 jobs:
-  test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Format
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Test
-        run: cargo test --workspace
-
-      - name: Build demo
-        run: cargo build -p reader-demo
-
-      - name: Build FFI (host)
-        run: cargo build -p reader-ffi
-
-      - name: Generate Kotlin bindings
-        run: |
-          case "$(uname -s)" in
-            Darwin) LIB=target/debug/libreader_ffi.dylib ;;
-            *) LIB=target/debug/libreader_ffi.so ;;
-          esac
-          test -f "$LIB"
-          cargo run -p reader-ffi --features bindgen --bin uniffi-bindgen -- \
-            generate --library "$LIB" \
-            --language kotlin \
-            --out-dir /tmp/reader-ffi-kt \
-            --config crates/reader-ffi/uniffi.toml \
-            --no-format
-
-      - name: Install wasm-pack
-        if: runner.os == 'Linux'
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-
-      - name: Build reader-wasm (web)
-        if: runner.os == 'Linux'
-        run: ./scripts/build-web.sh
-
-  android:
-    name: Android build
+  linux:
+    name: Build & Test (Linux)
     runs-on: ubuntu-latest
 
     steps:
@@ -85,34 +24,8 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: android
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: platform-tools
-
-      - name: Install NDK
-        run: sdkmanager --install "ndk;27.0.12077973"
-
-      - name: Build Rust for Android
-        run: ./scripts/android-build-rust.sh
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
-
-      - name: Verify Kotlin bindings are up-to-date
-        run: |
-          if ! git diff --exit-code platforms/android/reader-engine/src/main/java/uniffi/reader_ffi/; then
-            echo "::error::Kotlin bindings are out of date. Run ./scripts/generate-kotlin-bindings.sh and commit the changes."
-            exit 1
-          fi
-
-      - name: Build Android library AAR + demo app
-        working-directory: platforms/android
-        run: ./gradlew :reader-engine:assembleRelease :app:assembleDebug --no-daemon
+      - name: Run KMP unit tests & build Android sample
+        run: ./gradlew :reader-core:jvmTest :reader-core:assembleRelease :sample-android:assembleDebug --no-daemon

@@ -21,11 +21,11 @@ public class HpubParser : FormatParser {
     override val id: String = "hpub"
 
     override fun canParse(source: Source): Boolean {
-        return source.extension() == "hpub" || ZipResourceProvider.hasZipEntry(source.bytes, "book.json")
+        return source.extension() == "hpub" || source.hasZipEntry("book.json")
     }
 
     override fun parse(source: Source): Publication {
-        val zip = ZipResourceProvider.fromBytes(source.bytes)
+        val zip = source.openZip()
         val bookJsonRaw = try {
             zip.readString("book.json")
         } catch (e: Exception) {

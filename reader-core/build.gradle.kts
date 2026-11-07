@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "com.readerengine"
-version = "0.2.0"
+version = "0.3.0"
 
 kotlin {
     explicitApi()
@@ -44,7 +44,7 @@ kotlin {
         commonMain.dependencies {
             api(libs.kotlinx.coroutines.core)
             api(libs.kotlinx.serialization.json)
-            implementation(libs.okio)
+            api(libs.okio)
         }
 
         commonTest.dependencies {

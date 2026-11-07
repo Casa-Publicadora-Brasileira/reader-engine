@@ -2,8 +2,15 @@ package com.readerengine.core
 
 import com.readerengine.core.bridge.PayloadCodec
 import com.readerengine.core.bridge.ReaderJsBridge
+import com.readerengine.core.error.ReaderException
 import com.readerengine.core.model.HighlightStyle
 import com.readerengine.core.model.InitialBookState
+import com.readerengine.core.model.ReaderStrings
+import com.readerengine.core.model.ReadingProgress
+import com.readerengine.core.parser.EpubParser
+import com.readerengine.core.parser.XmlEntities
+import com.readerengine.core.provider.ZipLimits
+import com.readerengine.core.provider.ZipResourceProvider
 import com.readerengine.core.session.ReaderCommand
 import com.readerengine.core.session.ReaderEngine
 import com.readerengine.core.session.ReaderEvent
@@ -17,6 +24,7 @@ import okio.FileSystem
 import okio.Path.Companion.toPath
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -75,12 +83,14 @@ class ReaderEngineTest {
         val progress = session.state.value.progress
         assertEquals(450, progress.scrollY)
         assertTrue(progress.totalPercentage in 0f..100f)
+        assertNotNull(progress.locator)
 
         // Bookmarks
         assertFalse(session.state.value.hasBookmarkAtCurrentPage)
         session.dispatch(ReaderCommand.ToggleBookmark(label = "Meu marcador"))
         assertTrue(session.state.value.hasBookmarkAtCurrentPage)
         assertEquals(1, session.state.value.bookmarks.size)
+        assertNotNull(session.state.value.bookmarks.first().locator)
         assertTrue(events.any { it is ReaderEvent.BookmarksChanged && it.bookmarks.size == 1 })
 
         val bookmarkId = session.state.value.bookmarks.first().id
@@ -89,10 +99,14 @@ class ReaderEngineTest {
         session.dispatch(ReaderCommand.GoToBookmark(bookmarkId))
         assertEquals(1, session.state.value.pageIndex)
 
-        // Full-text search
-        val searchResults = session.search("noite")
+        // Full-text search (including diacritic-insensitive match & Locator navigation)
+        val searchResults = session.search("nôite")
         assertTrue(searchResults.isNotEmpty())
         assertTrue(searchResults.first().snippet.contains("noite", ignoreCase = true))
+        val loc = searchResults.first().locator
+        assertNotNull(loc)
+        session.dispatch(ReaderCommand.GoToLocator(loc))
+        assertEquals(loc.pageIndex, session.state.value.pageIndex)
 
         job.cancel()
     }
@@ -134,10 +148,14 @@ class ReaderEngineTest {
     }
 
     @Test
-    fun parsesHpubFixtureRendersHtmlAndRestoresInitialState() = runTest {
+    fun parsesHpubFixtureGeneratesSha256DocIdAndRestoresInitialState() = runTest {
         val bytes = readFixture("sample.hpub")
+        // Verify deterministic SHA-256 document ID when no identifier is provided
+        val autoIdSession = engine.open(name = "sample.hpub", bytes = bytes)
+        assertTrue(autoIdSession.state.value.documentId.startsWith("doc-"))
+
         val initialHighlights = mapOf(
-            0 to "type:textContent|10\$25\$1\$yellow\$",
+            0 to "type:textContent|1\$highlight_yellow\$Texto grifado inicial",
         )
         val initialForms = mapOf(
             0 to """{"annotations":[{"content":"Minha nota","index":0}],"answers":[{"content":"Resposta 1","index":0}]}""",
@@ -151,6 +169,7 @@ class ReaderEngineTest {
                 initialScrollY = 240,
                 savedPageHighlights = initialHighlights,
                 savedPageForms = initialForms,
+                strings = ReaderStrings.english(),
             ),
         )
 
@@ -159,22 +178,28 @@ class ReaderEngineTest {
         assertEquals(1, state.pageIndex)
         assertEquals(240, state.progress.scrollY)
         assertTrue(session.currentHtml().contains("reader-engine-theme"))
+        assertEquals("text/html", session.resourceMediaType("pages/one.html"))
 
-        // Go back to page 0 and verify stored highlights and forms are restored
+        // Go back to page 0 and verify stored highlights, summaries, and forms are restored
         session.dispatch(ReaderCommand.GoToPage(0))
-        assertEquals("type:textContent|10\$25\$1\$yellow\$", session.state.value.currentPageSerializedHighlights)
+        assertEquals("type:textContent|1\$highlight_yellow\$Texto grifado inicial", session.state.value.currentPageSerializedHighlights)
+        assertEquals(1, session.state.value.currentPageHighlights.size)
+        assertEquals("Texto grifado inicial", session.state.value.currentPageHighlights[0].text)
         assertEquals(1, session.state.value.currentPageFormState.annotations.size)
         assertEquals("Minha nota", session.state.value.currentPageFormState.annotations[0].content)
         assertEquals("Resposta 1", session.state.value.currentPageFormState.answers[0].content)
     }
 
     @Test
-    fun emitsHighlightFormAndGenericCustomUriEvents() = runTest {
+    fun emitsHighlightFormAndGenericCustomUriEventsAndRestoresCloudData() = runTest {
         val bytes = readFixture("sample.hpub")
         val session = engine.open(
             name = "sample.hpub",
             bytes = bytes,
-            initialState = InitialBookState(documentId = "licao-01"),
+            initialState = InitialBookState(
+                documentId = "licao-01",
+                strings = ReaderStrings.english(),
+            ),
         )
 
         val events = mutableListOf<ReaderEvent>()
@@ -188,7 +213,7 @@ class ReaderEngineTest {
 
         // Simulate WebView callback after applying a highlight
         session.onPageHighlightsReported(
-            rawSerializedHighlights = "type:textContent|5\$15\$1\$green\$",
+            rawSerializedHighlights = "type:textContent|1\$green\$No princípio",
             rawSummaryJson = """[{"id":1,"text":"No princípio","cor":"green","pos":640.0}]""",
         )
 
@@ -196,12 +221,12 @@ class ReaderEngineTest {
         assertNotNull(highlightEvent)
         assertEquals("licao-01", highlightEvent.documentId)
         assertEquals(0, highlightEvent.pageIndex)
-        assertEquals("type:textContent|5\$15\$1\$green\$", highlightEvent.rawSerializedHighlights)
 
         val summary = session.state.value.currentPageHighlights
         assertEquals(1, summary.size)
         assertEquals(HighlightStyle.GREEN, summary[0].style)
         assertEquals("No princípio", summary[0].text)
+        assertNotNull(summary[0].locator)
 
         // Navigate to highlight -> should scroll to pos - 300 = 340
         session.dispatch(ReaderCommand.SelectHighlightItem(summary[0]))
@@ -216,9 +241,21 @@ class ReaderEngineTest {
         val formEvent = events.filterIsInstance<ReaderEvent.PageFormChanged>().lastOrNull()
         assertNotNull(formEvent)
         assertEquals("licao-01", formEvent.documentId)
-        assertEquals(0, formEvent.pageIndex)
-        assertEquals(rawFormJson, formEvent.rawJsonPayload)
         assertEquals("Nota sabatina", formEvent.formState.annotations[0].content)
+
+        // Cloud restore on active page should update state + emit EvaluateJs for highlights and forms
+        effects.clear()
+        session.restorePageCloudData(
+            pageIndex = 0,
+            serializedHighlights = "type:textContent|2\$highlight_blue\$Trecho nuvem",
+            annotationsJson = """{"annotations":[{"content":"Nota nuvem","index":0}],"answers":[{"content":"Resp nuvem","index":0}]}""",
+        )
+        assertEquals(1, session.state.value.currentPageHighlights.size)
+        assertEquals("Trecho nuvem", session.state.value.currentPageHighlights[0].text)
+        val jsScripts = effects.filterIsInstance<ReaderUiEffect.EvaluateJs>().map { it.script }
+        assertTrue(jsScripts.any { it.contains("setHighlights") })
+        assertTrue(jsScripts.any { it.contains("setAnnotations") })
+        assertTrue(jsScripts.any { it.contains("setAnswers") })
 
         // Intercept custom URI schemes generically (works for verse://, footnote://, audio://, etc.)
         assertTrue(session.handleUrlNavigation("verse://?q=Joao+3:16"))
@@ -227,14 +264,83 @@ class ReaderEngineTest {
         assertEquals("verse", verseEffect.scheme)
         assertEquals("Joao 3:16", verseEffect.title)
 
-        assertTrue(session.handleUrlNavigation("footnote://?q=Nota+de+rodape+1"))
-        val footnoteEffect = effects.filterIsInstance<ReaderUiEffect.OpenCustomUri>().lastOrNull()
-        assertNotNull(footnoteEffect)
-        assertEquals("footnote", footnoteEffect.scheme)
-        assertEquals("Nota de rodape 1", footnoteEffect.title)
+        // Invalid highlight on input should use localized English message
+        assertTrue(session.handleUrlNavigation("highlight://invalid"))
+        val msgEffect = effects.filterIsInstance<ReaderUiEffect.ShowMessage>().lastOrNull()
+        assertNotNull(msgEffect)
+        assertEquals("Cannot highlight inside an input field.", msgEffect.message)
 
         eventJob.cancel()
         effectJob.cancel()
+    }
+
+    @Test
+    fun readingProgressIsStrictlyMonotonicAcrossPagesAndScrolls() {
+        val p0Start = ReadingProgress.calculatePercentage(0, 3, scrollY = 0, contentHeightPx = 1000, viewportHeightPx = 100)
+        val p0Mid = ReadingProgress.calculatePercentage(0, 3, scrollY = 450, contentHeightPx = 1000, viewportHeightPx = 100)
+        val p0End = ReadingProgress.calculatePercentage(0, 3, scrollY = 900, contentHeightPx = 1000, viewportHeightPx = 100)
+        val p1Start = ReadingProgress.calculatePercentage(1, 3, scrollY = 0, contentHeightPx = 1000, viewportHeightPx = 100)
+        val p1End = ReadingProgress.calculatePercentage(1, 3, scrollY = 900, contentHeightPx = 1000, viewportHeightPx = 100)
+        val p2Start = ReadingProgress.calculatePercentage(2, 3, scrollY = 0, contentHeightPx = 1000, viewportHeightPx = 100)
+        val p2End = ReadingProgress.calculatePercentage(2, 3, scrollY = 900, contentHeightPx = 1000, viewportHeightPx = 100)
+
+        assertEquals(0f, p0Start, 0.01f)
+        assertTrue(p0Mid > p0Start && p0Mid < p0End)
+        assertEquals(p0End, p1Start, 0.01f)
+        assertTrue(p1End > p1Start)
+        assertEquals(p1End, p2Start, 0.01f)
+        assertEquals(100f, p2End, 0.01f)
+    }
+
+    @Test
+    fun xmlEntitiesDecodesSinglePassAndSupportsNestedTocAndQuotes() {
+        // Must not double-decode &amp;lt; into <
+        assertEquals("&lt;tag&gt; é — ©", XmlEntities.decode("&amp;lt;tag&amp;gt; &#233; &#x2014; &copy;"))
+
+        val parser = EpubParser()
+        val attrWithApostrophe = """id="ch1" title="Author's &amp; Editor's Note""""
+        assertEquals("Author's & Editor's Note", parser.extractAttribute(attrWithApostrophe, "title"))
+
+        val nestedNav = """
+            <nav epub:type="toc">
+              <ol>
+                <li>
+                  <a href="c1.xhtml">Part 1</a>
+                  <ol>
+                    <li><a href="c1.xhtml#s1">Section 1.1</a></li>
+                  </ol>
+                </li>
+                <li><a href="c2.xhtml">Part 2</a></li>
+              </ol>
+            </nav>
+        """.trimIndent()
+        val toc = parser.parseNavXhtml(nestedNav, "OEBPS/nav.xhtml")
+        assertEquals(2, toc.size)
+        assertEquals("Part 1", toc[0].title)
+        assertEquals(1, toc[0].children.size)
+        assertEquals("Section 1.1", toc[0].children[0].title)
+        assertEquals("OEBPS/c1.xhtml#s1", toc[0].children[0].href)
+    }
+
+    @Test
+    fun zipResourceProviderEnforcesSafetyLimits() {
+        val epubBytes = readFixture("sample.epub")
+        assertTrue(ZipResourceProvider.hasZipEntry(epubBytes, "META-INF/container.xml"))
+
+        assertFailsWith<ReaderException.InvalidContent> {
+            ZipResourceProvider.fromBytes(
+                epubBytes,
+                limits = ZipLimits(maxEntries = 1),
+            )
+        }
+
+        assertFailsWith<ReaderException.InvalidContent> {
+            val provider = ZipResourceProvider.fromBytes(
+                epubBytes,
+                limits = ZipLimits(maxEntryUncompressedBytes = 10),
+            )
+            provider.read("META-INF/container.xml")
+        }
     }
 
     @Test

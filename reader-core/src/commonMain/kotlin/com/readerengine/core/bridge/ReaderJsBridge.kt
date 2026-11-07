@@ -4,6 +4,8 @@ import com.readerengine.core.model.FormEntry
 import com.readerengine.core.model.HighlightItem
 import com.readerengine.core.model.HighlightStyle
 import com.readerengine.core.model.PageFormState
+import com.readerengine.core.model.ReadingMode
+import com.readerengine.core.model.RenditionLayout
 import com.readerengine.core.theme.ThemeTokens
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -30,6 +32,9 @@ public object ReaderJsBridge {
     public const val SCRIPT_GET_HIGHLIGHTS: String = "javascript:readerJS.getHighlights()"
     public const val SCRIPT_SUMMARY_HIGHLIGHTS: String = "javascript:readerJS.summaryHighlights()"
     public const val SCRIPT_UNHIGHLIGHT_SELECTION: String = "javascript:readerJS.unHighlightSelection()"
+    public const val SCRIPT_NEXT_SUB_PAGE: String = "javascript:readerJS.nextSubPage()"
+    public const val SCRIPT_PREV_SUB_PAGE: String = "javascript:readerJS.prevSubPage()"
+    public const val SCRIPT_GET_SUB_PAGE_STATE: String = "javascript:readerJS.getSubPageState()"
     public const val SCRIPT_GET_CHANGES: String = "javascript:getChanges()"
     public const val SCRIPT_CLEAN_CHANGES: String = "javascript:cleanChanges()"
     public const val SCRIPT_GET_ALL_MODIFICATIONS: String = "javascript:getAllModifications()"
@@ -71,6 +76,11 @@ public object ReaderJsBridge {
     public fun setNightModeCommand(enabled: Boolean): String =
         "javascript:if(typeof nightMode==='function'){nightMode($enabled);}"
 
+    public fun setReadingModeCommand(mode: ReadingMode): String {
+        val isPaginated = mode == ReadingMode.PAGINATED
+        return "javascript:(function(){var h=document.documentElement;if(h){if($isPaginated){h.classList.add('reader-paginated');}else{h.classList.remove('reader-paginated');window.scrollTo(0,0);}}})();"
+    }
+
     public fun scrollToYCommand(scrollYPx: Int, anchor: String? = null): String {
         val clamped = scrollYPx.coerceAtLeast(0)
         if (!anchor.isNullOrBlank()) {
@@ -81,8 +91,9 @@ public object ReaderJsBridge {
     }
 
     /**
-     * Injeta o CSS do tema, classes opcionais de tamanho/modo noturno e um polyfill `readerJS` leve
-     * (para que livros EPUB/HTML comuns tenham suporte imediato a marcações sem exigir scripts embarcados).
+     * Injeta o CSS do tema, classes opcionais de tamanho/modo noturno/paginação horizontal
+     * e o polyfill `readerJS` completo (suportando grifos no DOM, paginação por colunas CSS
+     * e preservação de viewport para EPUB 3 Fixed-Layout).
      */
     public fun injectThemeAndBridge(
         rawHtml: String,
@@ -91,11 +102,15 @@ public object ReaderJsBridge {
         fontFamily: String = "Default",
         fontSizeClass: String = "",
         isNightMode: Boolean = false,
+        readingMode: ReadingMode = ReadingMode.SCROLL,
+        layout: RenditionLayout = RenditionLayout.REFLOWABLE,
     ): String {
         val css = theme.toContentCss(
             fontScale = fontScale,
             customFontFamily = fontFamily,
             isNightMode = isNightMode,
+            readingMode = readingMode,
+            layout = layout,
         )
         val safeFontClass = sanitizeClassToken(fontSizeClass)
         val classes = buildString {
@@ -103,6 +118,14 @@ public object ReaderJsBridge {
             if (isNightMode) {
                 if (isNotEmpty()) append(' ')
                 append("nightMode")
+            }
+            if (readingMode == ReadingMode.PAGINATED && layout == RenditionLayout.REFLOWABLE) {
+                if (isNotEmpty()) append(' ')
+                append("reader-paginated")
+            }
+            if (layout == RenditionLayout.PRE_PAGINATED) {
+                if (isNotEmpty()) append(' ')
+                append("reader-fixed-layout")
             }
         }.trim()
 
@@ -338,6 +361,7 @@ public object ReaderJsBridge {
                 var _serialized = '';
                 var _items = [];
                 var _nextId = 1;
+                var _subPage = 0;
                 function _rebuildSerialized() {
                     if (!_items.length) { _serialized = ''; return; }
                     _serialized = 'type:textContent|' + _items.map(function(i){
@@ -380,6 +404,18 @@ public object ReaderJsBridge {
                             _wrapRangeSafe(r, id, cls);
                             break;
                         }
+                    }
+                }
+                function _computeTotalSubPages() {
+                    var vw = Math.max(1, window.innerWidth || 1);
+                    var sw = Math.max(vw, document.body ? document.body.scrollWidth : vw);
+                    return Math.max(1, Math.round(sw / vw));
+                }
+                function _applySubPageOffset() {
+                    var vw = Math.max(1, window.innerWidth || 1);
+                    if (document.body) {
+                        document.body.style.transform = 'translateX(-' + (_subPage * vw) + 'px)';
+                        document.body.style.transition = 'transform 0.18s ease-out';
                     }
                 }
                 window.readerJS = {
@@ -454,6 +490,28 @@ public object ReaderJsBridge {
                         }
                         _rebuildSerialized();
                         return JSON.stringify(_items);
+                    },
+                    nextSubPage: function() {
+                        var total = _computeTotalSubPages();
+                        if (_subPage + 1 < total) {
+                            _subPage++;
+                            _applySubPageOffset();
+                            return JSON.stringify({ subPage: _subPage, totalSubPages: total, advanced: true });
+                        }
+                        return JSON.stringify({ subPage: _subPage, totalSubPages: total, advanced: false });
+                    },
+                    prevSubPage: function() {
+                        var total = _computeTotalSubPages();
+                        if (_subPage > 0) {
+                            _subPage--;
+                            _applySubPageOffset();
+                            return JSON.stringify({ subPage: _subPage, totalSubPages: total, advanced: true });
+                        }
+                        return JSON.stringify({ subPage: _subPage, totalSubPages: total, advanced: false });
+                    },
+                    getSubPageState: function() {
+                        var total = _computeTotalSubPages();
+                        return JSON.stringify({ subPage: _subPage, totalSubPages: total });
                     }
                 };
             }

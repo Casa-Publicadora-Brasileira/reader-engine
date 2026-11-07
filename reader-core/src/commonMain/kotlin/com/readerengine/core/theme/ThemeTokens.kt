@@ -1,6 +1,8 @@
 package com.readerengine.core.theme
 
 import com.readerengine.core.error.ReaderException
+import com.readerengine.core.model.ReadingMode
+import com.readerengine.core.model.RenditionLayout
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -64,13 +66,17 @@ public data class ThemeTokens(
     val shape: Shape,
 ) {
     /**
-     * Gera o CSS injetado no HTML da WebView respeitando escala de fonte, família de fonte customizada
-     * e modo noturno, sanitizando todos os valores contra injeção de CSS/HTML.
+     * Gera o CSS injetado no HTML da WebView respeitando escala de fonte, família de fonte customizada,
+     * modo noturno, paginação horizontal por colunas CSS (`ReadingMode.PAGINATED`),
+     * layout fixo (`RenditionLayout.PRE_PAGINATED`) e blocos matemáticos (`<math>` / MathML),
+     * sanitizando todos os valores contra injeção de CSS/HTML.
      */
     public fun toContentCss(
         fontScale: Float = 1.0f,
         customFontFamily: String? = null,
         isNightMode: Boolean = false,
+        readingMode: ReadingMode = ReadingMode.SCROLL,
+        layout: RenditionLayout = RenditionLayout.REFLOWABLE,
     ): String {
         val bg = sanitizeCssColor(
             raw = if (isNightMode) colors.nightBackground else colors.background,
@@ -98,9 +104,20 @@ public data class ThemeTokens(
             append(":root{color-scheme:")
             append(if (isNightMode) "dark" else "light")
             append(";}")
-            append("html{background:$bg;color:$fg;font-family:$family;font-size:${fontSizePx}px;line-height:$lineHeight;}")
-            append("body{background:$bg;color:$fg;font-family:$family;}")
+            if (layout == RenditionLayout.PRE_PAGINATED) {
+                append("html,body{background:$bg;color:$fg;margin:0;padding:0;overflow:hidden;}")
+            } else {
+                append("html{background:$bg;color:$fg;font-family:$family;font-size:${fontSizePx}px;line-height:$lineHeight;}")
+                append("body{background:$bg;color:$fg;font-family:$family;}")
+                if (readingMode == ReadingMode.PAGINATED) {
+                    append("html.reader-paginated,html.reader-paginated body{height:100vh;overflow:hidden;margin:0;box-sizing:border-box;}")
+                    append("html.reader-paginated body{column-width:calc(100vw - 32px);column-gap:32px;column-fill:auto;padding:16px;}")
+                }
+            }
             append("a{color:$linkColor;}")
+            append("img,svg,video{max-width:100%;height:auto;}")
+            append("math{font-family:'Latin Modern Math','STIX Two Math','Cambria Math','Noto Sans Math',serif;display:inline-block;max-width:100%;overflow-x:auto;vertical-align:middle;}")
+            append("math[display=\"block\"]{display:block;text-align:center;margin:0.75em 0;}")
             append(".highlight_yellow{background-color:#FFF59D;color:#111;}")
             append(".highlight_green{background-color:#A5D6A7;color:#111;}")
             append(".highlight_blue{background-color:#90CAF9;color:#111;}")

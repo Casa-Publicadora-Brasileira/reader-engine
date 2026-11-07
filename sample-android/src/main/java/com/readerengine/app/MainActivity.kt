@@ -80,6 +80,7 @@ import com.readerengine.core.bridge.ReaderJsBridge
 import com.readerengine.core.model.Bookmark
 import com.readerengine.core.model.HighlightStyle
 import com.readerengine.core.model.InitialBookState
+import com.readerengine.core.model.ReadingMode
 import com.readerengine.core.model.ReadingProgress
 import com.readerengine.core.model.SearchResult
 import com.readerengine.core.session.ReaderCommand
@@ -678,6 +679,19 @@ private fun ReaderScreen(
                 )
                 OutlinedButton(
                     onClick = {
+                        val nextMode = if (readerState?.readingMode == ReadingMode.PAGINATED) {
+                            ReadingMode.SCROLL
+                        } else {
+                            ReadingMode.PAGINATED
+                        }
+                        session?.dispatch(ReaderCommand.SetReadingMode(nextMode))
+                    },
+                    modifier = Modifier.height(36.dp),
+                ) {
+                    Text(if (readerState?.readingMode == ReadingMode.PAGINATED) "Paginado" else "Scroll")
+                }
+                OutlinedButton(
+                    onClick = {
                         session?.dispatch(ReaderCommand.ApplyHighlightStyle(HighlightStyle.YELLOW))
                     },
                     modifier = Modifier.height(36.dp),
@@ -848,6 +862,7 @@ private fun ReaderScreen(
                 readerState?.fontFamily,
                 readerState?.fontSizeClass,
                 readerState?.isNightMode,
+                readerState?.readingMode,
                 readerState?.theme,
             ) {
                 session?.currentDocument(BOOK_BASE_URL)

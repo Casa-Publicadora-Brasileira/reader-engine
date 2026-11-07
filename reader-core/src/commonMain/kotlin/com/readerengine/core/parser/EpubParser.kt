@@ -1,16 +1,22 @@
 package com.readerengine.core.parser
 
+import com.readerengine.core.drm.DecryptingResourceProvider
+import com.readerengine.core.drm.EpubEncryptionParser
+import com.readerengine.core.drm.StandardEpubFontDeobfuscator
 import com.readerengine.core.error.ReaderException
 import com.readerengine.core.model.Metadata
 import com.readerengine.core.model.Publication
+import com.readerengine.core.model.RenditionLayout
+import com.readerengine.core.model.RenditionOrientation
+import com.readerengine.core.model.RenditionSpread
 import com.readerengine.core.model.Resource
 import com.readerengine.core.model.TocEntry
-import com.readerengine.core.provider.ZipResourceProvider
 import com.readerengine.core.provider.normalizeHref
 
 /**
  * Parser EPUB 2 / EPUB 3 em Kotlin Multiplatform puro (`commonMain`),
- * lendo `META-INF/container.xml`, o manifesto/spine `.opf` (respeitando `linear="no"`)
+ * lendo `META-INF/container.xml`, `META-INF/encryption.xml` (DRM/ofuscação de fontes),
+ * o manifesto/spine `.opf` (incluindo `rendition:layout`/`orientation`/`spread` e `linear="no"`)
  * e o sumário hierárquico (`<nav epub:type="toc">` ou `toc.ncx`).
  */
 public class EpubParser : FormatParser {
@@ -18,11 +24,11 @@ public class EpubParser : FormatParser {
 
     override fun canParse(source: Source): Boolean {
         return source.extension() == "epub" ||
-            ZipResourceProvider.hasZipEntry(source.bytes, "META-INF/container.xml")
+            source.hasZipEntry("META-INF/container.xml")
     }
 
     override fun parse(source: Source): Publication {
-        val zip = ZipResourceProvider.fromBytes(source.bytes)
+        val zip = source.openZip()
         val containerXml = try {
             zip.readString("META-INF/container.xml")
         } catch (e: Exception) {
@@ -39,13 +45,7 @@ public class EpubParser : FormatParser {
             .let { if (it.isEmpty()) "" else "$it/" }
 
         val opfXml = zip.readString(opfPath)
-
-        val metadata = Metadata(
-            title = extractFirstTagText(opfXml, "title").orEmpty(),
-            authors = extractAllTagTexts(opfXml, "creator"),
-            language = extractFirstTagText(opfXml, "language"),
-            identifier = extractFirstTagText(opfXml, "identifier"),
-        )
+        val metadata = parseMetadata(opfXml)
 
         val resources = mutableListOf<Resource>()
         val idToHref = LinkedHashMap<String, String>()
@@ -86,13 +86,85 @@ public class EpubParser : FormatParser {
             else -> emptyList()
         }
 
+        val encryptedResources = if (zip.hasEntry("META-INF/encryption.xml")) {
+            runCatching { EpubEncryptionParser.parse(zip.readString("META-INF/encryption.xml")) }
+                .getOrDefault(emptyMap())
+        } else {
+            emptyMap()
+        }
+
+        val effectiveProvider = if (encryptedResources.isNotEmpty() || source.customDecryptor != null) {
+            DecryptingResourceProvider(
+                delegate = zip,
+                encryptedResources = encryptedResources,
+                publicationIdentifier = metadata.identifier,
+                decryptor = StandardEpubFontDeobfuscator(fallbackDecryptor = source.customDecryptor),
+            )
+        } else {
+            zip
+        }
+
         return Publication(
             metadata = metadata,
             spine = spine,
             resources = resources,
             toc = toc,
-            provider = zip,
+            provider = effectiveProvider,
+            encryptedResources = encryptedResources,
         )
+    }
+
+    internal fun parseMetadata(opfXml: String): Metadata {
+        val layoutRaw = extractMetaProperty(opfXml, "rendition:layout")?.lowercase()
+        val epub2Fixed = extractMetaNameContent(opfXml, "fixed-layout")?.lowercase()
+        val layout = if (layoutRaw == "pre-paginated" || epub2Fixed == "true" || epub2Fixed == "yes") {
+            RenditionLayout.PRE_PAGINATED
+        } else {
+            RenditionLayout.REFLOWABLE
+        }
+
+        val orientation = when (extractMetaProperty(opfXml, "rendition:orientation")?.lowercase()) {
+            "landscape" -> RenditionOrientation.LANDSCAPE
+            "portrait" -> RenditionOrientation.PORTRAIT
+            else -> RenditionOrientation.AUTO
+        }
+
+        val spread = when (extractMetaProperty(opfXml, "rendition:spread")?.lowercase()) {
+            "none" -> RenditionSpread.NONE
+            "landscape" -> RenditionSpread.LANDSCAPE
+            "both", "portrait" -> RenditionSpread.BOTH
+            else -> RenditionSpread.AUTO
+        }
+
+        return Metadata(
+            title = extractFirstTagText(opfXml, "title").orEmpty(),
+            authors = extractAllTagTexts(opfXml, "creator"),
+            language = extractFirstTagText(opfXml, "language"),
+            identifier = extractFirstTagText(opfXml, "identifier"),
+            layout = layout,
+            orientation = orientation,
+            spread = spread,
+        )
+    }
+
+    private fun extractMetaProperty(opfXml: String, propertyName: String): String? {
+        val escaped = Regex.escape(propertyName)
+        val regex = Regex(
+            """<meta\b[^>]*\bproperty\s*=\s*(?:"$escaped"|'$escaped')[^>]*>([\s\S]*?)</meta>""",
+            RegexOption.IGNORE_CASE,
+        )
+        val raw = regex.find(opfXml)?.groupValues?.get(1) ?: return null
+        return XmlEntities.decode(stripHtmlTags(raw)).trim().takeIf { it.isNotEmpty() }
+    }
+
+    private fun extractMetaNameContent(opfXml: String, metaName: String): String? {
+        for (attrs in findOpeningTags(opfXml, "meta")) {
+            val name = extractAttribute(attrs, "name") ?: continue
+            if (name.equals(metaName, ignoreCase = true)) {
+                return extractAttribute(attrs, "content")?.trim()
+            }
+        }
+        return null
     }
 
     internal fun parseNavXhtml(xhtml: String, navPath: String): List<TocEntry> {

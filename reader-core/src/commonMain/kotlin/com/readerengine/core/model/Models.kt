@@ -1,8 +1,58 @@
 package com.readerengine.core.model
 
+import com.readerengine.core.drm.EncryptedResourceInfo
 import com.readerengine.core.theme.ThemeTokens
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+
+/** Define se a publicação é refluível ou de layout fixo (EPUB 3 `rendition:layout`). */
+@Serializable
+public enum class RenditionLayout {
+    @SerialName("reflowable")
+    REFLOWABLE,
+
+    @SerialName("pre-paginated")
+    PRE_PAGINATED,
+}
+
+/** Orientação preferencial da publicação (EPUB 3 `rendition:orientation`). */
+@Serializable
+public enum class RenditionOrientation {
+    @SerialName("auto")
+    AUTO,
+
+    @SerialName("landscape")
+    LANDSCAPE,
+
+    @SerialName("portrait")
+    PORTRAIT,
+}
+
+/** Comportamento de página dupla / spread (EPUB 3 `rendition:spread`). */
+@Serializable
+public enum class RenditionSpread {
+    @SerialName("auto")
+    AUTO,
+
+    @SerialName("none")
+    NONE,
+
+    @SerialName("landscape")
+    LANDSCAPE,
+
+    @SerialName("both")
+    BOTH,
+}
+
+/** Modo de renderização e navegação: rolagem vertical contínua ou paginação horizontal por colunas CSS. */
+@Serializable
+public enum class ReadingMode {
+    @SerialName("scroll")
+    SCROLL,
+
+    @SerialName("paginated")
+    PAGINATED,
+}
 
 @Serializable
 public data class Metadata(
@@ -10,6 +60,9 @@ public data class Metadata(
     val authors: List<String> = emptyList(),
     val language: String? = null,
     val identifier: String? = null,
+    val layout: RenditionLayout = RenditionLayout.REFLOWABLE,
+    val orientation: RenditionOrientation = RenditionOrientation.AUTO,
+    val spread: RenditionSpread = RenditionSpread.AUTO,
 )
 
 @Serializable
@@ -61,6 +114,7 @@ public class Publication(
     public val resources: List<Resource>,
     public val toc: List<TocEntry>,
     public val provider: ResourceProvider,
+    public val encryptedResources: Map<String, EncryptedResourceInfo> = emptyMap(),
 ) {
     private val plainTextCache = LinkedHashMap<String, String>()
 
@@ -239,6 +293,7 @@ public data class InitialBookState(
     val initialPageIndex: Int = 0,
     val initialScrollY: Int = 0,
     val isNightMode: Boolean = false,
+    val readingMode: ReadingMode = ReadingMode.SCROLL,
     val fontFamily: String = "Default",
     /** Classe CSS opcional aplicada ao `<html>` (ex: `"ESFontSize2"` em apps legados ou vazio `""` em apps genéricos). */
     val fontSizeClass: String = "",

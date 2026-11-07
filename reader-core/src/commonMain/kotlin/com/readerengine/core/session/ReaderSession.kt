@@ -5,14 +5,18 @@ import com.readerengine.core.bridge.PayloadCodec
 import com.readerengine.core.bridge.ReaderJsBridge
 import com.readerengine.core.error.ReaderException
 import com.readerengine.core.model.Bookmark
+import com.readerengine.core.model.FormEntry
 import com.readerengine.core.model.HighlightItem
 import com.readerengine.core.model.HighlightStyle
 import com.readerengine.core.model.InitialBookState
+import com.readerengine.core.model.Locator
 import com.readerengine.core.model.Metadata
 import com.readerengine.core.model.PageFormState
 import com.readerengine.core.model.Publication
+import com.readerengine.core.model.ReaderStrings
 import com.readerengine.core.model.ReadingProgress
 import com.readerengine.core.model.SearchResult
+import com.readerengine.core.model.TocEntry
 import com.readerengine.core.model.TocItem
 import com.readerengine.core.provider.normalizeHref
 import com.readerengine.core.search.BookSearchEngine
@@ -25,6 +29,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlin.math.abs
 
 /**
  * Documento HTML pronto para renderização na WebView acompanhado de seu `href` no spine
@@ -138,6 +143,7 @@ public sealed interface ReaderCommand {
     public data object PrevPage : ReaderCommand
     public data class GoToPage(val pageIndex: Int, val scrollY: Int = 0) : ReaderCommand
     public data class GoToHref(val href: String) : ReaderCommand
+    public data class GoToLocator(val locator: Locator) : ReaderCommand
     public data class UpdateScroll(
         val scrollY: Int,
         val contentHeightPx: Int = 0,
@@ -163,6 +169,7 @@ public class ReaderSession(
     initialBookState: InitialBookState = InitialBookState(),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
+    private val strings: ReaderStrings = initialBookState.strings
 
     private val documentId: String = initialBookState.documentId.ifBlank {
         publication.metadata.identifier?.takeIf { it.isNotBlank() }
@@ -170,16 +177,7 @@ public class ReaderSession(
             ?: "book-unknown"
     }
 
-    private val resolvedToc: List<TocItem> = publication.toc.mapNotNull { entry ->
-        val index = resolveSpineIndex(entry.href, baseDir = "")
-        if (index < 0) null
-        else TocItem(
-            title = entry.title,
-            subtitle = entry.subtitle,
-            href = entry.href,
-            spineIndex = index,
-        )
-    }
+    private val resolvedToc: List<TocItem> = flattenTocEntries(publication.toc, level = 0)
 
     private val pageSerializedHighlights = LinkedHashMap<Int, String>().apply {
         initialBookState.savedPageHighlights.forEach { (page, raw) ->
@@ -187,7 +185,14 @@ public class ReaderSession(
         }
     }
 
-    private val pageHighlightSummaries = LinkedHashMap<Int, List<HighlightItem>>()
+    private val pageHighlightSummaries = LinkedHashMap<Int, List<HighlightItem>>().apply {
+        pageSerializedHighlights.forEach { (page, decoded) ->
+            val parsed = parseHighlightsFromSerializedString(decoded, page)
+            if (parsed.isNotEmpty()) {
+                put(page, parsed)
+            }
+        }
+    }
 
     private val pageFormStates = LinkedHashMap<Int, PageFormState>().apply {
         initialBookState.savedPageForms.forEach { (page, raw) ->
@@ -197,8 +202,10 @@ public class ReaderSession(
 
     private val bookmarks = initialBookState.savedBookmarks.toMutableList()
     private var nextBookmarkSeq: Int = bookmarks.size + 1
+    private var lastEmittedProgressPage: Int = -1
+    private var lastEmittedProgressScrollY: Int = -1000
 
-    private val _events = MutableSharedFlow<ReaderEvent>(extraBufferCapacity = 256)
+    private val _events = MutableSharedFlow<ReaderEvent>(replay = 1, extraBufferCapacity = 256)
     public val events: SharedFlow<ReaderEvent> = _events.asSharedFlow()
 
     private val _uiEffects = MutableSharedFlow<ReaderUiEffect>(extraBufferCapacity = 64)
@@ -249,8 +256,8 @@ public class ReaderSession(
     public fun publication(): Publication = publication
 
     /**
-     * Realiza busca textual case-insensitive em todos os capítulos do livro,
-     * retornando trechos com contexto (`snippet`), índice da página e posição relativa.
+     * Realiza busca textual case-insensitive e insensível a acentos em todos os capítulos do livro,
+     * retornando trechos com contexto (`snippet`), índice da página, posição relativa e `Locator`.
      */
     public fun search(query: String, maxResults: Int = 50): List<SearchResult> =
         BookSearchEngine.search(
@@ -258,6 +265,7 @@ public class ReaderSession(
             resolvedToc = resolvedToc,
             query = query,
             maxResults = maxResults,
+            strings = strings,
         )
 
     /** Exporta a lista de marcadores (Bookmarks) como JSON. */
@@ -310,6 +318,13 @@ public class ReaderSession(
                 handleUrlNavigation(command.href)
             }
 
+            is ReaderCommand.GoToLocator -> {
+                val loc = command.locator
+                val idxByHref = resolveSpineIndex(loc.href, baseDir = "")
+                val targetIdx = if (idxByHref >= 0) idxByHref else loc.pageIndex.coerceIn(0, lastIndex)
+                navigateToPageInternal(targetIdx, scrollY = 0)
+            }
+
             is ReaderCommand.UpdateScroll -> {
                 val clampedScroll = command.scrollY.coerceAtLeast(0)
                 val newProgress = buildProgress(
@@ -323,7 +338,13 @@ public class ReaderSession(
                     scrollY = clampedScroll,
                     progress = newProgress,
                 )
-                _events.tryEmit(ReaderEvent.ProgressUpdated(newProgress))
+                if (current.pageIndex != lastEmittedProgressPage ||
+                    abs(clampedScroll - lastEmittedProgressScrollY) >= 2
+                ) {
+                    lastEmittedProgressPage = current.pageIndex
+                    lastEmittedProgressScrollY = clampedScroll
+                    _events.tryEmit(ReaderEvent.ProgressUpdated(newProgress))
+                }
             }
 
             is ReaderCommand.SetTheme -> {
@@ -400,7 +421,8 @@ public class ReaderSession(
                 } else {
                     val defaultLabel = command.label
                         ?: resolvedToc.firstOrNull { it.spineIndex == current.pageIndex }?.title
-                        ?: "Página ${current.pageIndex + 1}"
+                        ?: strings.formatPageLabel(current.pageIndex + 1)
+                    val href = publication.spine.getOrNull(current.pageIndex).orEmpty()
                     bookmarks.add(
                         Bookmark(
                             id = "bm-${current.pageIndex}-${nextBookmarkSeq++}",
@@ -408,6 +430,12 @@ public class ReaderSession(
                             scrollY = current.scrollY,
                             label = defaultLabel,
                             createdAtEpochMs = command.timestampEpochMs,
+                            locator = Locator(
+                                href = href,
+                                pageIndex = current.pageIndex,
+                                progression = current.progress.pageProgression,
+                                title = defaultLabel,
+                            ),
                         ),
                     )
                 }
@@ -444,10 +472,19 @@ public class ReaderSession(
         val cleanSerialized = PayloadCodec.decodeIfNeeded(
             ReaderJsBridge.unquoteJsEvaluation(rawSerializedHighlights),
         )
-        val summaryList = if (rawSummaryJson != null) {
-            ReaderJsBridge.parseSummaryHighlights(rawSummaryJson, pageIndex)
-        } else {
-            pageHighlightSummaries[pageIndex].orEmpty()
+        val href = publication.spine.getOrNull(pageIndex).orEmpty()
+        val summaryList = when {
+            rawSummaryJson != null -> ReaderJsBridge.parseSummaryHighlights(rawSummaryJson, pageIndex).map { item ->
+                item.copy(
+                    locator = Locator(
+                        href = href,
+                        pageIndex = pageIndex,
+                        textQuote = item.text,
+                    ),
+                )
+            }
+            pageHighlightSummaries[pageIndex] != null -> pageHighlightSummaries[pageIndex].orEmpty()
+            else -> parseHighlightsFromSerializedString(cleanSerialized, pageIndex)
         }
 
         pageSerializedHighlights[pageIndex] = cleanSerialized
@@ -521,7 +558,8 @@ public class ReaderSession(
     }
 
     /**
-     * Injeta dados vindos assincronamente do backend para uma página específica.
+     * Injeta dados vindos assincronamente do backend para uma página específica,
+     * sincronizando estado de resumo e disparando `EvaluateJs` caso seja a página ativa.
      */
     public fun restorePageCloudData(
         pageIndex: Int,
@@ -530,9 +568,16 @@ public class ReaderSession(
     ) {
         if (serializedHighlights != null) {
             val decoded = PayloadCodec.decodeIfNeeded(serializedHighlights)
+            val parsedSummary = parseHighlightsFromSerializedString(decoded, pageIndex)
             pageSerializedHighlights[pageIndex] = decoded
+            if (parsedSummary.isNotEmpty()) {
+                pageHighlightSummaries[pageIndex] = parsedSummary
+            }
             if (pageIndex == _state.value.pageIndex) {
-                _state.value = _state.value.copy(currentPageSerializedHighlights = decoded)
+                _state.value = _state.value.copy(
+                    currentPageSerializedHighlights = decoded,
+                    currentPageHighlights = pageHighlightSummaries[pageIndex].orEmpty(),
+                )
                 _uiEffects.tryEmit(
                     ReaderUiEffect.EvaluateJs(ReaderJsBridge.setHighlightsCommand(decoded)),
                 )
@@ -543,6 +588,24 @@ public class ReaderSession(
             pageFormStates[pageIndex] = formState
             if (pageIndex == _state.value.pageIndex) {
                 _state.value = _state.value.copy(currentPageFormState = formState)
+                if (formState.annotations.isNotEmpty()) {
+                    val annotationsRaw = json.encodeToString(
+                        ListSerializer(FormEntry.serializer()),
+                        formState.annotations,
+                    )
+                    _uiEffects.tryEmit(
+                        ReaderUiEffect.EvaluateJs(ReaderJsBridge.setAnnotationsCommand(annotationsRaw)),
+                    )
+                }
+                if (formState.answers.isNotEmpty()) {
+                    val answersRaw = json.encodeToString(
+                        ListSerializer(FormEntry.serializer()),
+                        formState.answers,
+                    )
+                    _uiEffects.tryEmit(
+                        ReaderUiEffect.EvaluateJs(ReaderJsBridge.setAnswersCommand(answersRaw)),
+                    )
+                }
             }
         }
     }
@@ -574,7 +637,7 @@ public class ReaderSession(
 
             InterceptedUrl.InvalidHighlightOnInput -> {
                 _uiEffects.tryEmit(
-                    ReaderUiEffect.ShowMessage("Marcação inválida neste campo."),
+                    ReaderUiEffect.ShowMessage(strings.invalidHighlightOnInputMessage),
                 )
                 true
             }
@@ -656,6 +719,64 @@ public class ReaderSession(
         return null
     }
 
+    private fun flattenTocEntries(entries: List<TocEntry>, level: Int): List<TocItem> {
+        val out = mutableListOf<TocItem>()
+        for (entry in entries) {
+            val index = resolveSpineIndex(entry.href, baseDir = "")
+            if (index >= 0) {
+                out.add(
+                    TocItem(
+                        title = entry.title,
+                        subtitle = entry.subtitle,
+                        href = entry.href,
+                        spineIndex = index,
+                        level = level,
+                    ),
+                )
+            }
+            if (entry.children.isNotEmpty()) {
+                out.addAll(flattenTocEntries(entry.children, level + 1))
+            }
+        }
+        return out
+    }
+
+    private fun parseHighlightsFromSerializedString(
+        serialized: String,
+        pageIndex: Int,
+    ): List<HighlightItem> {
+        if (serialized.isBlank()) return emptyList()
+        val href = publication.spine.getOrNull(pageIndex).orEmpty()
+        val parts = serialized.split('|')
+        val out = mutableListOf<HighlightItem>()
+        for (part in parts) {
+            if (part.isBlank() || part.startsWith("type:")) continue
+            val tokens = part.split('$')
+            if (tokens.size >= 3) {
+                val id = tokens[0].toIntOrNull() ?: (out.size + 1)
+                val style = HighlightStyle.fromRaw(tokens[1])
+                val text = tokens.subList(2, tokens.size).joinToString("$").trim()
+                if (text.isNotEmpty()) {
+                    out.add(
+                        HighlightItem(
+                            id = id,
+                            pageIndex = pageIndex,
+                            text = text,
+                            style = style,
+                            scrollPositionY = 0.0,
+                            locator = Locator(
+                                href = href,
+                                pageIndex = pageIndex,
+                                textQuote = text,
+                            ),
+                        ),
+                    )
+                }
+            }
+        }
+        return out
+    }
+
     private fun currentChapterDir(): String {
         val currentHref = publication.spine.getOrNull(_state.value.pageIndex).orEmpty()
         val normalized = normalizeHref(currentHref)
@@ -716,6 +837,8 @@ public class ReaderSession(
             currentPageFormState = pageFormStates[targetPageIndex] ?: PageFormState(),
             hasBookmarkAtCurrentPage = bookmarks.any { it.pageIndex == targetPageIndex },
         )
+        lastEmittedProgressPage = targetPageIndex
+        lastEmittedProgressScrollY = scrollY
         _events.tryEmit(ReaderEvent.ProgressUpdated(newProgress))
         if (scrollY > 0) {
             _uiEffects.tryEmit(ReaderUiEffect.ScrollToY(scrollYPx = scrollY))
@@ -758,8 +881,9 @@ public class ReaderSession(
         timestampEpochMs: Long,
     ): ReadingProgress {
         val totalPages = publication.spine.size
+        val href = publication.spine.getOrNull(pageIndex).orEmpty()
         val chapterTitle = resolvedToc.firstOrNull { it.spineIndex == pageIndex }?.title
-            ?: publication.spine.getOrNull(pageIndex).orEmpty()
+            ?: href
         val percentage = ReadingProgress.calculatePercentage(
             pageIndex = pageIndex,
             totalPages = totalPages,
@@ -782,6 +906,12 @@ public class ReaderSession(
             totalPercentage = percentage,
             chapterTitle = chapterTitle,
             lastUpdateEpochMs = timestampEpochMs,
+            locator = Locator(
+                href = href,
+                pageIndex = pageIndex,
+                progression = pageProgression,
+                title = chapterTitle,
+            ),
         )
     }
 

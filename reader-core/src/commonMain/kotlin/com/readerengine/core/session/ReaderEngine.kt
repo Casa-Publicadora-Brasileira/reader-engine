@@ -8,15 +8,15 @@ import com.readerengine.core.parser.Source
 /**
  * Ponto de entrada principal e universal da biblioteca KMP `:reader-core`.
  */
-class ReaderEngine(
+public class ReaderEngine(
     private val registry: ParserRegistry = ParserRegistry.default(),
 ) {
-    fun registerParser(parser: FormatParser): ReaderEngine {
+    public fun registerParser(parser: FormatParser): ReaderEngine {
         registry.register(parser)
         return this
     }
 
-    fun open(
+    public fun open(
         name: String,
         bytes: ByteArray,
         initialState: InitialBookState = InitialBookState(),

@@ -11,7 +11,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-class JsonParser : FormatParser {
+public class JsonParser : FormatParser {
 
     @Serializable
     private data class Doc(
@@ -87,7 +87,7 @@ class JsonParser : FormatParser {
         )
     }
 
-    companion object {
+    public companion object {
         private val json = Json { ignoreUnknownKeys = true }
     }
 }

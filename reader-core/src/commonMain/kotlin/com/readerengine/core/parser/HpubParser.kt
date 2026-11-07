@@ -17,7 +17,7 @@ import kotlinx.serialization.json.jsonObject
 /**
  * Parser HPUB (Baker Framework): pacote ZIP com `book.json` listando as páginas HTML em `contents`.
  */
-class HpubParser : FormatParser {
+public class HpubParser : FormatParser {
     override val id: String = "hpub"
 
     override fun canParse(source: Source): Boolean {
@@ -40,6 +40,8 @@ class HpubParser : FormatParser {
 
         val title = root["title"]?.jsonPrimitiveOrNull()?.content ?: ""
         val language = root["language"]?.jsonPrimitiveOrNull()?.content
+        val identifier = root["identifier"]?.jsonPrimitiveOrNull()?.content
+            ?: root["id"]?.jsonPrimitiveOrNull()?.content
         val authors = parseAuthors(root["author"] ?: root["authors"] ?: root["creator"])
 
         val spine = mutableListOf<String>()
@@ -49,12 +51,13 @@ class HpubParser : FormatParser {
         for (item in contents) {
             when (item) {
                 is JsonPrimitive -> {
-                    val url = normalizeHref(item.content)
+                    val url = normalizeContentHref(item.content)
                     spine.add(url)
                     toc.add(TocEntry(title = url, href = url))
                 }
                 is JsonObject -> {
-                    val url = normalizeHref(item["url"]?.jsonPrimitiveOrNull()?.content ?: continue)
+                    val rawUrl = item["url"]?.jsonPrimitiveOrNull()?.content ?: continue
+                    val url = normalizeContentHref(rawUrl)
                     val entryTitle = item["title"]?.jsonPrimitiveOrNull()?.content ?: url
                     val subtitle = item["subtitle"]?.jsonPrimitiveOrNull()?.content
                     spine.add(url)
@@ -71,8 +74,14 @@ class HpubParser : FormatParser {
             toc
         }
 
-        val resources = spine.map { href ->
-            Resource(href = href, mediaType = "text/html")
+        val allResources = LinkedHashMap<String, Resource>()
+        for (href in spine) {
+            allResources[href] = Resource(href = href, mediaType = inferMediaType(href))
+        }
+        for (entryName in zip.entryNames()) {
+            if (!allResources.containsKey(entryName)) {
+                allResources[entryName] = Resource(href = entryName, mediaType = inferMediaType(entryName))
+            }
         }
 
         return Publication(
@@ -80,13 +89,43 @@ class HpubParser : FormatParser {
                 title = title,
                 authors = authors,
                 language = language,
-                identifier = null,
+                identifier = identifier,
             ),
             spine = spine,
-            resources = resources,
+            resources = allResources.values.toList(),
             toc = finalToc,
             provider = zip,
         )
+    }
+
+    private fun normalizeContentHref(rawUrl: String): String {
+        val trimmed = rawUrl.trim()
+        return if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
+            trimmed
+        } else {
+            normalizeHref(trimmed)
+        }
+    }
+
+    private fun inferMediaType(href: String): String {
+        val lower = href.substringBefore('#').lowercase()
+        return when {
+            lower.endsWith(".xhtml") -> "application/xhtml+xml"
+            lower.endsWith(".html") || lower.endsWith(".htm") -> "text/html"
+            lower.endsWith(".css") -> "text/css"
+            lower.endsWith(".js") -> "application/javascript"
+            lower.endsWith(".json") -> "application/json"
+            lower.endsWith(".png") -> "image/png"
+            lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
+            lower.endsWith(".gif") -> "image/gif"
+            lower.endsWith(".svg") -> "image/svg+xml"
+            lower.endsWith(".webp") -> "image/webp"
+            lower.endsWith(".woff2") -> "font/woff2"
+            lower.endsWith(".woff") -> "font/woff"
+            lower.endsWith(".ttf") -> "font/ttf"
+            lower.endsWith(".otf") -> "font/otf"
+            else -> "application/octet-stream"
+        }
     }
 
     private fun parseAuthors(element: JsonElement?): List<String> = when (element) {
@@ -100,11 +139,12 @@ class HpubParser : FormatParser {
         val indexHref = indexCandidates.firstOrNull { zip.hasEntry(it) } ?: return emptyList()
         val html = runCatching { zip.readString(indexHref) }.getOrNull() ?: return emptyList()
 
-        val anchorRegex = Regex("""<a\s+[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
+        val anchorRegex = Regex("""<a\s+[^>]*href\s*=\s*(?:"([^"]+)"|'([^']+)')[^>]*>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
         val stripTags = Regex("""<[^>]+>""")
         return anchorRegex.findAll(html).mapNotNull { match ->
-            val rawHref = normalizeHref(match.groupValues[1])
-            val innerText = stripTags.replace(match.groupValues[2], " ")
+            val rawAttr = if (match.groups[1] != null) match.groupValues[1] else match.groupValues[2]
+            val rawHref = normalizeContentHref(rawAttr)
+            val innerText = XmlEntities.decode(stripTags.replace(match.groupValues[3], " "))
                 .replace(Regex("""\s+"""), " ")
                 .trim()
             if (rawHref.isBlank() || innerText.isBlank()) null
@@ -114,7 +154,7 @@ class HpubParser : FormatParser {
 
     private fun JsonElement.jsonPrimitiveOrNull(): JsonPrimitive? = this as? JsonPrimitive
 
-    companion object {
+    public companion object {
         private val json = Json { ignoreUnknownKeys = true }
     }
 }

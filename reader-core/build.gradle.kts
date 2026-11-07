@@ -5,10 +5,17 @@ plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.androidLibrary)
     alias(libs.plugins.kotlinSerialization)
+    `maven-publish`
 }
 
+group = "com.readerengine"
+version = "0.2.0"
+
 kotlin {
+    explicitApi()
+
     androidTarget {
+        publishLibraryVariants("release")
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_17)
         }

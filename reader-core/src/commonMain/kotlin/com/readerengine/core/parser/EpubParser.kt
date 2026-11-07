@@ -10,9 +10,10 @@ import com.readerengine.core.provider.normalizeHref
 
 /**
  * Parser EPUB 2 / EPUB 3 em Kotlin Multiplatform puro (`commonMain`),
- * lendo `META-INF/container.xml`, o manifesto/spine `.opf` e o sumário (`<nav epub:type="toc">` ou `toc.ncx`).
+ * lendo `META-INF/container.xml`, o manifesto/spine `.opf` (respeitando `linear="no"`)
+ * e o sumário hierárquico (`<nav epub:type="toc">` ou `toc.ncx`).
  */
-class EpubParser : FormatParser {
+public class EpubParser : FormatParser {
     override val id: String = "epub"
 
     override fun canParse(source: Source): Boolean {
@@ -58,7 +59,7 @@ class EpubParser : FormatParser {
             val properties = extractAttribute(itemTag, "properties").orEmpty()
 
             val fullHref = normalizeHref("$baseDir$href")
-            if (properties.split(' ').any { it == "nav" }) {
+            if (properties.split(Regex("\\s+")).any { it == "nav" }) {
                 navHref = fullHref
             }
             if (mediaType == "application/x-dtbncx+xml" || fullHref.endsWith(".ncx", ignoreCase = true)) {
@@ -69,9 +70,15 @@ class EpubParser : FormatParser {
             resources.add(Resource(href = fullHref, mediaType = mediaType))
         }
 
-        val spine = findOpeningTags(opfXml, "itemref")
+        val itemrefTags = findOpeningTags(opfXml, "itemref")
+        val linearHrefs = itemrefTags
+            .filter { !extractAttribute(it, "linear").equals("no", ignoreCase = true) }
             .mapNotNull { extractAttribute(it, "idref") }
             .mapNotNull { idToHref[it] }
+        val allHrefs = itemrefTags
+            .mapNotNull { extractAttribute(it, "idref") }
+            .mapNotNull { idToHref[it] }
+        val spine = linearHrefs.ifEmpty { allHrefs }
 
         val toc = when {
             navHref != null -> runCatching { parseNavXhtml(zip.readString(navHref!!), navHref!!) }.getOrDefault(emptyList())
@@ -88,44 +95,170 @@ class EpubParser : FormatParser {
         )
     }
 
-    private fun parseNavXhtml(xhtml: String, navPath: String): List<TocEntry> {
+    internal fun parseNavXhtml(xhtml: String, navPath: String): List<TocEntry> {
         val navDir = navPath.substringBeforeLast('/', missingDelimiterValue = "")
             .let { if (it.isEmpty()) "" else "$it/" }
 
         val navBlockRegex = Regex(
-            """<nav\b[^>]*?(?:epub:type|type)\s*=\s*["'][^"']*toc[^"']*["'][^>]*>([\s\S]*?)</nav>""",
+            """<nav\b[^>]*?(?:epub:type|type)\s*=\s*(?:"[^"]*toc[^"]*"|'[^']*toc[^']*')[^>]*>([\s\S]*?)</nav>""",
             RegexOption.IGNORE_CASE,
         )
         val navContent = navBlockRegex.find(xhtml)?.groupValues?.get(1) ?: xhtml
-        val anchorRegex = Regex("""<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
+        val nested = parseNestedOlToc(navContent, navDir)
+        if (nested.isNotEmpty()) return nested
 
+        val anchorRegex = Regex("""<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
         return anchorRegex.findAll(navContent).mapNotNull { match ->
             val attrs = match.groupValues[1]
             val href = extractAttribute(attrs, "href") ?: return@mapNotNull null
-            val title = decodeXmlEntities(stripHtmlTags(match.groupValues[2])).trim()
+            val title = XmlEntities.decode(stripHtmlTags(match.groupValues[2])).trim()
             TocEntry(
                 title = title,
-                href = normalizeHref("$navDir$href"),
+                href = resolveHrefWithAnchor(navDir, href),
             )
         }.toList()
     }
 
-    private fun parseNcx(ncxXml: String, ncxPath: String): List<TocEntry> {
+    private fun parseNestedOlToc(html: String, navDir: String): List<TocEntry> {
+        val tokenRegex = Regex("""<(/?)(ol|li|a)\b([^>]*)>""", RegexOption.IGNORE_CASE)
+        val anchorFullRegex = Regex("""<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
+
+        class LiBuilder(
+            var title: String? = null,
+            var href: String? = null,
+            val children: MutableList<TocEntry> = mutableListOf(),
+        )
+
+        val rootEntries = mutableListOf<TocEntry>()
+        val liStack = ArrayDeque<LiBuilder>()
+        val matches = tokenRegex.findAll(html).toList()
+        var idx = 0
+
+        while (idx < matches.size) {
+            val m = matches[idx]
+            val isClosing = m.groupValues[1] == "/"
+            val tag = m.groupValues[2].lowercase()
+
+            when {
+                !isClosing && tag == "li" -> {
+                    liStack.addLast(LiBuilder())
+                }
+                !isClosing && tag == "a" && liStack.isNotEmpty() -> {
+                    val currentLi = liStack.last()
+                    if (currentLi.href == null) {
+                        val aMatch = anchorFullRegex.find(html, m.range.first)
+                        if (aMatch != null && aMatch.range.first == m.range.first) {
+                            val rawHref = extractAttribute(aMatch.groupValues[1], "href")
+                            val rawTitle = XmlEntities.decode(stripHtmlTags(aMatch.groupValues[2])).trim()
+                            if (rawHref != null) {
+                                currentLi.href = resolveHrefWithAnchor(navDir, rawHref)
+                                currentLi.title = rawTitle
+                            }
+                        }
+                    }
+                }
+                isClosing && tag == "li" && liStack.isNotEmpty() -> {
+                    val finished = liStack.removeLast()
+                    val href = finished.href
+                    val title = finished.title
+                    if (!href.isNullOrBlank() && !title.isNullOrBlank()) {
+                        val entry = TocEntry(
+                            title = title,
+                            href = href,
+                            children = finished.children.toList(),
+                        )
+                        if (liStack.isEmpty()) {
+                            rootEntries.add(entry)
+                        } else {
+                            liStack.last().children.add(entry)
+                        }
+                    } else if (finished.children.isNotEmpty()) {
+                        if (liStack.isEmpty()) {
+                            rootEntries.addAll(finished.children)
+                        } else {
+                            liStack.last().children.addAll(finished.children)
+                        }
+                    }
+                }
+            }
+            idx++
+        }
+
+        return rootEntries
+    }
+
+    internal fun parseNcx(ncxXml: String, ncxPath: String): List<TocEntry> {
         val ncxDir = ncxPath.substringBeforeLast('/', missingDelimiterValue = "")
             .let { if (it.isEmpty()) "" else "$it/" }
-        val navPointRegex = Regex(
-            """<navPoint\b[^>]*>[\s\S]*?<text>([\s\S]*?)</text>[\s\S]*?<content\b([^>]*)/?>""",
+        val tagRegex = Regex(
+            """<(/?)(?:[a-zA-Z0-9_-]+:)?(navPoint|text|content)\b([^>]*)/?>""",
             RegexOption.IGNORE_CASE,
         )
-        return navPointRegex.findAll(ncxXml).mapNotNull { match ->
-            val title = decodeXmlEntities(stripHtmlTags(match.groupValues[1])).trim()
-            val contentAttrs = match.groupValues[2]
-            val src = extractAttribute(contentAttrs, "src") ?: return@mapNotNull null
-            TocEntry(
-                title = title,
-                href = normalizeHref("$ncxDir$src"),
-            )
-        }.toList()
+
+        class NavPointBuilder(
+            var title: String? = null,
+            var src: String? = null,
+            val children: MutableList<TocEntry> = mutableListOf(),
+        )
+
+        val roots = mutableListOf<TocEntry>()
+        val stack = ArrayDeque<NavPointBuilder>()
+        val matches = tagRegex.findAll(ncxXml).toList()
+
+        for (i in matches.indices) {
+            val m = matches[i]
+            val isClosing = m.groupValues[1] == "/"
+            val name = m.groupValues[2].lowercase()
+            val attrs = m.groupValues[3]
+            val isSelfClosing = m.value.endsWith("/>")
+
+            when {
+                !isClosing && name == "navpoint" && !isSelfClosing -> {
+                    stack.addLast(NavPointBuilder())
+                }
+                !isClosing && name == "text" && stack.isNotEmpty() -> {
+                    val current = stack.last()
+                    if (current.title == null) {
+                        val closeIdx = ncxXml.indexOf('<', m.range.last + 1)
+                        if (closeIdx > m.range.last) {
+                            val rawText = ncxXml.substring(m.range.last + 1, closeIdx)
+                            current.title = XmlEntities.decode(rawText).trim()
+                        }
+                    }
+                }
+                !isClosing && name == "content" && stack.isNotEmpty() -> {
+                    val current = stack.last()
+                    if (current.src == null) {
+                        current.src = extractAttribute(attrs, "src")
+                    }
+                }
+                isClosing && name == "navpoint" && stack.isNotEmpty() -> {
+                    val finished = stack.removeLast()
+                    val src = finished.src
+                    val title = finished.title
+                    if (!src.isNullOrBlank() && !title.isNullOrBlank()) {
+                        val entry = TocEntry(
+                            title = title,
+                            href = resolveHrefWithAnchor(ncxDir, src),
+                            children = finished.children.toList(),
+                        )
+                        if (stack.isEmpty()) {
+                            roots.add(entry)
+                        } else {
+                            stack.last().children.add(entry)
+                        }
+                    }
+                }
+            }
+        }
+
+        return roots
+    }
+
+    private fun resolveHrefWithAnchor(baseDir: String, rawHref: String): String {
+        val anchor = rawHref.substringAfter('#', missingDelimiterValue = "")
+        val pathPart = normalizeHref("$baseDir${rawHref.substringBefore('#')}")
+        return if (anchor.isEmpty()) pathPart else "$pathPart#$anchor"
     }
 
     private fun findOpeningTags(xml: String, localName: String): List<String> {
@@ -143,24 +276,21 @@ class EpubParser : FormatParser {
             RegexOption.IGNORE_CASE,
         )
         return regex.findAll(xml)
-            .map { decodeXmlEntities(stripHtmlTags(it.groupValues[1])).trim() }
+            .map { XmlEntities.decode(stripHtmlTags(it.groupValues[1])).trim() }
             .filter { it.isNotEmpty() }
             .toList()
     }
 
-    private fun extractAttribute(tagAttributes: String, attrName: String): String? {
-        val regex = Regex("""(?:^|\s|[a-zA-Z0-9_-]+:)$attrName\s*=\s*["']([^"']*)["']""", RegexOption.IGNORE_CASE)
-        return regex.find(tagAttributes)?.groupValues?.get(1)?.let(::decodeXmlEntities)
+    internal fun extractAttribute(tagAttributes: String, attrName: String): String? {
+        val regex = Regex(
+            """(?:^|\s|[a-zA-Z0-9_-]+:)$attrName\s*=\s*(?:"([^"]*)"|'([^']*)')""",
+            RegexOption.IGNORE_CASE,
+        )
+        val match = regex.find(tagAttributes) ?: return null
+        val raw = if (match.groups[1] != null) match.groupValues[1] else match.groupValues[2]
+        return XmlEntities.decode(raw)
     }
 
     private fun stripHtmlTags(input: String): String =
         input.replace(Regex("""<[^>]+>"""), "")
-
-    private fun decodeXmlEntities(input: String): String =
-        input
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'")
 }

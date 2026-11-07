@@ -20,22 +20,25 @@ public class MemoryResourceProvider(
     }
 }
 
-/** Limites de segurança contra pacotes ZIP malformados ou Zip Bombs. */
+/** Limites de segurança contra pacotes ZIP malformados ou Zip Bombs e orçamento de cache LRU em RAM. */
 public data class ZipLimits(
     val maxEntries: Int = DEFAULT_MAX_ENTRIES,
     val maxEntryUncompressedBytes: Int = DEFAULT_MAX_ENTRY_UNCOMPRESSED_BYTES,
     val maxTotalUncompressedBytes: Long = DEFAULT_MAX_TOTAL_UNCOMPRESSED_BYTES,
+    val maxCacheBytes: Int = DEFAULT_MAX_CACHE_BYTES,
 ) {
     public companion object {
         public const val DEFAULT_MAX_ENTRIES: Int = 10_000
         public const val DEFAULT_MAX_ENTRY_UNCOMPRESSED_BYTES: Int = 50 * 1024 * 1024
-        public const val DEFAULT_MAX_TOTAL_UNCOMPRESSED_BYTES: Long = 256L * 1024L * 1024L
+        public const val DEFAULT_MAX_TOTAL_UNCOMPRESSED_BYTES: Long = 1024L * 1024L * 1024L
+        public const val DEFAULT_MAX_CACHE_BYTES: Int = 16 * 1024 * 1024
     }
 }
 
 internal interface RandomAccessSource {
     val size: Long
     fun readSlice(offset: Long, byteCount: Int): ByteArray
+    fun close(): Unit = Unit
 }
 
 internal class ByteArrayRandomAccess(
@@ -57,10 +60,23 @@ internal class FileHandleRandomAccess(
     private val fileSystem: FileSystem,
     private val path: Path,
 ) : RandomAccessSource {
+    @kotlin.concurrent.Volatile
+    private var openHandle: okio.FileHandle? = null
+
+    private fun acquireHandle(): okio.FileHandle {
+        openHandle?.let { return it }
+        if (!fileSystem.exists(path)) {
+            throw ReaderException.InvalidContent("Arquivo não encontrado: $path")
+        }
+        val created = fileSystem.openReadOnly(path)
+        openHandle = created
+        return created
+    }
+
     override val size: Long by lazy {
         val meta = fileSystem.metadataOrNull(path)
             ?: throw ReaderException.InvalidContent("Arquivo não encontrado: $path")
-        meta.size ?: fileSystem.openReadOnly(path).use { it.size() }
+        meta.size ?: acquireHandle().size()
     }
 
     override fun readSlice(offset: Long, byteCount: Int): ByteArray {
@@ -68,27 +84,42 @@ internal class FileHandleRandomAccess(
             throw ReaderException.InvalidContent("Leitura fora dos limites do arquivo ZIP ($offset..${offset + byteCount})")
         }
         if (byteCount == 0) return ByteArray(0)
-        return fileSystem.openReadOnly(path).use { handle ->
-            val buffer = Buffer()
-            var remaining = byteCount.toLong()
-            var currentPos = offset
-            while (remaining > 0L) {
-                val read = handle.read(currentPos, buffer, remaining)
-                if (read <= 0L) {
-                    throw ReaderException.InvalidContent("Fim prematuro do arquivo ZIP em $path")
-                }
-                currentPos += read
-                remaining -= read
-            }
-            buffer.readByteArray()
+        val handle = acquireHandle()
+        return try {
+            readFromHandle(handle, offset, byteCount)
+        } catch (_: IllegalStateException) {
+            // Reopen transparently if handle was previously closed
+            openHandle = null
+            readFromHandle(acquireHandle(), offset, byteCount)
         }
+    }
+
+    private fun readFromHandle(handle: okio.FileHandle, offset: Long, byteCount: Int): ByteArray {
+        val buffer = Buffer()
+        var remaining = byteCount.toLong()
+        var currentPos = offset
+        while (remaining > 0L) {
+            val read = handle.read(currentPos, buffer, remaining)
+            if (read <= 0L) {
+                throw ReaderException.InvalidContent("Fim prematuro do arquivo ZIP em $path")
+            }
+            currentPos += read
+            remaining -= read
+        }
+        return buffer.readByteArray()
+    }
+
+    override fun close() {
+        val handle = openHandle
+        openHandle = null
+        runCatching { handle?.close() }
     }
 }
 
 /**
  * Provider ZIP multiplataforma (`commonMain`) que indexa apenas o Central Directory
  * (em memória ou via streaming random-access `okio.FileHandle` em disco) e descomprime entradas
- * `STORED` (0) e `DEFLATED` (8) sob demanda (lazy) com proteção contra Zip Bomb.
+ * `STORED` (0) e `DEFLATED` (8) sob demanda (lazy) com proteção contra Zip Bomb e cache LRU limitado.
  */
 public class ZipResourceProvider private constructor(
     private val source: RandomAccessSource,
@@ -96,8 +127,8 @@ public class ZipResourceProvider private constructor(
     private val limits: ZipLimits,
 ) : ResourceProvider {
 
-    private val decodedCache = LinkedHashMap<String, ByteArray>()
-    private var totalDecodedBytes: Long = 0L
+    @kotlin.concurrent.Volatile
+    private var cacheSnapshot: Map<String, ByteArray> = emptyMap()
 
     private data class ZipEntryMeta(
         val name: String,
@@ -113,24 +144,38 @@ public class ZipResourceProvider private constructor(
 
     override fun read(href: String): ByteArray {
         val clean = normalizeHref(href)
-        decodedCache[clean]?.let { return it }
+        cacheSnapshot[clean]?.let { return it }
 
         val meta = directory[clean]
             ?: throw ReaderException.ResourceNotFound(href)
 
         val decoded = extractEntryBytes(source, meta, limits)
-        if (totalDecodedBytes + decoded.size <= limits.maxTotalUncompressedBytes) {
-            decodedCache[clean] = decoded
-            totalDecodedBytes += decoded.size
-        } else {
-            throw ReaderException.InvalidContent(
-                "Limite total de descompressão do pacote ZIP excedido (${limits.maxTotalUncompressedBytes} bytes)",
-            )
+        if (decoded.size <= limits.maxCacheBytes && limits.maxCacheBytes > 0) {
+            val current = cacheSnapshot
+            val next = LinkedHashMap<String, ByteArray>(current.size + 1)
+            for ((k, v) in current) {
+                if (k != clean) next[k] = v
+            }
+            next[clean] = decoded
+            var totalBytes = next.values.sumOf { it.size.toLong() }
+            val iterator = next.entries.iterator()
+            while (totalBytes > limits.maxCacheBytes.toLong() && iterator.hasNext()) {
+                val eldest = iterator.next()
+                if (eldest.key == clean) break
+                totalBytes -= eldest.value.size.toLong()
+                iterator.remove()
+            }
+            cacheSnapshot = next
         }
         return decoded
     }
 
     public fun readString(href: String): String = read(href).decodeToString()
+
+    override fun close() {
+        cacheSnapshot = emptyMap()
+        source.close()
+    }
 
     public companion object {
         private const val EOCD_SIGNATURE = 0x06054b50
@@ -200,11 +245,14 @@ public class ZipResourceProvider private constructor(
             fileSystem: FileSystem = FileSystem.SYSTEM,
             limits: ZipLimits = ZipLimits(),
         ): Boolean {
+            val access = FileHandleRandomAccess(fileSystem, path)
             return try {
                 val target = normalizeHref(entryName)
-                indexCentralDirectory(FileHandleRandomAccess(fileSystem, path), limits).containsKey(target)
+                indexCentralDirectory(access, limits).containsKey(target)
             } catch (_: Exception) {
                 false
+            } finally {
+                access.close()
             }
         }
 

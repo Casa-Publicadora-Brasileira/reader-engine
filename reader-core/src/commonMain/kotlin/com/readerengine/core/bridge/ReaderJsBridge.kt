@@ -229,6 +229,23 @@ public object ReaderJsBridge {
         json.encodeToString(PageFormState.serializer(), state)
 
     /**
+     * Faz o parse do retorno JSON de `readerJS.getSubPageState()` / `nextSubPage()` / `prevSubPage()`
+     * (`{"subPage": 0, "totalSubPages": 3}`), retornando `Pair(subPage, totalSubPages)` ou `null`.
+     */
+    public fun parseSubPageState(rawJsValue: String?): Pair<Int, Int>? {
+        val unquoted = unquoteJsEvaluation(rawJsValue).trim()
+        if (unquoted.isEmpty() || unquoted == "null") return null
+        return try {
+            val obj = json.parseToJsonElement(unquoted).jsonObject
+            val sub = obj["subPage"]?.jsonPrimitive?.intOrNull ?: return null
+            val total = obj["totalSubPages"]?.jsonPrimitive?.intOrNull ?: return null
+            sub to total.coerceAtLeast(1)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
      * Analisa qualquer URL disparada pela WebView:
      * - Links externos (`http://`, `https://`, `mailto:`, `tel:`)
      * - Esquemas internos reservados (`highlight://`, `clipboard://`, `book://`, `file://`)
@@ -511,7 +528,19 @@ public object ReaderJsBridge {
                     },
                     getSubPageState: function() {
                         var total = _computeTotalSubPages();
+                        if (_subPage >= total) {
+                            _subPage = Math.max(0, total - 1);
+                            _applySubPageOffset();
+                        }
                         return JSON.stringify({ subPage: _subPage, totalSubPages: total });
+                    },
+                    resetSubPage: function() {
+                        _subPage = 0;
+                        if (document.body) {
+                            document.body.style.transform = '';
+                            document.body.style.transition = '';
+                        }
+                        return JSON.stringify({ subPage: 0, totalSubPages: 1 });
                     }
                 };
             }

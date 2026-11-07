@@ -314,9 +314,16 @@ private class BookResourceWebViewClient(
             val restoreCmd = ReaderJsBridge.setHighlightsCommand(state.currentPageSerializedHighlights)
             webView.evaluateJavascript(restoreCmd.removePrefix("javascript:"), null)
         }
-        if (state.scrollY > 0) {
+        if (state.scrollY > 0 && state.readingMode == ReadingMode.SCROLL) {
             val scrollCmd = ReaderJsBridge.scrollToYCommand(state.scrollY)
             webView.evaluateJavascript(scrollCmd.removePrefix("javascript:"), null)
+        }
+        if (state.readingMode == ReadingMode.PAGINATED) {
+            webView.evaluateJavascript("readerJS.getSubPageState()") { raw ->
+                ReaderJsBridge.parseSubPageState(raw)?.let { (sub, total) ->
+                    session.onSubPageReported(sub, total)
+                }
+            }
         }
     }
 
@@ -351,16 +358,23 @@ private class BookResourceWebViewClient(
         ByteArrayInputStream("Resource not found".toByteArray()),
     )
 
-    private fun guessMimeType(href: String): String = when {
-        href.endsWith(".html") || href.endsWith(".xhtml") -> "application/xhtml+xml"
-        href.endsWith(".css") -> "text/css"
-        href.endsWith(".js") -> "application/javascript"
-        href.endsWith(".png") -> "image/png"
-        href.endsWith(".jpg") || href.endsWith(".jpeg") -> "image/jpeg"
-        href.endsWith(".gif") -> "image/gif"
-        href.endsWith(".svg") -> "image/svg+xml"
-        href.endsWith(".webp") -> "image/webp"
-        else -> "application/octet-stream"
+    private fun guessMimeType(href: String): String {
+        val lower = href.substringBefore('#').lowercase()
+        return when {
+            lower.endsWith(".html") || lower.endsWith(".xhtml") -> "application/xhtml+xml"
+            lower.endsWith(".css") -> "text/css"
+            lower.endsWith(".js") -> "application/javascript"
+            lower.endsWith(".png") -> "image/png"
+            lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
+            lower.endsWith(".gif") -> "image/gif"
+            lower.endsWith(".svg") -> "image/svg+xml"
+            lower.endsWith(".webp") -> "image/webp"
+            lower.endsWith(".woff2") -> "font/woff2"
+            lower.endsWith(".woff") -> "font/woff"
+            lower.endsWith(".ttf") -> "font/ttf"
+            lower.endsWith(".otf") -> "font/otf"
+            else -> "application/octet-stream"
+        }
     }
 }
 
@@ -418,9 +432,14 @@ private fun ReaderScreen(
                     lastEventSummary = "BookmarksChanged(total=${event.bookmarks.size})"
                 }
                 is ReaderEvent.PreferencesChanged -> {
-                    hostStore.savePreferences(event.fontScale, event.isNightMode, event.fontFamily)
+                    hostStore.savePreferences(
+                        fontScale = event.fontScale,
+                        isNightMode = event.isNightMode,
+                        fontFamily = event.fontFamily,
+                        readingMode = event.readingMode,
+                    )
                     lastEventSummary =
-                        "PreferencesChanged(escala=${event.fontScale}, noite=${event.isNightMode})"
+                        "PreferencesChanged(escala=${event.fontScale}, noite=${event.isNightMode}, modo=${event.readingMode})"
                 }
             }
         }
@@ -434,7 +453,10 @@ private fun ReaderScreen(
                 is ReaderUiEffect.EvaluateJs -> {
                     val webView = webViewRef ?: return@collect
                     val rawScript = effect.script.removePrefix("javascript:")
-                    webView.evaluateJavascript(rawScript) {
+                    webView.evaluateJavascript(rawScript) { evalResult ->
+                        ReaderJsBridge.parseSubPageState(evalResult)?.let { (sub, total) ->
+                            currentSession.onSubPageReported(sub, total)
+                        }
                         if (rawScript.contains("highlightSelection") ||
                             rawScript.contains("unHighlightSelection") ||
                             rawScript.contains("removeHighlight")
@@ -487,6 +509,7 @@ private fun ReaderScreen(
                             initialPageIndex = savedProgress?.pageIndex ?: 0,
                             initialScrollY = savedProgress?.scrollY ?: 0,
                             isNightMode = hostStore.loadNightMode(),
+                            readingMode = hostStore.loadReadingMode(),
                             fontScale = hostStore.loadFontScale(),
                             fontFamily = hostStore.loadFontFamily(),
                             savedPageHighlights = savedHighlights,
@@ -497,6 +520,7 @@ private fun ReaderScreen(
                     opened
                 }
             }.onSuccess { opened ->
+                session?.close()
                 session = opened
                 activeSample = sampleId
                 searchResults = emptyList()
@@ -541,6 +565,11 @@ private fun ReaderScreen(
             val total = state?.spineLen ?: 0
             val percent = state?.progress?.totalPercentage?.toInt() ?: 0
             val hasBookmark = state?.hasBookmarkAtCurrentPage ?: false
+            val isPaginated = state?.readingMode == ReadingMode.PAGINATED
+            val subPage = state?.currentSubPage ?: 0
+            val totalSubPages = state?.totalSubPages ?: 1
+            val canGoPrev = state != null && (index > 0 || (isPaginated && subPage > 0))
+            val canGoNext = state != null && (index + 1 < total || (isPaginated && subPage + 1 < totalSubPages))
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -560,7 +589,7 @@ private fun ReaderScreen(
                 }
                 OutlinedButton(
                     onClick = { session?.dispatch(ReaderCommand.PrevPage) },
-                    enabled = state != null && index > 0,
+                    enabled = canGoPrev,
                     modifier = Modifier.height(48.dp),
                 ) {
                     Text("Anterior")
@@ -569,8 +598,13 @@ private fun ReaderScreen(
                     modifier = Modifier.weight(1f),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
+                    val pageLabel = when {
+                        state == null -> "-"
+                        isPaginated && totalSubPages > 1 -> "${index + 1} / $total (${subPage + 1}/$totalSubPages)"
+                        else -> "${index + 1} / $total"
+                    }
                     Text(
-                        text = if (state == null) "-" else "${index + 1} / $total",
+                        text = pageLabel,
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Text(
@@ -581,7 +615,7 @@ private fun ReaderScreen(
                 }
                 Button(
                     onClick = { session?.dispatch(ReaderCommand.NextPage) },
-                    enabled = state != null && index + 1 < total,
+                    enabled = canGoNext,
                     modifier = Modifier.height(48.dp),
                 ) {
                     Text("Próxima")

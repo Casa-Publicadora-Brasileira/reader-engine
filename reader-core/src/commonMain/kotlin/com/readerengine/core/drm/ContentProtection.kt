@@ -180,4 +180,8 @@ public class DecryptingResourceProvider(
             publicationIdentifier = publicationIdentifier,
         )
     }
+
+    override fun close() {
+        delegate.close()
+    }
 }

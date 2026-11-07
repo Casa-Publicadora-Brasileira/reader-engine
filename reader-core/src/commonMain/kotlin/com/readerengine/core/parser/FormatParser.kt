@@ -78,18 +78,22 @@ public class Source private constructor(
         }
         val p = path ?: return "doc-unknown"
         val access = FileHandleRandomAccess(fileSystem, p)
-        val total = access.size
-        val window = 64 * 1024
-        val buf = Buffer()
-        buf.writeLong(total)
-        if (total <= window * 2L) {
-            buf.write(access.readSlice(0L, total.toInt()))
-        } else {
-            buf.write(access.readSlice(0L, window))
-            buf.write(access.readSlice(total - window.toLong(), window))
+        return try {
+            val total = access.size
+            val window = 64 * 1024
+            val buf = Buffer()
+            buf.writeLong(total)
+            if (total <= window * 2L) {
+                buf.write(access.readSlice(0L, total.toInt()))
+            } else {
+                buf.write(access.readSlice(0L, window))
+                buf.write(access.readSlice(total - window.toLong(), window))
+            }
+            val digestHex = buf.sha256().hex().take(16)
+            "doc-$digestHex"
+        } finally {
+            access.close()
         }
-        val digestHex = buf.sha256().hex().take(16)
-        return "doc-$digestHex"
     }
 
     public companion object {

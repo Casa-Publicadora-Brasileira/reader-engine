@@ -507,6 +507,16 @@ class ReaderEngineTest {
             )
             provider.read("META-INF/container.xml")
         }
+
+        // Bounded LRU cache must evict older entries instead of throwing when reading across all entries
+        val tinyCacheProvider = ZipResourceProvider.fromBytes(
+            epubBytes,
+            limits = ZipLimits(maxCacheBytes = 64),
+        )
+        for (entry in tinyCacheProvider.entryNames()) {
+            assertTrue(tinyCacheProvider.read(entry).isNotEmpty())
+        }
+        tinyCacheProvider.close()
     }
 
     @Test

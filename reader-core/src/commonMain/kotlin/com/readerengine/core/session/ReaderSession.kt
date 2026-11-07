@@ -303,9 +303,10 @@ public class ReaderSession(
         return FlowSubscription { job.cancel() }
     }
 
-    /** Encerra todos os observadores ativos criados via `watchState`/`watchEvents`/`watchUiEffects`. */
+    /** Encerra todos os observadores ativos e libera descritores de arquivo abertos pela publicação. */
     public fun close() {
         watchScope.cancel()
+        publication.close()
     }
 
     /** Sobrecarga concisa para iOS/Swift sem argumentos default. */

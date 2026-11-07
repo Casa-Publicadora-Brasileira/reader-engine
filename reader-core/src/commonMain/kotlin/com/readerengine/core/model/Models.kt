@@ -106,6 +106,7 @@ public data class Locator(
 /** Acesso sob demanda aos bytes dos recursos da publicação (ZIP, memória, disco). */
 public fun interface ResourceProvider {
     public fun read(href: String): ByteArray
+    public fun close(): Unit = Unit
 }
 
 public class Publication(
@@ -116,17 +117,23 @@ public class Publication(
     public val provider: ResourceProvider,
     public val encryptedResources: Map<String, EncryptedResourceInfo> = emptyMap(),
 ) {
-    private val plainTextCache = LinkedHashMap<String, String>()
+    @kotlin.concurrent.Volatile
+    private var plainTextCache: Map<String, String> = emptyMap()
 
     public fun read(href: String): ByteArray = provider.read(href)
 
     public fun readString(href: String): String = read(href).decodeToString()
 
+    public fun close(): Unit = provider.close()
+
     internal fun cachedPlainText(href: String, compute: (String) -> String): String {
-        return plainTextCache.getOrPut(href) {
-            val rawHtml = readString(href)
-            compute(rawHtml)
-        }
+        plainTextCache[href]?.let { return it }
+        val computed = compute(readString(href))
+        val updated = LinkedHashMap<String, String>(plainTextCache.size + 1)
+        updated.putAll(plainTextCache)
+        updated[href] = computed
+        plainTextCache = updated
+        return computed
     }
 
     public fun findResource(href: String): Resource? {

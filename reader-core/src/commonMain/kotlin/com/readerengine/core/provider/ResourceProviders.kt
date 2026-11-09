@@ -2,6 +2,7 @@ package com.readerengine.core.provider
 
 import com.readerengine.core.error.ReaderException
 import com.readerengine.core.model.ResourceProvider
+import com.readerengine.core.platform.defaultFileSystem
 import okio.Buffer
 import okio.FileSystem
 import okio.Inflater
@@ -254,7 +255,7 @@ public class ZipResourceProvider private constructor(
          */
         public fun fromPath(
             path: Path,
-            fileSystem: FileSystem = FileSystem.SYSTEM,
+            fileSystem: FileSystem = defaultFileSystem,
             limits: ZipLimits = ZipLimits(),
         ): ZipResourceProvider {
             val access = FileHandleRandomAccess(fileSystem, path)
@@ -290,7 +291,7 @@ public class ZipResourceProvider private constructor(
         public fun hasZipEntry(
             path: Path,
             entryName: String,
-            fileSystem: FileSystem = FileSystem.SYSTEM,
+            fileSystem: FileSystem = defaultFileSystem,
             limits: ZipLimits = ZipLimits(),
         ): Boolean {
             val access = FileHandleRandomAccess(fileSystem, path)

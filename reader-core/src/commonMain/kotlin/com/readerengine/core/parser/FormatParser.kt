@@ -3,6 +3,7 @@ package com.readerengine.core.parser
 import com.readerengine.core.drm.ContentDecryptor
 import com.readerengine.core.error.ReaderException
 import com.readerengine.core.model.Publication
+import com.readerengine.core.platform.defaultFileSystem
 import com.readerengine.core.provider.FileHandleRandomAccess
 import com.readerengine.core.provider.ZipLimits
 import com.readerengine.core.provider.ZipResourceProvider
@@ -32,7 +33,7 @@ public class Source private constructor(
         name = name,
         inMemoryBytes = bytes,
         path = null,
-        fileSystem = FileSystem.SYSTEM,
+        fileSystem = defaultFileSystem,
         zipLimits = zipLimits,
         customDecryptor = customDecryptor,
     )
@@ -106,14 +107,14 @@ public class Source private constructor(
             name = name,
             inMemoryBytes = bytes,
             path = null,
-            fileSystem = FileSystem.SYSTEM,
+            fileSystem = defaultFileSystem,
             zipLimits = zipLimits,
             customDecryptor = customDecryptor,
         )
 
         public fun fromPath(
             path: Path,
-            fileSystem: FileSystem = FileSystem.SYSTEM,
+            fileSystem: FileSystem = defaultFileSystem,
             zipLimits: ZipLimits = ZipLimits(),
             customDecryptor: ContentDecryptor? = null,
         ): Source = Source(

@@ -67,14 +67,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Deploy Public Maven to Vercel
-        if: env.VERCEL_TOKEN != ''
+        if: ${{ secrets.VERCEL_TOKEN != '' }}
         run: ./scripts/deploy-public-maven-vercel.sh
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
 
       - name: Publish to Sonatype Maven Central
-        if: env.SONATYPE_TOKEN_USER != '' && env.SONATYPE_TOKEN_PASSWORD != ''
-        run: ./gradlew :reader-core:publishAllPublicationsToSonatypeCentralRepository --no-daemon
+        if: ${{ secrets.SONATYPE_TOKEN_USER != '' && secrets.SONATYPE_TOKEN_PASSWORD != '' }}
+        run: |
+          ./gradlew \
+            :reader-core:publishAndroidReleasePublicationToSonatypeCentralRepository \
+            :reader-core:publishJvmPublicationToSonatypeCentralRepository \
+            :reader-core:publishKotlinMultiplatformPublicationToSonatypeCentralRepository \
+            --no-daemon
         env:
           SONATYPE_TOKEN_USER: ${{ secrets.SONATYPE_TOKEN_USER }}
           SONATYPE_TOKEN_PASSWORD: ${{ secrets.SONATYPE_TOKEN_PASSWORD }}

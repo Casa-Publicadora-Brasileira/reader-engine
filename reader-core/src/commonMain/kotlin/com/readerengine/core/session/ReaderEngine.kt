@@ -5,6 +5,7 @@ import com.readerengine.core.model.InitialBookState
 import com.readerengine.core.parser.FormatParser
 import com.readerengine.core.parser.ParserRegistry
 import com.readerengine.core.parser.Source
+import com.readerengine.core.platform.defaultFileSystem
 import com.readerengine.core.provider.ZipLimits
 import okio.FileSystem
 import okio.Path
@@ -60,7 +61,7 @@ public class ReaderEngine(
         path: Path,
     ): ReaderSession = open(
         path = path,
-        fileSystem = FileSystem.SYSTEM,
+        fileSystem = defaultFileSystem,
         initialState = InitialBookState(),
     )
 
@@ -70,7 +71,7 @@ public class ReaderEngine(
      */
     public fun open(
         path: Path,
-        fileSystem: FileSystem = FileSystem.SYSTEM,
+        fileSystem: FileSystem = defaultFileSystem,
         initialState: InitialBookState = InitialBookState(),
     ): ReaderSession {
         val source = Source.fromPath(

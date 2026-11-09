@@ -8,6 +8,7 @@ import okio.Inflater
 import okio.InflaterSource
 import okio.Path
 import okio.buffer
+import okio.use
 
 public class MemoryResourceProvider(
     private val files: Map<String, ByteArray>,

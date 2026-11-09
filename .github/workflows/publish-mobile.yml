@@ -38,7 +38,11 @@ jobs:
 
       - name: Run tests, assemble & generate public Maven layout
         run: |
-          ./gradlew :reader-core:jvmTest :reader-core:assembleRelease :reader-core:jvmJar :reader-core:publishAllPublicationsToPublicMavenRepository --no-daemon
+          ./gradlew :reader-core:jvmTest :reader-core:assembleRelease :reader-core:jvmJar \
+            :reader-core:publishAndroidReleasePublicationToPublicMavenRepository \
+            :reader-core:publishJvmPublicationToPublicMavenRepository \
+            :reader-core:publishKotlinMultiplatformPublicationToPublicMavenRepository \
+            --no-daemon
 
       - name: Upload Android AAR
         uses: actions/upload-artifact@v4

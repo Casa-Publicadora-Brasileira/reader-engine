@@ -6,6 +6,7 @@ import okio.ByteString.Companion.toByteString
 import okio.GzipSink
 import okio.GzipSource
 import okio.buffer
+import okio.use
 
 /**
  * Utilitário multiplataforma (`commonMain`) para compressão/descompressão transparente

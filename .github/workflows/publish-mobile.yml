@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version name (e.g. 0.2.0) when not tagging"
+        description: "Version name (e.g. 0.3.1) when not tagging"
         required: false
-        default: "0.2.0-SNAPSHOT"
+        default: "0.3.1"
 
 concurrency:
   group: publish-mobile-${{ github.ref }}
@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   android-jvm:
-    name: Publish Android AAR & JVM JAR
+    name: Publish Android AAR, JVM JAR & Maven Repository
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -36,8 +36,9 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Run tests & assemble artifacts
-        run: ./gradlew :reader-core:jvmTest :reader-core:assembleRelease :reader-core:jvmJar --no-daemon
+      - name: Run tests, assemble & generate public Maven layout
+        run: |
+          ./gradlew :reader-core:jvmTest :reader-core:assembleRelease :reader-core:jvmJar :reader-core:publishAllPublicationsToPublicMavenRepository --no-daemon
 
       - name: Upload Android AAR
         uses: actions/upload-artifact@v4
@@ -45,3 +46,33 @@ jobs:
           name: reader-core-aar
           path: reader-core/build/outputs/aar/*.aar
           if-no-files-found: error
+
+      - name: Upload Public Maven Repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: reader-core-public-maven
+          path: public-maven/
+          if-no-files-found: error
+
+      - name: Attach AAR to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: reader-core/build/outputs/aar/*.aar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy Public Maven to Vercel
+        if: env.VERCEL_TOKEN != ''
+        run: ./scripts/deploy-public-maven-vercel.sh
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      - name: Publish to Sonatype Maven Central
+        if: env.SONATYPE_TOKEN_USER != '' && env.SONATYPE_TOKEN_PASSWORD != ''
+        run: ./gradlew :reader-core:publishAllPublicationsToSonatypeCentralRepository --no-daemon
+        env:
+          SONATYPE_TOKEN_USER: ${{ secrets.SONATYPE_TOKEN_USER }}
+          SONATYPE_TOKEN_PASSWORD: ${{ secrets.SONATYPE_TOKEN_PASSWORD }}
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}

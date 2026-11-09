@@ -10,7 +10,16 @@ plugins {
 }
 
 group = "com.readerengine"
-version = "0.3.1"
+val resolvedVersion = providers.gradleProperty("version")
+    .orElse(providers.environmentVariable("VERSION"))
+    .orNull
+    ?.takeIf { it.isNotBlank() }
+    ?: providers.environmentVariable("GITHUB_REF_NAME")
+        .orNull
+        ?.takeIf { it.startsWith("v") && it.length > 1 }
+        ?.removePrefix("v")
+    ?: "0.3.1"
+version = resolvedVersion
 
 kotlin {
     explicitApi()
@@ -72,6 +81,20 @@ android {
 
 val publicMavenDir = rootProject.layout.projectDirectory.dir("public-maven")
 
+val serverUrl = providers.environmentVariable("GITHUB_SERVER_URL")
+    .orElse(providers.gradleProperty("githubServerUrl"))
+    .getOrElse("https://github.com")
+    .trimEnd('/')
+
+val repoSlug = providers.environmentVariable("GITHUB_REPOSITORY")
+    .orElse(providers.gradleProperty("githubRepository"))
+    .getOrElse("andreAlvesCarvalhojr/reader-engine")
+    .trim('/')
+
+val serverUri = uri(serverUrl)
+val serverHost = serverUri.host ?: "github.com"
+val repoHttpUrl = "$serverUrl/$repoSlug"
+
 publishing {
     repositories {
         maven {
@@ -92,12 +115,43 @@ publishing {
                     .orNull
             }
         }
+        maven {
+            name = "GitHubPackages"
+            val customUrl = providers.environmentVariable("GITHUB_PACKAGES_URL")
+                .orElse(providers.environmentVariable("GPR_URL"))
+                .orElse(providers.gradleProperty("githubPackagesUrl"))
+                .orElse(providers.gradleProperty("gpr.url"))
+                .orNull
+
+            url = if (!customUrl.isNullOrBlank()) {
+                uri(customUrl)
+            } else if (serverHost.equals("github.com", ignoreCase = true)) {
+                uri("https://maven.pkg.github.com/$repoSlug")
+            } else {
+                // Suporte ao GitHub Enterprise Server com isolamento de subdomínio:
+                // ex: https://maven.ghe.empresa.com/org/repo
+                uri("https://maven.$serverHost/$repoSlug")
+            }
+
+            credentials {
+                username = providers.environmentVariable("GITHUB_ACTOR")
+                    .orElse(providers.environmentVariable("GITHUB_USERNAME"))
+                    .orElse(providers.gradleProperty("gpr.user"))
+                    .orElse(providers.gradleProperty("githubActor"))
+                    .orNull
+                password = providers.environmentVariable("GITHUB_TOKEN")
+                    .orElse(providers.environmentVariable("GH_TOKEN"))
+                    .orElse(providers.gradleProperty("gpr.key"))
+                    .orElse(providers.gradleProperty("githubToken"))
+                    .orNull
+            }
+        }
     }
     publications.withType<MavenPublication> {
         pom {
             name.set("reader-core")
             description.set("Universal headless reader engine for EPUB and HPUB in Kotlin Multiplatform")
-            url.set("https://github.com/andreAlvesCarvalhojr/reader-engine")
+            url.set(repoHttpUrl)
             licenses {
                 license {
                     name.set("MIT License")
@@ -111,9 +165,9 @@ publishing {
                 }
             }
             scm {
-                connection.set("scm:git:git://github.com/andreAlvesCarvalhojr/reader-engine.git")
-                developerConnection.set("scm:git:ssh://github.com:andreAlvesCarvalhojr/reader-engine.git")
-                url.set("https://github.com/andreAlvesCarvalhojr/reader-engine")
+                connection.set("scm:git:git://$serverHost/$repoSlug.git")
+                developerConnection.set("scm:git:ssh://git@$serverHost:$repoSlug.git")
+                url.set(repoHttpUrl)
             }
         }
     }

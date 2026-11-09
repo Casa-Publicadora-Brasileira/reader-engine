@@ -23,6 +23,12 @@ jobs:
   android-jvm:
     name: Publish Android AAR, JVM JAR & Maven Repository
     runs-on: ubuntu-latest
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      SONATYPE_TOKEN_USER: ${{ secrets.SONATYPE_TOKEN_USER }}
+      SONATYPE_TOKEN_PASSWORD: ${{ secrets.SONATYPE_TOKEN_PASSWORD }}
+      SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+      SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -67,13 +73,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Deploy Public Maven to Vercel
-        if: ${{ secrets.VERCEL_TOKEN != '' }}
+        if: env.VERCEL_TOKEN != ''
         run: ./scripts/deploy-public-maven-vercel.sh
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
 
       - name: Publish to Sonatype Maven Central
-        if: ${{ secrets.SONATYPE_TOKEN_USER != '' && secrets.SONATYPE_TOKEN_PASSWORD != '' }}
+        if: env.SONATYPE_TOKEN_USER != '' && env.SONATYPE_TOKEN_PASSWORD != ''
         run: |
           ./gradlew \
             :reader-core:publishAndroidReleasePublicationToSonatypeCentralRepository \

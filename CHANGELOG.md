@@ -17,6 +17,9 @@ Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
   - Polyfill injetado `window.ReaderEngine.postAction(name, payload)` para disparo via JavaScript interno dos capítulos.
   - Interface nativa JavaScript `@JavascriptInterface` (`AndroidActionBridge`) integrada na WebView Android.
   - Novo comando `ReaderCommand.TriggerAction(action, payload)`, evento `ReaderEvent.ActionTriggered(action, payload)` e efeito `ReaderUiEffect.CustomAction(action, payload)`.
+- **Atualização da Toolchain de Build Android**:
+  - Atualizado o **Android Gradle Plugin (AGP)** de `8.7.3` para `8.8.2` (`libs.versions.toml`).
+  - Atualizado o Gradle Wrapper de `8.9` para `8.10.2` (`gradle-wrapper.properties`) para compatibilidade com o AGP 8.8.2 e estabilidade máxima com Kotlin 2.0.21.
 
 ## [0.3.0] - 2026-11-07
 

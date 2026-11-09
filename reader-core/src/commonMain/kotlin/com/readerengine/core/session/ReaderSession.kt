@@ -114,6 +114,11 @@ public sealed interface ReaderEvent {
         val readingMode: ReadingMode = ReadingMode.SCROLL,
         val theme: ThemeTokens,
     ) : ReaderEvent
+
+    public data class ActionTriggered(
+        val action: String,
+        val payload: String? = null,
+    ) : ReaderEvent
 }
 
 /** Efeitos pontuais de UI disparados pela sessão para a tela nativa executar. */
@@ -127,6 +132,15 @@ public sealed interface ReaderUiEffect {
         val rawUrl: String,
         val title: String,
         val content: String?,
+    ) : ReaderUiEffect
+
+    /**
+     * Disparado quando um script ou elemento do livro dispara uma ação customizada
+     * (ex.: via `action://...` ou `window.ReaderEngine.postAction(...)`).
+     */
+    public data class CustomAction(
+        val action: String,
+        val payload: String? = null,
     ) : ReaderUiEffect
 
     public data class OpenExternalUrl(
@@ -154,6 +168,7 @@ public sealed interface ReaderCommand {
     public data class GoToPage(val pageIndex: Int, val scrollY: Int = 0) : ReaderCommand
     public data class GoToHref(val href: String) : ReaderCommand
     public data class GoToLocator(val locator: Locator) : ReaderCommand
+    public data class TriggerAction(val action: String, val payload: String? = null) : ReaderCommand
     public data class UpdateScroll(
         val scrollY: Int,
         val contentHeightPx: Int = 0,
@@ -394,6 +409,11 @@ public class ReaderSession(
                 val idxByHref = resolveSpineIndex(loc.href, baseDir = "")
                 val targetIdx = if (idxByHref >= 0) idxByHref else loc.pageIndex.coerceIn(0, lastIndex)
                 navigateToPageInternal(targetIdx, scrollY = 0)
+            }
+
+            is ReaderCommand.TriggerAction -> {
+                _events.tryEmit(ReaderEvent.ActionTriggered(command.action, command.payload))
+                _uiEffects.tryEmit(ReaderUiEffect.CustomAction(command.action, command.payload))
             }
 
             is ReaderCommand.UpdateScroll -> {
@@ -725,6 +745,12 @@ public class ReaderSession(
                 true
             }
 
+            is InterceptedUrl.Action -> {
+                _events.tryEmit(ReaderEvent.ActionTriggered(intercepted.action, intercepted.payload))
+                _uiEffects.tryEmit(ReaderUiEffect.CustomAction(intercepted.action, intercepted.payload))
+                true
+            }
+
             is InterceptedUrl.ExternalWebUrl -> {
                 _uiEffects.tryEmit(ReaderUiEffect.OpenExternalUrl(intercepted.url))
                 true
@@ -808,6 +834,24 @@ public class ReaderSession(
     public fun readResource(href: String): ByteArray {
         val resolved = resolveResourceHref(href)
         return publication.read(resolved)
+    }
+
+    /**
+     * Retorna o tamanho em bytes do recurso no livro (se disponível),
+     * permitindo que servidores e WebViews respondam cabeçalhos `Content-Length` e `Accept-Ranges`.
+     */
+    public fun resourceSize(href: String): Long? {
+        val resolved = resolveResourceHref(href)
+        return publication.size(resolved)
+    }
+
+    /**
+     * Lê uma fatia (range) de bytes de um recurso interno do livro sem carregar o arquivo inteiro na memória RAM,
+     * essencial para streaming de vídeo/áudio HTML5 (`Range: bytes=start-end` / HTTP 206 Partial Content).
+     */
+    public fun readResourceRange(href: String, offset: Long, byteCount: Int): ByteArray {
+        val resolved = resolveResourceHref(href)
+        return publication.readRange(resolved, offset, byteCount)
     }
 
     /** Retorna o MIME type declarado no manifesto da publicação para o `href`, se existir. */

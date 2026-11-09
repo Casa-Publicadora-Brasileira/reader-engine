@@ -2,6 +2,22 @@
 
 Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 
+## [0.3.1] - 2026-11-08
+
+### Added
+- **Streaming de Vídeo e Áudio HTML5 com Suporte a Range Requests (HTTP 206 Partial Content)**:
+  - Implementado `ResourceProvider.size(href)` e `ResourceProvider.readRange(href, offset, byteCount)` em `MemoryResourceProvider`, `DecryptingResourceProvider` e `ZipResourceProvider`.
+  - No `ZipResourceProvider`, fatiamento direto em `RandomAccessSource` para entradas descompactadas (`STORED`), permitindo seek instantâneo sem buffering ou alocação total do arquivo em memória RAM.
+  - Expansão dos tipos MIME suportados para multimídia (`.mp4`, `.m4v`, `.webm`, `.ogv`, `.mov`, `.mp3`, `.m4a`, `.aac`, `.wav`, `.ogg`, `.oga`) no `HpubParser` e no leitor Android.
+  - Interceptação de cabeçalhos `Range: bytes=start-end` em `BookResourceWebViewClient.shouldInterceptRequest`, retornando respostas HTTP 206 com `Content-Range`, `Accept-Ranges: bytes` e `Content-Length`.
+  - Suporte completo a vídeo em tela cheia na WebView com `WebChromeClient` (`onShowCustomView` / `onHideCustomView`) e overlay com `BackHandler` no Jetpack Compose.
+  - Habilitação de reprodução de mídia sem exigência de gesto do usuário (`settings.mediaPlaybackRequiresUserGesture = false`).
+- **Mecanismo de Ações Interativas (Bridge E-book <-> App Host)**:
+  - Interceptação do esquema de URL `action://<nome>?q=<payload>` em `ReaderJsBridge.parseSpecialUrl` gerando `InterceptedUrl.Action`.
+  - Polyfill injetado `window.ReaderEngine.postAction(name, payload)` para disparo via JavaScript interno dos capítulos.
+  - Interface nativa JavaScript `@JavascriptInterface` (`AndroidActionBridge`) integrada na WebView Android.
+  - Novo comando `ReaderCommand.TriggerAction(action, payload)`, evento `ReaderEvent.ActionTriggered(action, payload)` e efeito `ReaderUiEffect.CustomAction(action, payload)`.
+
 ## [0.3.0] - 2026-11-07
 
 ### Added

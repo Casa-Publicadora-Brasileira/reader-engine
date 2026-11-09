@@ -18,6 +18,21 @@ public class MemoryResourceProvider(
             ?: files[href]
             ?: throw ReaderException.ResourceNotFound(href)
     }
+
+    override fun size(href: String): Long? {
+        val normalized = normalizeHref(href)
+        val bytes = files[normalized] ?: files[href] ?: return null
+        return bytes.size.toLong()
+    }
+
+    override fun readRange(href: String, offset: Long, byteCount: Int): ByteArray {
+        val normalized = normalizeHref(href)
+        val bytes = files[normalized] ?: files[href] ?: throw ReaderException.ResourceNotFound(href)
+        if (offset < 0L || offset >= bytes.size.toLong() || byteCount <= 0) return ByteArray(0)
+        val start = offset.toInt()
+        val end = (start + byteCount).coerceAtMost(bytes.size)
+        return bytes.copyOfRange(start, end)
+    }
 }
 
 /** Limites de segurança contra pacotes ZIP malformados ou Zip Bombs e orçamento de cache LRU em RAM. */
@@ -168,6 +183,38 @@ public class ZipResourceProvider private constructor(
             cacheSnapshot = next
         }
         return decoded
+    }
+
+    override fun size(href: String): Long? {
+        val clean = normalizeHref(href)
+        val meta = directory[clean] ?: return null
+        return meta.uncompressedSize.toLong()
+    }
+
+    override fun readRange(href: String, offset: Long, byteCount: Int): ByteArray {
+        val clean = normalizeHref(href)
+        cacheSnapshot[clean]?.let { cached ->
+            if (offset < 0L || offset >= cached.size.toLong() || byteCount <= 0) return ByteArray(0)
+            val start = offset.toInt()
+            val end = (start + byteCount).coerceAtMost(cached.size)
+            return cached.copyOfRange(start, end)
+        }
+
+        val meta = directory[clean]
+            ?: throw ReaderException.ResourceNotFound(href)
+
+        if (meta.compressionMethod == METHOD_STORED) {
+            if (offset < 0L || offset >= meta.uncompressedSize.toLong() || byteCount <= 0) return ByteArray(0)
+            val dataStartLong = resolveEntryDataStart(source, meta)
+            val clampedByteCount = minOf(byteCount.toLong(), meta.uncompressedSize.toLong() - offset).toInt()
+            return source.readSlice(dataStartLong + offset, clampedByteCount)
+        }
+
+        val full = read(clean)
+        if (offset < 0L || offset >= full.size.toLong() || byteCount <= 0) return ByteArray(0)
+        val start = offset.toInt()
+        val end = (start + byteCount).coerceAtMost(full.size)
+        return full.copyOfRange(start, end)
     }
 
     public fun readString(href: String): String = read(href).decodeToString()
@@ -354,11 +401,7 @@ public class ZipResourceProvider private constructor(
             return result
         }
 
-        private fun extractEntryBytes(
-            access: RandomAccessSource,
-            meta: ZipEntryMeta,
-            limits: ZipLimits,
-        ): ByteArray {
+        private fun resolveEntryDataStart(access: RandomAccessSource, meta: ZipEntryMeta): Long {
             val localHeaderOffset = meta.localHeaderOffset
             if (localHeaderOffset < 0L || localHeaderOffset + 30L > access.size) {
                 throw ReaderException.InvalidContent("Local File Header inválido para '${meta.name}'")
@@ -377,7 +420,15 @@ public class ZipResourceProvider private constructor(
             if (dataStartLong < 0L || dataEndLong > access.size) {
                 throw ReaderException.InvalidContent("Dados da entrada '${meta.name}' fora dos limites do ZIP")
             }
+            return dataStartLong
+        }
 
+        private fun extractEntryBytes(
+            access: RandomAccessSource,
+            meta: ZipEntryMeta,
+            limits: ZipLimits,
+        ): ByteArray {
+            val dataStartLong = resolveEntryDataStart(access, meta)
             val compressedSlice = access.readSlice(dataStartLong, meta.compressedSize)
 
             return when (meta.compressionMethod) {

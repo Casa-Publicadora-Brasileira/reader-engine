@@ -262,6 +262,7 @@ public object ReaderJsBridge {
 
             scheme == "highlight" -> InterceptedUrl.InvalidHighlightOnInput
             scheme == "clipboard" -> InterceptedUrl.ClipboardAction
+            scheme == "action" -> parseActionUrl(trimmed)
 
             scheme.isNotEmpty() && scheme != "file" && scheme != "book" && !scheme.contains('/') ->
                 parseCustomSchemeUrl(scheme, trimmed)
@@ -317,6 +318,19 @@ public object ReaderJsBridge {
                 content = null,
             )
         }
+    }
+
+    private fun parseActionUrl(url: String): InterceptedUrl.Action {
+        val afterScheme = url.substringAfter("action://", missingDelimiterValue = "").removePrefix("/")
+        val actionName = percentDecode(afterScheme.substringBefore('?').substringBefore('/'))
+        val rawPayload = if (afterScheme.contains('?')) {
+            val query = afterScheme.substringAfter('?')
+            if (query.startsWith("q=")) query.removePrefix("q=") else query
+        } else {
+            null
+        }
+        val decodedPayload = rawPayload?.let(::percentDecode)?.takeIf { it.isNotBlank() }
+        return InterceptedUrl.Action(action = actionName, payload = decodedPayload)
     }
 
     private fun parseFormEntry(element: JsonElement): FormEntry? {
@@ -544,6 +558,19 @@ public object ReaderJsBridge {
                     }
                 };
             }
+            if (typeof window.ReaderEngine === 'undefined') {
+                window.ReaderEngine = {
+                    postAction: function(name, payload) {
+                        var str = typeof payload === 'string' ? payload : (payload ? JSON.stringify(payload) : '');
+                        if (typeof window.AndroidActionBridge !== 'undefined' && window.AndroidActionBridge.postAction) {
+                            window.AndroidActionBridge.postAction(name, str);
+                        } else {
+                            var q = str ? ('?q=' + encodeURIComponent(str)) : '';
+                            window.location.href = 'action://' + encodeURIComponent(name) + q;
+                        }
+                    }
+                };
+            }
             if (typeof window.__readerScrollHooked === 'undefined') {
                 window.__readerScrollHooked = true;
                 var _scrollTimer = null;
@@ -569,6 +596,11 @@ public sealed interface InterceptedUrl {
         val rawUrl: String,
         val title: String,
         val content: String?,
+    ) : InterceptedUrl
+
+    public data class Action(
+        val action: String,
+        val payload: String?,
     ) : InterceptedUrl
 
     public data class ExternalWebUrl(val url: String) : InterceptedUrl

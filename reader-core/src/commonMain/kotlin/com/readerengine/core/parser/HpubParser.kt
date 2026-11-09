@@ -107,7 +107,7 @@ public class HpubParser : FormatParser {
         }
     }
 
-    private fun inferMediaType(href: String): String {
+    internal fun inferMediaType(href: String): String {
         val lower = href.substringBefore('#').lowercase()
         return when {
             lower.endsWith(".xhtml") -> "application/xhtml+xml"
@@ -124,6 +124,15 @@ public class HpubParser : FormatParser {
             lower.endsWith(".woff") -> "font/woff"
             lower.endsWith(".ttf") -> "font/ttf"
             lower.endsWith(".otf") -> "font/otf"
+            lower.endsWith(".mp4") || lower.endsWith(".m4v") -> "video/mp4"
+            lower.endsWith(".webm") -> "video/webm"
+            lower.endsWith(".ogv") -> "video/ogg"
+            lower.endsWith(".mov") -> "video/quicktime"
+            lower.endsWith(".mp3") -> "audio/mpeg"
+            lower.endsWith(".m4a") -> "audio/mp4"
+            lower.endsWith(".aac") -> "audio/aac"
+            lower.endsWith(".wav") -> "audio/wav"
+            lower.endsWith(".ogg") || lower.endsWith(".oga") -> "audio/ogg"
             else -> "application/octet-stream"
         }
     }

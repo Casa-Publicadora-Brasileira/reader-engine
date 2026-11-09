@@ -7,12 +7,16 @@ import android.content.res.AssetManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.view.View
 import android.webkit.JavascriptInterface
+import android.webkit.JsResult
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -113,6 +117,16 @@ class ScrollProgressInterface(
     fun reportProgress(progress: Float) {
         val clamped = progress.coerceIn(0f, 1f)
         onScrollMetricsChanged((clamped * 1000).toInt(), 1200, 200)
+    }
+}
+
+/** JavaScript interface for receiving custom actions from the ebook. */
+class ActionBridge(
+    private val onActionTriggered: (action: String, payload: String?) -> Unit,
+) {
+    @JavascriptInterface
+    fun postAction(name: String, payload: String?) {
+        onActionTriggered(name, payload)
     }
 }
 
@@ -350,10 +364,57 @@ private class BookResourceWebViewClient(
         val href = url.path?.removePrefix("/") ?: return notFoundResponse()
 
         return try {
-            val bytes = session.readResource(href)
-            val mimeType = session.resourceMediaType(href)
-                ?: guessMimeType(href)
-            WebResourceResponse(mimeType, "UTF-8", ByteArrayInputStream(bytes))
+            val mimeType = session.resourceMediaType(href) ?: guessMimeType(href)
+            val totalSize = session.resourceSize(href)
+            val rangeHeader = request.requestHeaders?.entries
+                ?.firstOrNull { it.key.equals("Range", ignoreCase = true) }?.value
+
+            if (rangeHeader != null && rangeHeader.startsWith("bytes=") && totalSize != null && totalSize > 0L) {
+                val rangeValue = rangeHeader.removePrefix("bytes=").trim()
+                val parts = rangeValue.split('-')
+                val start = parts.getOrNull(0)?.toLongOrNull() ?: 0L
+                val endRequested = parts.getOrNull(1)?.toLongOrNull()
+                // Default chunk to at most 1 MB per range chunk if end is omitted
+                val effectiveEnd = if (endRequested != null && endRequested >= start) {
+                    minOf(endRequested, totalSize - 1L)
+                } else {
+                    minOf(start + 1024L * 1024L - 1L, totalSize - 1L)
+                }
+                val length = (effectiveEnd - start + 1L).toInt()
+                val chunk = session.readResourceRange(href, start, length)
+
+                val responseHeaders = mutableMapOf(
+                    "Content-Range" to "bytes $start-$effectiveEnd/$totalSize",
+                    "Accept-Ranges" to "bytes",
+                    "Content-Length" to length.toString(),
+                    "Content-Type" to mimeType,
+                    "Access-Control-Allow-Origin" to "*",
+                )
+                WebResourceResponse(
+                    mimeType,
+                    "UTF-8",
+                    206,
+                    "Partial Content",
+                    responseHeaders,
+                    ByteArrayInputStream(chunk),
+                )
+            } else {
+                val bytes = session.readResource(href)
+                val responseHeaders = mutableMapOf(
+                    "Accept-Ranges" to "bytes",
+                    "Content-Length" to bytes.size.toString(),
+                    "Content-Type" to mimeType,
+                    "Access-Control-Allow-Origin" to "*",
+                )
+                WebResourceResponse(
+                    mimeType,
+                    "UTF-8",
+                    200,
+                    "OK",
+                    responseHeaders,
+                    ByteArrayInputStream(bytes),
+                )
+            }
         } catch (e: Exception) {
             notFoundResponse()
         }
@@ -383,6 +444,15 @@ private class BookResourceWebViewClient(
             lower.endsWith(".woff") -> "font/woff"
             lower.endsWith(".ttf") -> "font/ttf"
             lower.endsWith(".otf") -> "font/otf"
+            lower.endsWith(".mp4") || lower.endsWith(".m4v") -> "video/mp4"
+            lower.endsWith(".webm") -> "video/webm"
+            lower.endsWith(".ogv") -> "video/ogg"
+            lower.endsWith(".mov") -> "video/quicktime"
+            lower.endsWith(".mp3") -> "audio/mpeg"
+            lower.endsWith(".m4a") -> "audio/mp4"
+            lower.endsWith(".aac") -> "audio/aac"
+            lower.endsWith(".wav") -> "audio/wav"
+            lower.endsWith(".ogg") || lower.endsWith(".oga") -> "audio/ogg"
             else -> "application/octet-stream"
         }
     }
@@ -411,6 +481,8 @@ private fun ReaderScreen(
     var isSearchExpanded by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var searchResults by remember { mutableStateOf<List<SearchResult>>(emptyList()) }
+    var customFullscreenView by remember { mutableStateOf<View?>(null) }
+    var customFullscreenCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
 
     val readerState = session?.state?.collectAsState()?.value
     var sliderFontScale by remember(readerState?.fontScale) {
@@ -451,6 +523,10 @@ private fun ReaderScreen(
                     lastEventSummary =
                         "PreferencesChanged(escala=${event.fontScale}, noite=${event.isNightMode}, modo=${event.readingMode})"
                 }
+                is ReaderEvent.ActionTriggered -> {
+                    lastEventSummary =
+                        "ActionTriggered(${event.action}${if (event.payload != null) ": ${event.payload}" else ""})"
+                }
             }
         }
     }
@@ -488,6 +564,10 @@ private fun ReaderScreen(
                 }
                 is ReaderUiEffect.OpenCustomUri -> {
                     lastEventSummary = "OpenCustomUri(${effect.scheme}://${effect.title})"
+                }
+                is ReaderUiEffect.CustomAction -> {
+                    lastEventSummary =
+                        "CustomAction(${effect.action}${if (effect.payload != null) ": ${effect.payload}" else ""})"
                 }
                 is ReaderUiEffect.OpenExternalUrl -> {
                     lastEventSummary = "OpenExternalUrl(${effect.url})"
@@ -562,9 +642,19 @@ private fun ReaderScreen(
                 first.fileName to readAsset(first.assetPath)
             }
         }
+    BackHandler(enabled = customFullscreenView != null) {
+        customFullscreenCallback?.onCustomViewHidden()
+        customFullscreenView = null
+        customFullscreenCallback = null
     }
 
-    Scaffold(
+    if (customFullscreenView != null) {
+        AndroidView(
+            factory = { customFullscreenView!! },
+            modifier = Modifier.fillMaxSize(),
+        )
+    } else {
+        Scaffold(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
@@ -920,7 +1010,31 @@ private fun ReaderScreen(
                 factory = { ctx ->
                     WebView(ctx).apply {
                         webViewClient = BookResourceWebViewClient { session }
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                                customFullscreenView = view
+                                customFullscreenCallback = callback
+                            }
+
+                            override fun onHideCustomView() {
+                                customFullscreenCallback?.onCustomViewHidden()
+                                customFullscreenView = null
+                                customFullscreenCallback = null
+                            }
+
+                            override fun onJsAlert(
+                                view: WebView?,
+                                url: String?,
+                                message: String?,
+                                result: JsResult?,
+                            ): Boolean {
+                                lastEventSummary = "JsAlert(${message.orEmpty()})"
+                                result?.confirm()
+                                return true
+                            }
+                        }
                         settings.javaScriptEnabled = true
+                        settings.mediaPlaybackRequiresUserGesture = false
                         settings.allowFileAccess = false
                         settings.allowContentAccess = false
                         setBackgroundColor(0xFF131313.toInt())
@@ -938,6 +1052,14 @@ private fun ReaderScreen(
                                 }
                             },
                             "AndroidScrollProgress",
+                        )
+                        addJavascriptInterface(
+                            ActionBridge { name, payload ->
+                                post {
+                                    session?.dispatch(ReaderCommand.TriggerAction(name, payload))
+                                }
+                            },
+                            "AndroidActionBridge",
                         )
                         webViewRef = this
                     }
@@ -959,6 +1081,7 @@ private fun ReaderScreen(
                 },
             )
         }
+    }
     }
 }
 

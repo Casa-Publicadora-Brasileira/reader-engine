@@ -104,8 +104,20 @@ public data class Locator(
 )
 
 /** Acesso sob demanda aos bytes dos recursos da publicação (ZIP, memória, disco). */
-public fun interface ResourceProvider {
+public interface ResourceProvider {
     public fun read(href: String): ByteArray
+
+    public fun size(href: String): Long? =
+        runCatching { read(href).size.toLong() }.getOrNull()
+
+    public fun readRange(href: String, offset: Long, byteCount: Int): ByteArray {
+        val all = read(href)
+        if (offset < 0L || offset >= all.size.toLong() || byteCount <= 0) return ByteArray(0)
+        val start = offset.toInt()
+        val end = (start + byteCount).coerceAtMost(all.size)
+        return all.copyOfRange(start, end)
+    }
+
     public fun close(): Unit = Unit
 }
 
@@ -121,6 +133,11 @@ public class Publication(
     private var plainTextCache: Map<String, String> = emptyMap()
 
     public fun read(href: String): ByteArray = provider.read(href)
+
+    public fun size(href: String): Long? = provider.size(href)
+
+    public fun readRange(href: String, offset: Long, byteCount: Int): ByteArray =
+        provider.readRange(href, offset, byteCount)
 
     public fun readString(href: String): String = read(href).decodeToString()
 

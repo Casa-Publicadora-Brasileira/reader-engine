@@ -55,6 +55,10 @@ reader-engine/
    Alterne em tempo real entre rolagem contínua (`ReadingMode.SCROLL`) e paginação horizontal por colunas CSS (`ReadingMode.PAGINATED`) com `session.dispatch(ReaderCommand.SetReadingMode(ReadingMode.PAGINATED))`. Livros EPUB 3 `rendition:layout="pre-paginated"` têm seus metadados (`layout`, `orientation`, `spread`) extraídos automaticamente.
 4. **Pipeline de DRM e Desofuscação de Fontes (`ContentDecryptor`)**:
    O `EpubParser` processa automaticamente `META-INF/encryption.xml`, desofuscando fontes **IDPF** e **Adobe** nativamente e permitindo injetar um `ContentDecryptor` customizado (ex.: Readium LCP) no construtor do `ReaderEngine`.
+5. **Streaming de Vídeo e Áudio HTML5 (`Range Requests` / HTTP 206)**:
+   Vídeos `<video>` e áudios `<audio>` empacotados em livros EPUB/HPUB contam com suporte completo a seek e buffer contínuo através de requisições parciais HTTP 206 (`readResourceRange`), sem carregar vídeos inteiros na memória RAM. No Android, `WebChromeClient` gerencia a alternância para modo tela cheia integrada com o Compose e o botão Voltar do sistema.
+6. **Mecanismo de Ações Interativas (Bridge E-book <-> Host App)**:
+   Links `action://<nome>?q=<payload>` e chamadas `window.ReaderEngine.postAction(nome, payload)` disparam `ReaderEvent.ActionTriggered` e `ReaderUiEffect.CustomAction`, permitindo que o aplicativo host responda a quizzes, botões interativos e rotinas customizadas do livro.
 
 ---
 

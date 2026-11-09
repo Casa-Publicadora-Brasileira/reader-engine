@@ -1,5 +1,6 @@
 package com.readerengine.core
 
+import com.readerengine.core.bridge.InterceptedUrl
 import com.readerengine.core.bridge.PayloadCodec
 import com.readerengine.core.bridge.ReaderJsBridge
 import com.readerengine.core.drm.ContentDecryptor
@@ -16,7 +17,9 @@ import com.readerengine.core.model.RenditionLayout
 import com.readerengine.core.model.RenditionOrientation
 import com.readerengine.core.model.RenditionSpread
 import com.readerengine.core.parser.EpubParser
+import com.readerengine.core.parser.HpubParser
 import com.readerengine.core.parser.XmlEntities
+import com.readerengine.core.provider.MemoryResourceProvider
 import com.readerengine.core.provider.ZipLimits
 import com.readerengine.core.provider.ZipResourceProvider
 import com.readerengine.core.session.ReaderCommand
@@ -39,6 +42,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -158,9 +162,19 @@ class ReaderEngineTest {
         assertEquals("book://content/OEBPS/", imgSession.currentBaseUrl())
         assertTrue(imgSession.currentHtml().contains("Chapter 1: With Image"))
         assertTrue(imgSession.readResource("styles/main.css").decodeToString().isNotBlank())
-        assertTrue(imgSession.readResource("images/cover.png").isNotEmpty())
+        val fullImage = imgSession.readResource("images/cover.png")
+        assertTrue(fullImage.isNotEmpty())
         assertEquals("text/css", imgSession.resourceMediaType("styles/main.css"))
         assertEquals("image/png", imgSession.resourceMediaType("images/cover.png"))
+
+        // Video / Range request streaming validation
+        val totalSize = imgSession.resourceSize("images/cover.png")
+        assertNotNull(totalSize)
+        assertEquals(fullImage.size.toLong(), totalSize)
+        val slice = imgSession.readResourceRange("images/cover.png", offset = 2L, byteCount = 8)
+        assertEquals(8, slice.size)
+        assertContentEquals(fullImage.copyOfRange(2, 10), slice)
+        imgSession.close()
     }
 
     @Test
@@ -571,4 +585,83 @@ class ReaderEngineTest {
         assertFalse(injectedHtml.contains("<script>alert(1)</script>"))
         assertFalse(injectedHtml.contains("onclick="))
     }
+
+    @Test
+    fun readerJsBridgeParsesActionUrlsAndSessionDispatchesEventsAndEffects() = runTest {
+        // 1. Intercepting action URLs via ReaderJsBridge.parseSpecialUrl
+        val actionWithPayload = ReaderJsBridge.parseSpecialUrl("action://submit_quiz?q=%7B%22score%22%3A10%7D")
+        assertTrue(actionWithPayload is InterceptedUrl.Action)
+        assertEquals("submit_quiz", (actionWithPayload as InterceptedUrl.Action).action)
+        assertEquals("""{"score":10}""", actionWithPayload.payload)
+
+        val simpleAction = ReaderJsBridge.parseSpecialUrl("action://toggle_sidebar")
+        assertTrue(simpleAction is InterceptedUrl.Action)
+        assertEquals("toggle_sidebar", (simpleAction as InterceptedUrl.Action).action)
+        assertNull(simpleAction.payload)
+
+        // 2. ReaderSession handling action navigation and TriggerAction command
+        val session = engine.open("sample.epub", readFixture("sample.epub"))
+        val receivedEvents = mutableListOf<ReaderEvent>()
+        val receivedEffects = mutableListOf<ReaderUiEffect>()
+        val eventSub = session.watchEvents { receivedEvents.add(it) }
+        val effectSub = session.watchUiEffects { receivedEffects.add(it) }
+
+        // Trigger via handleUrlNavigation
+        val handled = session.handleUrlNavigation("action://open_video?q=intro.mp4")
+        assertTrue(handled)
+        val navEvent = receivedEvents.filterIsInstance<ReaderEvent.ActionTriggered>().lastOrNull()
+        assertNotNull(navEvent)
+        assertEquals("open_video", navEvent.action)
+        assertEquals("intro.mp4", navEvent.payload)
+
+        val navEffect = receivedEffects.filterIsInstance<ReaderUiEffect.CustomAction>().lastOrNull()
+        assertNotNull(navEffect)
+        assertEquals("open_video", navEffect.action)
+        assertEquals("intro.mp4", navEffect.payload)
+
+        // Trigger via ReaderCommand.TriggerAction
+        session.dispatch(ReaderCommand.TriggerAction("complete_module", """{"module":1}"""))
+        val cmdEvent = receivedEvents.filterIsInstance<ReaderEvent.ActionTriggered>().lastOrNull()
+        assertNotNull(cmdEvent)
+        assertEquals("complete_module", cmdEvent.action)
+        assertEquals("""{"module":1}""", cmdEvent.payload)
+
+        val cmdEffect = receivedEffects.filterIsInstance<ReaderUiEffect.CustomAction>().lastOrNull()
+        assertNotNull(cmdEffect)
+        assertEquals("complete_module", cmdEffect.action)
+        assertEquals("""{"module":1}""", cmdEffect.payload)
+
+        eventSub.cancel()
+        effectSub.cancel()
+        session.close()
+    }
+
+    @Test
+    fun hpubParserInfersAudioAndVideoMediaTypes() {
+        val parser = HpubParser()
+        assertEquals("video/mp4", parser.inferMediaType("video.mp4"))
+        assertEquals("video/mp4", parser.inferMediaType("movie.m4v"))
+        assertEquals("video/webm", parser.inferMediaType("movie.webm"))
+        assertEquals("video/ogg", parser.inferMediaType("clip.ogv"))
+        assertEquals("video/quicktime", parser.inferMediaType("clip.mov"))
+        assertEquals("audio/mpeg", parser.inferMediaType("sound.mp3"))
+        assertEquals("audio/mp4", parser.inferMediaType("audio.m4a"))
+        assertEquals("audio/aac", parser.inferMediaType("stream.aac"))
+        assertEquals("audio/wav", parser.inferMediaType("track.wav"))
+        assertEquals("audio/ogg", parser.inferMediaType("voice.ogg"))
+        assertEquals("audio/ogg", parser.inferMediaType("voice.oga"))
+    }
+
+    @Test
+    fun memoryResourceProviderSupportsSizeAndRangeReading() {
+        val data = "Hello, Multimedia World!".encodeToByteArray()
+        val provider = MemoryResourceProvider(
+            files = mapOf("media/test.mp4" to data),
+        )
+        assertEquals(data.size.toLong(), provider.size("media/test.mp4"))
+        val range = provider.readRange("media/test.mp4", offset = 7L, byteCount = 10)
+        assertEquals("Multimedia", range.decodeToString())
+    }
 }
+
+

@@ -181,6 +181,28 @@ public class DecryptingResourceProvider(
         )
     }
 
+    override fun size(href: String): Long? {
+        val clean = normalizeHref(href)
+        if (encryptedResources.containsKey(clean)) {
+            val originalLength = encryptedResources[clean]?.originalLength
+            if (originalLength != null && originalLength > 0L) return originalLength
+            return runCatching { read(clean).size.toLong() }.getOrNull()
+        }
+        return delegate.size(clean)
+    }
+
+    override fun readRange(href: String, offset: Long, byteCount: Int): ByteArray {
+        val clean = normalizeHref(href)
+        if (encryptedResources.containsKey(clean)) {
+            val decrypted = read(clean)
+            if (offset < 0L || offset >= decrypted.size.toLong() || byteCount <= 0) return ByteArray(0)
+            val start = offset.toInt()
+            val end = (start + byteCount).coerceAtMost(decrypted.size)
+            return decrypted.copyOfRange(start, end)
+        }
+        return delegate.readRange(clean, offset, byteCount)
+    }
+
     override fun close() {
         delegate.close()
     }

@@ -642,6 +642,8 @@ private fun ReaderScreen(
                 first.fileName to readAsset(first.assetPath)
             }
         }
+    }
+
     BackHandler(enabled = customFullscreenView != null) {
         customFullscreenCallback?.onCustomViewHidden()
         customFullscreenView = null

@@ -591,12 +591,12 @@ class ReaderEngineTest {
         // 1. Intercepting action URLs via ReaderJsBridge.parseSpecialUrl
         val actionWithPayload = ReaderJsBridge.parseSpecialUrl("action://submit_quiz?q=%7B%22score%22%3A10%7D")
         assertTrue(actionWithPayload is InterceptedUrl.Action)
-        assertEquals("submit_quiz", (actionWithPayload as InterceptedUrl.Action).action)
+        assertEquals("submit_quiz", actionWithPayload.action)
         assertEquals("""{"score":10}""", actionWithPayload.payload)
 
         val simpleAction = ReaderJsBridge.parseSpecialUrl("action://toggle_sidebar")
         assertTrue(simpleAction is InterceptedUrl.Action)
-        assertEquals("toggle_sidebar", (simpleAction as InterceptedUrl.Action).action)
+        assertEquals("toggle_sidebar", simpleAction.action)
         assertNull(simpleAction.payload)
 
         // 2. ReaderSession handling action navigation and TriggerAction command

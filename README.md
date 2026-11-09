@@ -33,7 +33,7 @@ reader-engine/
 
 ---
 
-## Principais Capacidades (v0.3.0)
+## Principais Capacidades (v0.3.1)
 
 1. **Streaming de Arquivos Grandes em Disco (`Okio FileHandle`)**:
    Abra arquivos `.epub` / `.hpub` de centenas de MB diretamente do sistema de arquivos sem carregar o pacote inteiro na memória RAM:

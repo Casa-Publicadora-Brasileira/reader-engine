@@ -29,6 +29,8 @@ jobs:
       SONATYPE_TOKEN_PASSWORD: ${{ secrets.SONATYPE_TOKEN_PASSWORD }}
       SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
       SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+      GITHUB_TOKEN: ${{ secrets.GHE_TOKEN || secrets.GITHUB_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+      VERSION: ${{ inputs.version || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -87,5 +89,21 @@ jobs:
         env:
           SONATYPE_TOKEN_USER: ${{ secrets.SONATYPE_TOKEN_USER }}
           SONATYPE_TOKEN_PASSWORD: ${{ secrets.SONATYPE_TOKEN_PASSWORD }}
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+
+      - name: Publish to GitHub Packages Enterprise
+        run: |
+          ./gradlew \
+            :reader-core:publishAndroidReleasePublicationToGitHubPackagesRepository \
+            :reader-core:publishJvmPublicationToGitHubPackagesRepository \
+            :reader-core:publishKotlinMultiplatformPublicationToGitHubPackagesRepository \
+            --no-daemon
+        env:
+          GITHUB_TOKEN: ${{ secrets.GHE_TOKEN || secrets.GITHUB_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_PACKAGES_URL: ${{ vars.GHE_PACKAGES_URL || vars.GITHUB_PACKAGES_URL || '' }}
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
           SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}

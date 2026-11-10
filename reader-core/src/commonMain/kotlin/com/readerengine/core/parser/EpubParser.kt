@@ -81,8 +81,8 @@ public class EpubParser : FormatParser {
         val spine = linearHrefs.ifEmpty { allHrefs }
 
         val toc = when {
-            navHref != null -> runCatching { parseNavXhtml(zip.readString(navHref!!), navHref!!) }.getOrDefault(emptyList())
-            ncxHref != null -> runCatching { parseNcx(zip.readString(ncxHref!!), ncxHref!!) }.getOrDefault(emptyList())
+            navHref != null -> runCatching { parseNavXhtml(zip.readString(navHref), navHref) }.getOrDefault(emptyList())
+            ncxHref != null -> runCatching { parseNcx(zip.readString(ncxHref), ncxHref) }.getOrDefault(emptyList())
             else -> emptyList()
         }
 

@@ -191,7 +191,7 @@ public data class ReadingProgress(
         ): Float {
             if (totalPages <= 0) return 0f
             val safePage = pageIndex.coerceIn(0, totalPages - 1)
-            val hasScrollMetrics = viewportHeightPx in 1 downTo contentHeightPx
+            val hasScrollMetrics = contentHeightPx > viewportHeightPx && viewportHeightPx > 0
             val scrollFraction = when {
                 hasScrollMetrics -> {
                     val maxScroll = (contentHeightPx - viewportHeightPx).coerceAtLeast(1)

@@ -1,0 +1,178 @@
+{
+  "version": "1.3.6",
+  "project": "reader-engine",
+  "user_name": "Andre",
+  "chat_language": "pt-br",
+  "doc_language": "Português",
+  "answer_mode": "chat",
+  "doc_level": "detalhado",
+  "output_folder": "_reversa_sdd",
+  "phase": "concluido",
+  "completed": [
+    "reconhecimento",
+    "escavacao",
+    "interpretacao",
+    "geracao",
+    "revisao"
+  ],
+  "pending": [],
+  "engines": [
+    "antigravity"
+  ],
+  "agents": [
+    "reversa",
+    "reversa-scout",
+    "reversa-archaeologist",
+    "reversa-detective",
+    "reversa-architect",
+    "reversa-writer",
+    "reversa-reviewer"
+  ],
+  "redator_progress": {
+    "current_index": 13,
+    "total_files": 13,
+    "completed_files": [
+      "_reversa_sdd/reader-core/requirements.md",
+      "_reversa_sdd/reader-core/design.md",
+      "_reversa_sdd/reader-core/tasks.md",
+      "_reversa_sdd/reader-core/contracts.md",
+      "_reversa_sdd/reader-core/edge-cases.md",
+      "_reversa_sdd/sample-android/requirements.md",
+      "_reversa_sdd/sample-android/design.md",
+      "_reversa_sdd/sample-android/tasks.md",
+      "_reversa_sdd/sample-android/contracts.md",
+      "_reversa_sdd/sample-android/edge-cases.md",
+      "_reversa_sdd/user-stories/leitura-e-navegacao.md",
+      "_reversa_sdd/user-stories/anotacoes-busca-e-midia.md",
+      "_reversa_sdd/traceability/code-spec-matrix.md"
+    ],
+    "next_file": null
+  },
+  "checkpoints": {
+    "scout": {
+      "completed_at": "2026-11-12T13:30:00Z",
+      "files": [
+        "_reversa_sdd/inventory.md",
+        "_reversa_sdd/dependencies.md",
+        ".reversa/context/surface.json"
+      ]
+    },
+    "archaeologist": {
+      "completed_at": "2026-11-12T13:50:00Z",
+      "files": [
+        "_reversa_sdd/code-analysis.md",
+        "_reversa_sdd/data-dictionary.md",
+        "_reversa_sdd/flowcharts/reader-core.md",
+        "_reversa_sdd/flowcharts/sample-android.md",
+        "_reversa_sdd/flowcharts/reader-core-zip-central-directory.md",
+        "_reversa_sdd/flowcharts/reader-core-dispatch-command.md",
+        "_reversa_sdd/flowcharts/reader-core-epub-parser.md",
+        "_reversa_sdd/flowcharts/sample-android-http206-range.md",
+        "_reversa_sdd/reader-core/legacy-mapping.md",
+        "_reversa_sdd/sample-android/legacy-mapping.md",
+        ".reversa/context/modules.json"
+      ]
+    },
+    "detective": {
+      "completed_at": "2026-11-12T13:55:00Z",
+      "files": [
+        "_reversa_sdd/domain.md",
+        "_reversa_sdd/state-machines.md",
+        "_reversa_sdd/permissions.md",
+        "_reversa_sdd/adrs/001-migracao-para-kotlin-multiplatform.md",
+        "_reversa_sdd/adrs/002-leitor-zip-central-directory-com-okio-e-lru-cache.md",
+        "_reversa_sdd/adrs/003-arquitetura-hibrida-estado-kmp-e-renderizacao-webview.md",
+        "_reversa_sdd/adrs/004-pipeline-drm-desofuscacao-fontes-e-decryptor-pluggable.md",
+        "_reversa_sdd/adrs/005-streaming-parcial-http206-para-midia-embarcada.md"
+      ]
+    },
+    "architect": {
+      "completed_at": "2026-11-12T14:00:00Z",
+      "files": [
+        "_reversa_sdd/architecture.md",
+        "_reversa_sdd/c4-context.md",
+        "_reversa_sdd/c4-containers.md",
+        "_reversa_sdd/c4-components.md",
+        "_reversa_sdd/erd-complete.md",
+        "_reversa_sdd/traceability/spec-impact-matrix.md",
+        "_reversa_sdd/deployment.md"
+      ]
+    },
+    "writer": {
+      "completed_at": "2026-11-12T14:01:00Z",
+      "files": [
+        "_reversa_sdd/reader-core/requirements.md",
+        "_reversa_sdd/reader-core/design.md",
+        "_reversa_sdd/reader-core/tasks.md",
+        "_reversa_sdd/reader-core/contracts.md",
+        "_reversa_sdd/reader-core/edge-cases.md",
+        "_reversa_sdd/sample-android/requirements.md",
+        "_reversa_sdd/sample-android/design.md",
+        "_reversa_sdd/sample-android/tasks.md",
+        "_reversa_sdd/sample-android/contracts.md",
+        "_reversa_sdd/sample-android/edge-cases.md",
+        "_reversa_sdd/user-stories/leitura-e-navegacao.md",
+        "_reversa_sdd/user-stories/anotacoes-busca-e-midia.md",
+        "_reversa_sdd/traceability/code-spec-matrix.md"
+      ]
+    },
+    "reviewer": {
+      "completed_at": "2026-11-12T14:02:00Z",
+      "files": [
+        "_reversa_sdd/questions.md",
+        "_reversa_sdd/gaps.md",
+        "_reversa_sdd/confidence-report.md"
+      ]
+    }
+  },
+  "created_files": [
+    ".reversa/state.json",
+    ".reversa/plan.md",
+    ".reversa/config.toml",
+    "_reversa_sdd/inventory.md",
+    "_reversa_sdd/dependencies.md",
+    ".reversa/context/surface.json",
+    "_reversa_sdd/code-analysis.md",
+    "_reversa_sdd/data-dictionary.md",
+    "_reversa_sdd/flowcharts/reader-core.md",
+    "_reversa_sdd/flowcharts/sample-android.md",
+    "_reversa_sdd/flowcharts/reader-core-zip-central-directory.md",
+    "_reversa_sdd/flowcharts/reader-core-dispatch-command.md",
+    "_reversa_sdd/flowcharts/reader-core-epub-parser.md",
+    "_reversa_sdd/flowcharts/sample-android-http206-range.md",
+    "_reversa_sdd/reader-core/legacy-mapping.md",
+    "_reversa_sdd/sample-android/legacy-mapping.md",
+    ".reversa/context/modules.json",
+    "_reversa_sdd/domain.md",
+    "_reversa_sdd/state-machines.md",
+    "_reversa_sdd/permissions.md",
+    "_reversa_sdd/adrs/001-migracao-para-kotlin-multiplatform.md",
+    "_reversa_sdd/adrs/002-leitor-zip-central-directory-com-okio-e-lru-cache.md",
+    "_reversa_sdd/adrs/003-arquitetura-hibrida-estado-kmp-e-renderizacao-webview.md",
+    "_reversa_sdd/adrs/004-pipeline-drm-desofuscacao-fontes-e-decryptor-pluggable.md",
+    "_reversa_sdd/adrs/005-streaming-parcial-http206-para-midia-embarcada.md",
+    "_reversa_sdd/architecture.md",
+    "_reversa_sdd/c4-context.md",
+    "_reversa_sdd/c4-containers.md",
+    "_reversa_sdd/c4-components.md",
+    "_reversa_sdd/erd-complete.md",
+    "_reversa_sdd/traceability/spec-impact-matrix.md",
+    "_reversa_sdd/deployment.md",
+    "_reversa_sdd/reader-core/requirements.md",
+    "_reversa_sdd/reader-core/design.md",
+    "_reversa_sdd/reader-core/tasks.md",
+    "_reversa_sdd/reader-core/contracts.md",
+    "_reversa_sdd/reader-core/edge-cases.md",
+    "_reversa_sdd/sample-android/requirements.md",
+    "_reversa_sdd/sample-android/design.md",
+    "_reversa_sdd/sample-android/tasks.md",
+    "_reversa_sdd/sample-android/contracts.md",
+    "_reversa_sdd/sample-android/edge-cases.md",
+    "_reversa_sdd/user-stories/leitura-e-navegacao.md",
+    "_reversa_sdd/user-stories/anotacoes-busca-e-midia.md",
+    "_reversa_sdd/traceability/code-spec-matrix.md",
+    "_reversa_sdd/questions.md",
+    "_reversa_sdd/gaps.md",
+    "_reversa_sdd/confidence-report.md"
+  ]
+}

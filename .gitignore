@@ -3,6 +3,7 @@
 .idea/
 build/
 **/build/
+public-maven/
 local.properties
 *.iml
 .DS_Store

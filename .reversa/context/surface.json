@@ -1,0 +1,62 @@
+{
+  "generated_at": "2026-11-12T13:29:00Z",
+  "project_root": "/Users/andrealves/Documents/dev/reader-engine",
+  "languages": [
+    { "name": "Kotlin", "extensions": [".kt"], "file_count": 19 },
+    { "name": "Kotlin DSL (Gradle)", "extensions": [".kts"], "file_count": 4 },
+    { "name": "JSON", "extensions": [".json"], "file_count": 8 },
+    { "name": "XML", "extensions": [".xml"], "file_count": 3 },
+    { "name": "YAML", "extensions": [".yml"], "file_count": 2 },
+    { "name": "Shell", "extensions": [".sh"], "file_count": 1 }
+  ],
+  "primary_language": "Kotlin",
+  "frameworks": [
+    { "name": "Kotlin Multiplatform", "version": "2.4.20", "source": "gradle/libs.versions.toml" },
+    { "name": "Android Gradle Plugin", "version": "9.4.1", "source": "gradle/libs.versions.toml" },
+    { "name": "Kotlinx Coroutines", "version": "1.9.0", "source": "gradle/libs.versions.toml" },
+    { "name": "Kotlinx Serialization JSON", "version": "1.7.3", "source": "gradle/libs.versions.toml" },
+    { "name": "Square Okio", "version": "3.9.1", "source": "gradle/libs.versions.toml" },
+    { "name": "Jetpack Compose (BOM)", "version": "2024.10.01", "source": "gradle/libs.versions.toml" },
+    { "name": "AndroidX Webkit", "version": "1.12.1", "source": "gradle/libs.versions.toml" }
+  ],
+  "package_manager": "gradle",
+  "entry_points": [
+    { "path": "reader-core/src/commonMain/kotlin/com/readerengine/core/session/ReaderEngine.kt", "type": "library_entry" },
+    { "path": "reader-core/src/commonMain/kotlin/com/readerengine/core/session/ReaderSession.kt", "type": "session_entry" },
+    { "path": "sample-android/src/main/java/com/readerengine/app/MainActivity.kt", "type": "app_entry" }
+  ],
+  "config_files": [
+    "settings.gradle.kts",
+    "build.gradle.kts",
+    "reader-core/build.gradle.kts",
+    "sample-android/build.gradle.kts",
+    "gradle.properties",
+    "gradle/libs.versions.toml",
+    "gradle/gradle-daemon-jvm.properties"
+  ],
+  "ci_cd": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/publish-mobile.yml"
+  ],
+  "test_framework": "kotlin.test + kotlinx-coroutines-test",
+  "test_file_count": 1,
+  "modules": [
+    "reader-core",
+    "sample-android"
+  ],
+  "total_files": 46,
+  "organization_suggestion": {
+    "granularity": "module",
+    "rationale": "O projeto está estruturado como um monorepo Gradle com dois módulos bem delimitados: reader-core/ (biblioteca KMP multiplataforma subdividida em pacotes de domínio) e sample-android/ (aplicação Android host de demonstração).",
+    "signals": [
+      {
+        "type": "top_level_domain_folders",
+        "evidence": [
+          "reader-core/src/commonMain/kotlin/com/readerengine/core/",
+          "sample-android/src/main/java/com/readerengine/app/"
+        ]
+      }
+    ],
+    "features": []
+  }
+}

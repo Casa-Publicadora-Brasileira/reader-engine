@@ -1,0 +1,263 @@
+{
+  "generated_at": "2026-11-12T13:50:00Z",
+  "modules": [
+    {
+      "name": "reader-core",
+      "path": "reader-core/src/commonMain/kotlin/com/readerengine/core",
+      "purpose": "Motor multiplataforma (KMP: Android, iOS, JVM) de parsing, desofuscação DRM, busca full-text, gerenciamento de sessão reativa, temas e ponte HTML/JS para publicações EPUB 2/3, HPUB e reader-json",
+      "primary_files": [
+        "reader-core/src/commonMain/kotlin/com/readerengine/core/session/ReaderSession.kt",
+        "reader-core/src/commonMain/kotlin/com/readerengine/core/parser/EpubParser.kt",
+        "reader-core/src/commonMain/kotlin/com/readerengine/core/provider/ZipResourceProvider.kt",
+        "reader-core/src/commonMain/kotlin/com/readerengine/core/bridge/ReaderJsBridge.kt",
+        "reader-core/src/commonMain/kotlin/com/readerengine/core/drm/DrmProvider.kt",
+        "reader-core/src/commonMain/kotlin/com/readerengine/core/search/BookSearchEngine.kt",
+        "reader-core/src/commonMain/kotlin/com/readerengine/core/theme/ThemeTokens.kt",
+        "reader-core/src/commonMain/kotlin/com/readerengine/core/model/Models.kt",
+        "reader-core/src/commonMain/kotlin/com/readerengine/core/parser/Source.kt",
+        "reader-core/src/commonMain/kotlin/com/readerengine/core/parser/HpubParser.kt",
+        "reader-core/src/commonMain/kotlin/com/readerengine/core/parser/JsonParser.kt",
+        "reader-core/src/commonMain/kotlin/com/readerengine/core/bridge/PayloadCodec.kt"
+      ],
+      "functions": [
+        {
+          "name": "ReaderEngine.open",
+          "file": "reader-core/src/commonMain/kotlin/com/readerengine/core/session/ReaderSession.kt",
+          "params": [
+            "source: Source",
+            "scope: CoroutineScope",
+            "initialState: InitialBookState?",
+            "strings: ReaderStrings",
+            "fallbackDecryptor: ContentDecryptor?"
+          ],
+          "returns": "ReaderSession",
+          "confidence": "confirmed"
+        },
+        {
+          "name": "ReaderSession.dispatch",
+          "file": "reader-core/src/commonMain/kotlin/com/readerengine/core/session/ReaderSession.kt",
+          "params": ["command: ReaderCommand"],
+          "returns": "Unit",
+          "confidence": "confirmed"
+        },
+        {
+          "name": "ReaderSession.resolveResourceHref",
+          "file": "reader-core/src/commonMain/kotlin/com/readerengine/core/session/ReaderSession.kt",
+          "params": ["rawHref: String"],
+          "returns": "String?",
+          "confidence": "confirmed"
+        },
+        {
+          "name": "EpubParser.parse",
+          "file": "reader-core/src/commonMain/kotlin/com/readerengine/core/parser/EpubParser.kt",
+          "params": ["source: Source", "fallbackDecryptor: ContentDecryptor?"],
+          "returns": "Publication",
+          "confidence": "confirmed"
+        },
+        {
+          "name": "ZipResourceProvider.fromSource",
+          "file": "reader-core/src/commonMain/kotlin/com/readerengine/core/provider/ZipResourceProvider.kt",
+          "params": ["source: Source", "limits: ZipLimits", "fileSystem: FileSystem"],
+          "returns": "ZipResourceProvider",
+          "confidence": "confirmed"
+        },
+        {
+          "name": "ZipResourceProvider.readRange",
+          "file": "reader-core/src/commonMain/kotlin/com/readerengine/core/provider/ZipResourceProvider.kt",
+          "params": ["href: String", "offset: Long", "length: Int"],
+          "returns": "ByteArray?",
+          "confidence": "confirmed"
+        },
+        {
+          "name": "StandardEpubFontDeobfuscator.transform",
+          "file": "reader-core/src/commonMain/kotlin/com/readerengine/core/drm/DrmProvider.kt",
+          "params": ["href: String", "rawBytes: ByteArray", "encryptionInfo: EncryptedResourceInfo"],
+          "returns": "ByteArray",
+          "confidence": "confirmed"
+        },
+        {
+          "name": "BookSearchEngine.search",
+          "file": "reader-core/src/commonMain/kotlin/com/readerengine/core/search/BookSearchEngine.kt",
+          "params": ["publication: Publication", "query: String", "maxResults: Int"],
+          "returns": "List<SearchResult>",
+          "confidence": "confirmed"
+        },
+        {
+          "name": "ReaderJsBridge.injectIntoHtml",
+          "file": "reader-core/src/commonMain/kotlin/com/readerengine/core/bridge/ReaderJsBridge.kt",
+          "params": [
+            "rawHtml: String",
+            "themeTokens: ThemeTokens",
+            "fontSizeSp: Int",
+            "highlights: List<HighlightItem>",
+            "forms: List<FormEntry>",
+            "customCss: String?",
+            "includeScript: Boolean",
+            "paginatedMode: Boolean",
+            "viewportWidthPx: Int",
+            "viewportHeightPx: Int",
+            "isFixedLayout: Boolean"
+          ],
+          "returns": "String",
+          "confidence": "confirmed"
+        },
+        {
+          "name": "PayloadCodec.encode",
+          "file": "reader-core/src/commonMain/kotlin/com/readerengine/core/bridge/PayloadCodec.kt",
+          "params": ["rawText: String", "compressionThresholdChars: Int"],
+          "returns": "String",
+          "confidence": "confirmed"
+        }
+      ],
+      "entities": [
+        {
+          "name": "Publication",
+          "fields": [
+            { "name": "format", "type": "String", "required": true },
+            { "name": "metadata", "type": "Metadata", "required": true },
+            { "name": "resources", "type": "List<Resource>", "required": true },
+            { "name": "pages", "type": "List<String>", "required": true },
+            { "name": "pageHrefs", "type": "List<String>", "required": true },
+            { "name": "toc", "type": "List<TocEntry>", "required": true },
+            { "name": "resourceProvider", "type": "ResourceProvider", "required": true }
+          ],
+          "confidence": "confirmed"
+        },
+        {
+          "name": "ReaderState",
+          "fields": [
+            { "name": "bookId", "type": "String", "required": true },
+            { "name": "metadata", "type": "Metadata", "required": true },
+            { "name": "currentPage", "type": "Int", "required": true },
+            { "name": "totalPages", "type": "Int", "required": true },
+            { "name": "currentChapterTitle", "type": "String?", "required": false },
+            { "name": "currentPageContent", "type": "String", "required": true },
+            { "name": "currentPageHref", "type": "String?", "required": false },
+            { "name": "scrollY", "type": "Int", "required": true },
+            { "name": "progress", "type": "ReadingProgress", "required": true },
+            { "name": "bookmarks", "type": "List<Bookmark>", "required": true },
+            { "name": "highlights", "type": "List<HighlightItem>", "required": true },
+            { "name": "forms", "type": "List<FormEntry>", "required": true },
+            { "name": "searchResults", "type": "List<SearchResult>", "required": true },
+            { "name": "theme", "type": "ThemeTokens", "required": true },
+            { "name": "fontSizeSp", "type": "Int", "required": true }
+          ],
+          "confidence": "confirmed"
+        },
+        {
+          "name": "ReadingProgress",
+          "fields": [
+            { "name": "currentPage", "type": "Int", "required": true },
+            { "name": "totalPages", "type": "Int", "required": true },
+            { "name": "scrollY", "type": "Int", "required": true },
+            { "name": "contentHeightPx", "type": "Int", "required": true },
+            { "name": "viewportHeightPx", "type": "Int", "required": true },
+            { "name": "percentage", "type": "Double", "required": true }
+          ],
+          "confidence": "confirmed"
+        }
+      ],
+      "business_rules": [
+        {
+          "description": "Progresso monotônico global combina índice da página e fração de scroll vertical: ((safePage + scrollFraction) / totalPages) * 100",
+          "location": "reader-core/src/commonMain/kotlin/com/readerengine/core/model/Models.kt:190",
+          "confidence": "confirmed"
+        },
+        {
+          "description": "Proteção anti-Zip Bomb limita arquivos a 10.000 entradas, 50 MB por entrada descompactada, 1 GB acumulado e cache LRU de 16 MB",
+          "location": "reader-core/src/commonMain/kotlin/com/readerengine/core/provider/ZipResourceProvider.kt:16",
+          "confidence": "confirmed"
+        },
+        {
+          "description": "Desofuscação de fontes aplica XOR de 1040 bytes com SHA-1 (IDPF) ou 1024 bytes com chave UUID de 16 bytes (Adobe)",
+          "location": "reader-core/src/commonMain/kotlin/com/readerengine/core/drm/DrmProvider.kt:112",
+          "confidence": "confirmed"
+        },
+        {
+          "description": "Throttling de scroll ignora deltas inferiores a 2px em relação ao scrollY atual para evitar recomposições desnecessárias",
+          "location": "reader-core/src/commonMain/kotlin/com/readerengine/core/session/ReaderSession.kt:238",
+          "confidence": "confirmed"
+        },
+        {
+          "description": "FontSizeSp é restrito ao intervalo [12, 36] sp",
+          "location": "reader-core/src/commonMain/kotlin/com/readerengine/core/session/ReaderSession.kt:349",
+          "confidence": "confirmed"
+        },
+        {
+          "description": "Payloads JSON maiores ou iguais a 200.000 caracteres são comprimidos com GZIP e prefixados com gz:<base64>, limitados a 16 MB na descompressão",
+          "location": "reader-core/src/commonMain/kotlin/com/readerengine/core/bridge/PayloadCodec.kt:11",
+          "confidence": "confirmed"
+        }
+      ],
+      "dependencies": [
+        "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0",
+        "org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3",
+        "com.squareup.okio:okio:3.9.1"
+      ],
+      "algorithms": [
+        "Leitura reversa de EOCD e Central Directory ZIP em janela de 65.557 bytes com suporte a zero-copy range slicing para entradas STORED",
+        "Desofuscação criptográfica XOR para fontes EPUB (IDPF SHA-1 1040B / Adobe UUID 1024B)",
+        "Normalização 1-para-1 de diacríticos Unicode (foldDiacritics) preservando índices exatos para highlight de busca",
+        "Amostragem SHA-256 de 64KB iniciais + 64KB finais + tamanho para identificação determinística de livros em disco em O(1)"
+      ],
+      "complexity": "high"
+    },
+    {
+      "name": "sample-android",
+      "path": "sample-android/src/main/java/com/readerengine/app",
+      "purpose": "Aplicação Android de referência (Jetpack Compose + WebView) que integra o reader-core, provê persistência local via SharedPreferences e intercepta recursos book://content/ com suporte a HTTP 206 Partial Content",
+      "primary_files": [
+        "sample-android/src/main/java/com/readerengine/app/MainActivity.kt"
+      ],
+      "functions": [
+        {
+          "name": "BookResourceWebViewClient.shouldInterceptRequest",
+          "file": "sample-android/src/main/java/com/readerengine/app/MainActivity.kt",
+          "params": ["view: WebView?", "request: WebResourceRequest?"],
+          "returns": "WebResourceResponse?",
+          "confidence": "confirmed"
+        },
+        {
+          "name": "HostBookPersistenceStore.loadInitialState",
+          "file": "sample-android/src/main/java/com/readerengine/app/MainActivity.kt",
+          "params": ["bookId: String"],
+          "returns": "InitialBookState?",
+          "confidence": "confirmed"
+        },
+        {
+          "name": "HostBookPersistenceStore.saveFromState",
+          "file": "sample-android/src/main/java/com/readerengine/app/MainActivity.kt",
+          "params": ["state: ReaderState"],
+          "returns": "Unit",
+          "confidence": "confirmed"
+        }
+      ],
+      "entities": [
+        {
+          "name": "HostBookPersistenceStore",
+          "fields": [
+            { "name": "prefs", "type": "SharedPreferences", "required": true },
+            { "name": "json", "type": "Json", "required": true }
+          ],
+          "confidence": "confirmed"
+        }
+      ],
+      "business_rules": [
+        {
+          "description": "Requisições com cabeçalho Range: bytes=start-end para book://content/ são atendidas com HTTP 206 Partial Content em chunks máximos de 1 MB (1.048.576 bytes)",
+          "location": "sample-android/src/main/java/com/readerengine/app/MainActivity.kt:285",
+          "confidence": "confirmed"
+        }
+      ],
+      "dependencies": [
+        "reader-core",
+        "androidx.compose.material3:material3",
+        "androidx.activity:activity-compose:1.9.2"
+      ],
+      "algorithms": [
+        "Negociação HTTP 206 Partial Content sobre WebViewClient com leitura parcial delegada ao ZipResourceProvider.readRange"
+      ],
+      "complexity": "medium"
+    }
+  ]
+}

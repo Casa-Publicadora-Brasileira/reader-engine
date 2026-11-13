@@ -92,7 +92,7 @@ dependencyResolutionManagement {
             // GitHub Enterprise Server (Subdomain Isolation): https://maven.<seu-host-ghe>/<org>/reader-engine
             url = uri(
                 providers.gradleProperty("githubPackagesUrl")
-                    .orElse("https://maven.pkg.github.com/andreAlvesCarvalhojr/reader-engine")
+                    .orElse("https://maven.pkg.github.com/Casa-Publicadora-Brasileira/reader-engine")
                     .get()
             )
             credentials {
@@ -113,13 +113,13 @@ No `build.gradle.kts` do módulo consumidor:
 ```kotlin
 dependencies {
     // Em um projeto Kotlin Multiplatform (commonMain):
-    implementation("com.readerengine:reader-core:0.3.1")
+    implementation("com.readerengine:reader-core:0.3.2")
 
     // Ou diretamente em um projeto Android puro:
-    implementation("com.readerengine:reader-core-android:0.3.1")
+    implementation("com.readerengine:reader-core-android:0.3.2")
 
     // Ou em um projeto JVM puro (Desktop / Backend):
-    implementation("com.readerengine:reader-core-jvm:0.3.1")
+    implementation("com.readerengine:reader-core-jvm:0.3.2")
 }
 ```
 
@@ -127,17 +127,19 @@ dependencies {
 
 ### 3.2 Android & JVM — Repositório Público Maven (Sem Credenciais)
 
-Para testes rápidos ou projetos públicos sem necessidade de token:
+Para testes rápidos ou projetos sem necessidade de token:
 
 ```kotlin
 repositories {
     google()
     mavenCentral()
-    maven { url = uri("https://reader-engine-maven.vercel.app/") }
+    maven {
+        url = uri("https://raw.githubusercontent.com/Casa-Publicadora-Brasileira/reader-engine/mvn-repo")
+    }
 }
 
 dependencies {
-    implementation("com.readerengine:reader-core-android:0.3.1")
+    implementation("com.readerengine:reader-core-android:0.3.2")
 }
 ```
 
@@ -150,7 +152,7 @@ O pipeline de release gera o binário universal **`ReaderCore.xcframework.zip`**
 #### Opção A: Via `Package.swift` (Swift Package Manager)
 ```swift
 dependencies: [
-    .package(url: "https://github.com/andreAlvesCarvalhojr/reader-engine.git", from: "0.3.1")
+    .package(url: "https://github.com/Casa-Publicadora-Brasileira/reader-engine.git", from: "0.3.2")
 ]
 ```
 
@@ -166,7 +168,7 @@ O artefato será gerado em `reader-core/build/XCFrameworks/release/ReaderCore.xc
 
 ### 4.1 Android (Jetpack Compose + WebView + HTTP 206 Streaming)
 
-No Android, o ciclo de integração consiste em 4 passos simples (veja a implementação completa de referência em [`sample-android/src/main/java/com/readerengine/app/MainActivity.kt`](file:///Users/andrealves/Documents/dev/reader-engine/sample-android/src/main/java/com/readerengine/app/MainActivity.kt)):
+No Android, o ciclo de integração consiste em 4 passos simples (veja a implementação completa de referência em [`sample-android/src/main/java/com/readerengine/app/MainActivity.kt`](sample-android/src/main/java/com/readerengine/app/MainActivity.kt)):
 
 #### Passo 1: Abrir o livro a partir do disco (`Okio Path`) com `InitialBookState`
 ```kotlin
@@ -619,4 +621,4 @@ reader-engine/
 
 ## Licença
 
-Distribuído sob a licença MIT. Veja [LICENSE](file:///Users/andrealves/Documents/dev/reader-engine/LICENSE) para mais detalhes.
+Distribuído sob a licença MIT. Veja [LICENSE](LICENSE) para mais detalhes.

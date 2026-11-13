@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version name (e.g. 0.3.1) when not tagging"
+        description: "Version name (e.g. 0.3.2) when not tagging"
         required: false
-        default: "0.3.1"
+        default: "0.3.2"
 
 concurrency:
   group: publish-mobile-${{ github.ref }}
@@ -24,7 +24,6 @@ jobs:
     name: Publish Android AAR, JVM JAR & Maven Repository
     runs-on: ubuntu-latest
     env:
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       SONATYPE_TOKEN_USER: ${{ secrets.SONATYPE_TOKEN_USER }}
       SONATYPE_TOKEN_PASSWORD: ${{ secrets.SONATYPE_TOKEN_PASSWORD }}
       SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
@@ -74,9 +73,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GHE_TOKEN || secrets.GITHUB_TOKEN }}
 
-      - name: Deploy Public Maven to Vercel
-        if: env.VERCEL_TOKEN != ''
-        run: ./scripts/deploy-public-maven-vercel.sh
+      - name: Publish Public Maven to mvn-repo branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GHE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          WORKTREE_DIR="$(mktemp -d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin mvn-repo >/dev/null 2>&1; then
+            git fetch origin mvn-repo
+            git worktree add "$WORKTREE_DIR" origin/mvn-repo
+            git -C "$WORKTREE_DIR" checkout -B mvn-repo
+          else
+            git worktree add --detach "$WORKTREE_DIR"
+            git -C "$WORKTREE_DIR" checkout --orphan mvn-repo
+            git -C "$WORKTREE_DIR" rm -rf . >/dev/null 2>&1 || true
+          fi
+          cp -R public-maven/. "$WORKTREE_DIR/"
+          git -C "$WORKTREE_DIR" add -A
+          if ! git -C "$WORKTREE_DIR" diff --cached --quiet; then
+            git -C "$WORKTREE_DIR" commit -m "chore(maven): publish reader-core ${VERSION:-${GITHUB_REF_NAME#v}}"
+            git -C "$WORKTREE_DIR" push origin HEAD:refs/heads/mvn-repo
+          fi
+          git worktree remove --force "$WORKTREE_DIR" || true
 
       - name: Publish to Sonatype Maven Central
         if: env.SONATYPE_TOKEN_USER != '' && env.SONATYPE_TOKEN_PASSWORD != ''

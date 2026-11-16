@@ -1,0 +1,338 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "com.readerengine",
+    "module": "reader-core",
+    "version": "0.3.2",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "9.9.0"
+    }
+  },
+  "variants": [
+    {
+      "name": "metadataApiElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.platform.type": "common"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-core",
+          "version": {
+            "requires": "1.9.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-serialization-json",
+          "version": {
+            "requires": "1.7.3"
+          }
+        },
+        {
+          "group": "com.squareup.okio",
+          "module": "okio",
+          "version": {
+            "requires": "3.9.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.4.20"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "reader-core-metadata-0.3.2.jar",
+          "url": "reader-core-0.3.2.jar",
+          "size": 31824,
+          "sha512": "c518b1ad025e2467e06657a4c2c7dcdba80b038eae3697b029181d33053d817a977b1698801458faa2fb27f4028caae4ab316cb87ed0559f8aec4a0239a25357",
+          "sha256": "6c5d0ebb9612934d9a72e8f1a2b1931d5b90db4fefcfcc656289fc709da3a715",
+          "sha1": "0467582624b6daf26ebc11d5c26da3d78e0b5fb1",
+          "md5": "fa585a9aff08b5352efe60f441818fc7"
+        }
+      ]
+    },
+    {
+      "name": "metadataSourcesElements",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.platform.type": "common"
+      },
+      "files": [
+        {
+          "name": "reader-core-kotlin-0.3.2-sources.jar",
+          "url": "reader-core-0.3.2-sources.jar",
+          "size": 49663,
+          "sha512": "1c376e016ee43b9e63545a2757676696a1f5a5ca238982d72d1af7c034d8c9abb35e30c0f81a8e110c298f9d9907efc0ac3defd1e2880c6f3a1a796d025408a4",
+          "sha256": "b0a5048a2a94977370fbaae2a8a361743aab57e3472bec945bffb89a70fea462",
+          "sha1": "4c1e9d40f77ffd77ba89cf7b9e9fcb5447db5552",
+          "md5": "f7e3191c6350f6bdc3d2658d1fe39170"
+        }
+      ]
+    },
+    {
+      "name": "releaseApiElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "android",
+        "org.gradle.usage": "java-api",
+        "org.jetbrains.kotlin.platform.type": "androidJvm"
+      },
+      "available-at": {
+        "url": "../../reader-core-android/0.3.2/reader-core-android-0.3.2.module",
+        "group": "com.readerengine",
+        "module": "reader-core-android",
+        "version": "0.3.2"
+      }
+    },
+    {
+      "name": "releaseRuntimeElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "android",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "androidJvm"
+      },
+      "available-at": {
+        "url": "../../reader-core-android/0.3.2/reader-core-android-0.3.2.module",
+        "group": "com.readerengine",
+        "module": "reader-core-android",
+        "version": "0.3.2"
+      }
+    },
+    {
+      "name": "releaseSourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "android",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "androidJvm"
+      },
+      "available-at": {
+        "url": "../../reader-core-android/0.3.2/reader-core-android-0.3.2.module",
+        "group": "com.readerengine",
+        "module": "reader-core-android",
+        "version": "0.3.2"
+      }
+    },
+    {
+      "name": "iosArm64ApiElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-api",
+        "org.jetbrains.kotlin.native.target": "ios_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../reader-core-iosarm64/0.3.2/reader-core-iosarm64-0.3.2.module",
+        "group": "com.readerengine",
+        "module": "reader-core-iosarm64",
+        "version": "0.3.2"
+      }
+    },
+    {
+      "name": "iosArm64SourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.native.target": "ios_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../reader-core-iosarm64/0.3.2/reader-core-iosarm64-0.3.2.module",
+        "group": "com.readerengine",
+        "module": "reader-core-iosarm64",
+        "version": "0.3.2"
+      }
+    },
+    {
+      "name": "iosArm64MetadataElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.native.target": "ios_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../reader-core-iosarm64/0.3.2/reader-core-iosarm64-0.3.2.module",
+        "group": "com.readerengine",
+        "module": "reader-core-iosarm64",
+        "version": "0.3.2"
+      }
+    },
+    {
+      "name": "iosSimulatorArm64ApiElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-api",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../reader-core-iossimulatorarm64/0.3.2/reader-core-iossimulatorarm64-0.3.2.module",
+        "group": "com.readerengine",
+        "module": "reader-core-iossimulatorarm64",
+        "version": "0.3.2"
+      }
+    },
+    {
+      "name": "iosSimulatorArm64SourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../reader-core-iossimulatorarm64/0.3.2/reader-core-iossimulatorarm64-0.3.2.module",
+        "group": "com.readerengine",
+        "module": "reader-core-iossimulatorarm64",
+        "version": "0.3.2"
+      }
+    },
+    {
+      "name": "iosSimulatorArm64MetadataElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.native.target": "ios_simulator_arm64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../reader-core-iossimulatorarm64/0.3.2/reader-core-iossimulatorarm64-0.3.2.module",
+        "group": "com.readerengine",
+        "module": "reader-core-iossimulatorarm64",
+        "version": "0.3.2"
+      }
+    },
+    {
+      "name": "iosX64ApiElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-api",
+        "org.jetbrains.kotlin.native.target": "ios_x64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../reader-core-iosx64/0.3.2/reader-core-iosx64-0.3.2.module",
+        "group": "com.readerengine",
+        "module": "reader-core-iosx64",
+        "version": "0.3.2"
+      }
+    },
+    {
+      "name": "iosX64SourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-runtime",
+        "org.jetbrains.kotlin.native.target": "ios_x64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../reader-core-iosx64/0.3.2/reader-core-iosx64-0.3.2.module",
+        "group": "com.readerengine",
+        "module": "reader-core-iosx64",
+        "version": "0.3.2"
+      }
+    },
+    {
+      "name": "iosX64MetadataElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "non-jvm",
+        "org.gradle.usage": "kotlin-metadata",
+        "org.jetbrains.kotlin.native.target": "ios_x64",
+        "org.jetbrains.kotlin.platform.type": "native"
+      },
+      "available-at": {
+        "url": "../../reader-core-iosx64/0.3.2/reader-core-iosx64-0.3.2.module",
+        "group": "com.readerengine",
+        "module": "reader-core-iosx64",
+        "version": "0.3.2"
+      }
+    },
+    {
+      "name": "jvmApiElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-api",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "available-at": {
+        "url": "../../reader-core-jvm/0.3.2/reader-core-jvm-0.3.2.module",
+        "group": "com.readerengine",
+        "module": "reader-core-jvm",
+        "version": "0.3.2"
+      }
+    },
+    {
+      "name": "jvmRuntimeElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "available-at": {
+        "url": "../../reader-core-jvm/0.3.2/reader-core-jvm-0.3.2.module",
+        "group": "com.readerengine",
+        "module": "reader-core-jvm",
+        "version": "0.3.2"
+      }
+    },
+    {
+      "name": "jvmSourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "available-at": {
+        "url": "../../reader-core-jvm/0.3.2/reader-core-jvm-0.3.2.module",
+        "group": "com.readerengine",
+        "module": "reader-core-jvm",
+        "version": "0.3.2"
+      }
+    }
+  ]
+}

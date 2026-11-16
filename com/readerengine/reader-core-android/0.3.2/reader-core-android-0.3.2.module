@@ -1,0 +1,198 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "url": "../../reader-core/0.3.2/reader-core-0.3.2.module",
+    "group": "com.readerengine",
+    "module": "reader-core",
+    "version": "0.3.2",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "9.9.0"
+    }
+  },
+  "variants": [
+    {
+      "name": "releaseApiElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "android",
+        "org.gradle.usage": "java-api",
+        "org.jetbrains.kotlin.platform.type": "androidJvm"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-core",
+          "version": {
+            "requires": "1.9.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-serialization-json",
+          "version": {
+            "requires": "1.7.3"
+          }
+        },
+        {
+          "group": "com.squareup.okio",
+          "module": "okio",
+          "version": {
+            "requires": "3.9.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.4.20"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "reader-core-release.aar",
+          "url": "reader-core-android-0.3.2.aar",
+          "size": 352417,
+          "sha512": "d8fb2c4ba3ca4074d4a0765c0f995cfe1dc0aa1e450d8bb2d114c44dcf322174d1cbad55ab06f6dd44ab51fb1005527c2e6d66d4269a4339eb742c66d9861c44",
+          "sha256": "94f88f26a7125d87f8f645357935cda28751ff1c2faeffd790fc3bf4152e075d",
+          "sha1": "cc762aba6bfaa5b1dfda3f319267d22efac4d55c",
+          "md5": "c9617b0a1f87d01d73c1686d81638acc"
+        }
+      ]
+    },
+    {
+      "name": "releaseRuntimeElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "android",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "androidJvm"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-core",
+          "version": {
+            "requires": "1.9.0"
+          },
+          "excludes": [
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-stdlib-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-annotations-common"
+            }
+          ]
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-serialization-json",
+          "version": {
+            "requires": "1.7.3"
+          },
+          "excludes": [
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-stdlib-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-annotations-common"
+            }
+          ]
+        },
+        {
+          "group": "com.squareup.okio",
+          "module": "okio",
+          "version": {
+            "requires": "3.9.1"
+          },
+          "excludes": [
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-stdlib-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-annotations-common"
+            }
+          ]
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.4.20"
+          },
+          "excludes": [
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-stdlib-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-common"
+            },
+            {
+              "group": "org.jetbrains.kotlin",
+              "module": "kotlin-test-annotations-common"
+            }
+          ]
+        }
+      ],
+      "files": [
+        {
+          "name": "reader-core-release.aar",
+          "url": "reader-core-android-0.3.2.aar",
+          "size": 352417,
+          "sha512": "d8fb2c4ba3ca4074d4a0765c0f995cfe1dc0aa1e450d8bb2d114c44dcf322174d1cbad55ab06f6dd44ab51fb1005527c2e6d66d4269a4339eb742c66d9861c44",
+          "sha256": "94f88f26a7125d87f8f645357935cda28751ff1c2faeffd790fc3bf4152e075d",
+          "sha1": "cc762aba6bfaa5b1dfda3f319267d22efac4d55c",
+          "md5": "c9617b0a1f87d01d73c1686d81638acc"
+        }
+      ]
+    },
+    {
+      "name": "releaseSourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "android",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "androidJvm"
+      },
+      "files": [
+        {
+          "name": "reader-core-android-0.3.2-sources.jar",
+          "url": "reader-core-android-0.3.2-sources.jar",
+          "size": 49719,
+          "sha512": "9ee90f70b78f99ec7e5aa87462a480d87818fa5324582b361d1f48c8ec006c52ca52ee083d7cba29429adc69e42232d067db9b41c04b2aaf575d2713aebf3140",
+          "sha256": "473ce3aff2b2275cf3eb19f7a7f69946fced51d34d95af71e1417cec45dd2546",
+          "sha1": "e45d548864357289449e801b5dd7fed23e9f4b23",
+          "md5": "ba71f451ee4d76b2da8ed83912c78dee"
+        }
+      ]
+    }
+  ]
+}

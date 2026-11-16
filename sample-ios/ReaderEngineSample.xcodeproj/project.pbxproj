@@ -1,0 +1,291 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		100000000000000000000101 /* ReaderEngineSampleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000201 /* ReaderEngineSampleApp.swift */; };
+		100000000000000000000102 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000202 /* ContentView.swift */; };
+		100000000000000000000103 /* ReaderViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000203 /* ReaderViewModel.swift */; };
+		100000000000000000000104 /* ReaderWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000204 /* ReaderWebView.swift */; };
+		100000000000000000000105 /* HostBookPersistenceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000205 /* HostBookPersistenceStore.swift */; };
+		100000000000000000000106 /* Resources/Samples in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000207 /* Resources/Samples */; };
+		100000000000000000000107 /* ReaderCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 100000000000000000000208 /* ReaderCore.xcframework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		100000000000000000000200 /* ReaderEngineSample.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ReaderEngineSample.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		100000000000000000000201 /* ReaderEngineSampleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderEngineSampleApp.swift; sourceTree = "<group>"; };
+		100000000000000000000202 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		100000000000000000000203 /* ReaderViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderViewModel.swift; sourceTree = "<group>"; };
+		100000000000000000000204 /* ReaderWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderWebView.swift; sourceTree = "<group>"; };
+		100000000000000000000205 /* HostBookPersistenceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostBookPersistenceStore.swift; sourceTree = "<group>"; };
+		100000000000000000000206 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		100000000000000000000207 /* Resources/Samples */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/Samples; sourceTree = "<group>"; };
+		100000000000000000000208 /* ReaderCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = ReaderCore.xcframework; path = "../reader-core/build/XCFrameworks/debug/ReaderCore.xcframework"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		100000000000000000000300 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000107 /* ReaderCore.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		100000000000000000000400 = {
+			isa = PBXGroup;
+			children = (
+				100000000000000000000401 /* ReaderEngineSample */,
+				100000000000000000000402 /* Frameworks */,
+				100000000000000000000403 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		100000000000000000000401 /* ReaderEngineSample */ = {
+			isa = PBXGroup;
+			children = (
+				100000000000000000000201 /* ReaderEngineSampleApp.swift */,
+				100000000000000000000202 /* ContentView.swift */,
+				100000000000000000000203 /* ReaderViewModel.swift */,
+				100000000000000000000204 /* ReaderWebView.swift */,
+				100000000000000000000205 /* HostBookPersistenceStore.swift */,
+				100000000000000000000206 /* Info.plist */,
+				100000000000000000000207 /* Resources/Samples */,
+			);
+			path = ReaderEngineSample;
+			sourceTree = "<group>";
+		};
+		100000000000000000000402 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				100000000000000000000208 /* ReaderCore.xcframework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		100000000000000000000403 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				100000000000000000000200 /* ReaderEngineSample.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		100000000000000000000500 /* ReaderEngineSample */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 100000000000000000000801 /* Build configuration list for PBXNativeTarget "ReaderEngineSample" */;
+			buildPhases = (
+				100000000000000000000600 /* Sources */,
+				100000000000000000000300 /* Frameworks */,
+				100000000000000000000700 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ReaderEngineSample;
+			productName = ReaderEngineSample;
+			productReference = 100000000000000000000200 /* ReaderEngineSample.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		100000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					100000000000000000000500 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = 100000000000000000000800 /* Build configuration list for PBXProject "ReaderEngineSample" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = "pt-BR";
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				"pt-BR",
+				Base,
+			);
+			mainGroup = 100000000000000000000400;
+			productRefGroup = 100000000000000000000403 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				100000000000000000000500 /* ReaderEngineSample */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		100000000000000000000700 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000106 /* Resources/Samples in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		100000000000000000000600 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000101 /* ReaderEngineSampleApp.swift in Sources */,
+				100000000000000000000102 /* ContentView.swift in Sources */,
+				100000000000000000000103 /* ReaderViewModel.swift in Sources */,
+				100000000000000000000104 /* ReaderWebView.swift in Sources */,
+				100000000000000000000105 /* HostBookPersistenceStore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		100000000000000000000901 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		100000000000000000000902 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				SDKROOT = iphoneos;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		100000000000000000000903 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 4;
+				DEVELOPMENT_TEAM = 5TKV579HTB;
+				ENABLE_PREVIEWS = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/../reader-core/build/XCFrameworks/debug",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ReaderEngineSample/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.3.2;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lz",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.readerengine.ios.sample;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		100000000000000000000904 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 4;
+				DEVELOPMENT_TEAM = 5TKV579HTB;
+				ENABLE_PREVIEWS = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/../reader-core/build/XCFrameworks/release",
+					"$(PROJECT_DIR)/../reader-core/build/XCFrameworks/debug",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ReaderEngineSample/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.3.2;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lz",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.readerengine.ios.sample;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		100000000000000000000800 /* Build configuration list for PBXProject "ReaderEngineSample" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				100000000000000000000901 /* Debug */,
+				100000000000000000000902 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		100000000000000000000801 /* Build configuration list for PBXNativeTarget "ReaderEngineSample" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				100000000000000000000903 /* Debug */,
+				100000000000000000000904 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 100000000000000000000001 /* Project object */;
+}

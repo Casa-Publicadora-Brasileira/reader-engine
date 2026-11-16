@@ -564,6 +564,8 @@ public object ReaderJsBridge {
                         var str = typeof payload === 'string' ? payload : (payload ? JSON.stringify(payload) : '');
                         if (typeof window.AndroidActionBridge !== 'undefined' && window.AndroidActionBridge.postAction) {
                             window.AndroidActionBridge.postAction(name, str);
+                        } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ReaderActionBridge) {
+                            window.webkit.messageHandlers.ReaderActionBridge.postMessage({ name: name, payload: str });
                         } else {
                             var q = str ? ('?q=' + encodeURIComponent(str)) : '';
                             window.location.href = 'action://' + encodeURIComponent(name) + q;
@@ -577,11 +579,17 @@ public object ReaderJsBridge {
                 window.addEventListener('scroll', function() {
                     if (_scrollTimer) clearTimeout(_scrollTimer);
                     _scrollTimer = setTimeout(function() {
+                        var sy = Math.round(window.scrollY || window.pageYOffset || 0);
+                        var ch = Math.round(Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0));
+                        var vh = Math.round(window.innerHeight || 0);
                         if (typeof window.AndroidScrollProgress !== 'undefined' && window.AndroidScrollProgress.onScrollChanged) {
-                            var sy = Math.round(window.scrollY || window.pageYOffset || 0);
-                            var ch = Math.round(Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0));
-                            var vh = Math.round(window.innerHeight || 0);
                             window.AndroidScrollProgress.onScrollChanged(sy, ch, vh);
+                        } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ReaderScrollProgress) {
+                            window.webkit.messageHandlers.ReaderScrollProgress.postMessage({
+                                scrollY: sy,
+                                contentHeightPx: ch,
+                                viewportHeightPx: vh
+                            });
                         }
                     }, 80);
                 }, { passive: true });

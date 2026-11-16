@@ -613,6 +613,7 @@ reader-engine/
 │       │   └── theme/                 # ThemeTokens (Material 3, HIG, Fluent, Custom)
 │       └── commonTest/                # 76 testes unitários e de regressão multiplataforma
 ├── sample-android/                    # App Android de referência (:sample-android) em Jetpack Compose
+├── sample-ios/                        # App iOS de referência (SwiftUI + WKWebView + ReaderCore.xcframework)
 ├── fixtures/                          # Arquivos de teste (.epub, .hpub, .json)
 └── _reversa_sdd/                      # Especificação arquitetural completa (C4, ERD, ADRs, Contratos SDD)
 ```
@@ -629,8 +630,13 @@ reader-engine/
 # Compilar o aplicativo Android de demonstração (:sample-android)
 ./gradlew :sample-android:assembleDebug
 
-# Gerar o XCFramework universal para iOS (requer macOS + Xcode)
+# Gerar o XCFramework para o sample-ios (Debug) e para distribuição (Release) (requer macOS + Xcode)
+./gradlew :reader-core:assembleReaderCoreDebugXCFramework
 ./gradlew :reader-core:assembleReaderCoreReleaseXCFramework
+
+# Abrir ou compilar o aplicativo iOS de demonstração (sample-ios)
+open sample-ios/ReaderEngineSample.xcodeproj
+xcodebuild -project sample-ios/ReaderEngineSample.xcodeproj -scheme ReaderEngineSample -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build
 
 # Publicar artefatos no GitHub Packages / GitHub Enterprise
 ./gradlew :reader-core:publishAndroidReleasePublicationToGitHubPackagesRepository \

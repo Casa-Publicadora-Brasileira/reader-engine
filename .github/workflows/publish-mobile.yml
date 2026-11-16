@@ -10,6 +10,11 @@ on:
         description: "Version name (e.g. 0.3.2) when not tagging"
         required: false
         default: "0.3.2"
+      build_ios:
+        description: "Build iOS XCFramework (requires macOS runner enabled in org)"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: publish-mobile-${{ github.ref }}
@@ -129,7 +134,9 @@ jobs:
 
   ios-xcframework:
     name: Build & Publish iOS XCFramework
-    runs-on: macos-14
+    if: inputs.build_ios == true || vars.ENABLE_IOS_RUNNER == 'true'
+    runs-on: ${{ vars.IOS_RUNNER || 'macos-latest' }}
+    continue-on-error: true
     env:
       VERSION: ${{ inputs.version || '' }}
     steps:

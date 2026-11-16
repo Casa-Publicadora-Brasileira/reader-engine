@@ -18,7 +18,7 @@ val resolvedVersion = providers.gradleProperty("version")
         .orNull
         ?.takeIf { it.startsWith("v") && it.length > 1 }
         ?.removePrefix("v")
-    ?: "0.3.1"
+    ?: "0.3.2"
 version = resolvedVersion
 
 kotlin {
@@ -88,7 +88,7 @@ val serverUrl = providers.environmentVariable("GITHUB_SERVER_URL")
 
 val repoSlug = providers.environmentVariable("GITHUB_REPOSITORY")
     .orElse(providers.gradleProperty("githubRepository"))
-    .getOrElse("andreAlvesCarvalhojr/reader-engine")
+    .getOrElse("Casa-Publicadora-Brasileira/reader-engine")
     .trim('/')
 
 val serverUri = uri(serverUrl)
@@ -160,8 +160,8 @@ publishing {
             }
             developers {
                 developer {
-                    id.set("andreAlvesCarvalhojr")
-                    name.set("André Alves Carvalho Jr.")
+                    id.set("Casa-Publicadora-Brasileira")
+                    name.set("Casa Publicadora Brasileira")
                 }
             }
             scm {

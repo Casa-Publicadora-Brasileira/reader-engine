@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -39,17 +40,22 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -62,6 +68,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -87,6 +94,7 @@ import com.readerengine.core.model.InitialBookState
 import com.readerengine.core.model.ReadingMode
 import com.readerengine.core.model.ReadingProgress
 import com.readerengine.core.model.SearchResult
+import com.readerengine.core.parser.Source
 import com.readerengine.core.session.ReaderCommand
 import com.readerengine.core.session.ReaderEngine
 import com.readerengine.core.session.ReaderEvent
@@ -96,7 +104,9 @@ import com.readerengine.core.session.RenderedDocument
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okio.Path.Companion.toOkioPath
 import java.io.ByteArrayInputStream
+import java.io.File
 
 private const val BOOK_BASE_URL = "book://content/"
 
@@ -291,6 +301,156 @@ private data class SampleBook(
     val fileName: String,
 )
 
+private enum class DeviceFileFilter(
+    val title: String,
+    val subtitle: String,
+    val badge: String,
+    val defaultExtension: String?,
+    val mimeTypes: Array<String>,
+) {
+    EPUB(
+        title = "Abrir arquivo .epub",
+        subtitle = "EPUB 2 e EPUB 3 (Reflowable, Fixed-Layout, Mídia)",
+        badge = "EPUB",
+        defaultExtension = "epub",
+        mimeTypes = arrayOf("application/epub+zip", "application/octet-stream", "*/*"),
+    ),
+    HPUB(
+        title = "Abrir arquivo .hpub",
+        subtitle = "Pacote HPUB / Baker Framework (book.json + HTML)",
+        badge = "HPUB",
+        defaultExtension = "hpub",
+        mimeTypes = arrayOf("application/zip", "application/octet-stream", "*/*"),
+    ),
+    JSON(
+        title = "Abrir arquivo .json",
+        subtitle = "Documento estruturado reader-json",
+        badge = "JSON",
+        defaultExtension = "json",
+        mimeTypes = arrayOf("application/json", "text/plain", "*/*"),
+    ),
+    ALL(
+        title = "Procurar qualquer formato",
+        subtitle = "Selecionar .epub, .hpub ou .json do dispositivo",
+        badge = "TODOS",
+        defaultExtension = null,
+        mimeTypes = arrayOf(
+            "application/epub+zip",
+            "application/json",
+            "application/zip",
+            "application/octet-stream",
+            "*/*",
+        ),
+    ),
+}
+
+private fun loadImportedBookFiles(dir: File): List<File> =
+    dir.listFiles()
+        ?.filter { file ->
+            file.isFile && (
+                file.extension.equals("epub", ignoreCase = true) ||
+                    file.extension.equals("hpub", ignoreCase = true) ||
+                    file.extension.equals("json", ignoreCase = true)
+                )
+        }
+        ?.sortedByDescending { it.lastModified() }
+        .orEmpty()
+
+private fun normalizeDeviceFileName(
+    rawName: String,
+    hintExtension: String?,
+    headerBytes: ByteArray,
+): String {
+    val sanitized = rawName
+        .substringAfterLast('/')
+        .replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        .ifBlank { "livro_importado" }
+    val existingExt = sanitized.substringAfterLast('.', missingDelimiterValue = "").lowercase()
+    if (existingExt in setOf("epub", "hpub", "json")) {
+        return sanitized
+    }
+    val detectedExt = when {
+        hintExtension != null -> hintExtension
+        else -> {
+            val trimmedStart = headerBytes.decodeToString().trimStart()
+            if (trimmedStart.startsWith("{") || trimmedStart.startsWith("[")) "json" else "epub"
+        }
+    }
+    val stem = sanitized.substringBeforeLast('.').ifBlank { "livro_importado" }
+    return "$stem.$detectedExt"
+}
+
+private fun importUriToDisk(
+    context: Context,
+    uri: Uri,
+    rawDisplayName: String,
+    hintExtension: String?,
+    importedDir: File,
+    fallbackReadUri: (Uri) -> ByteArray,
+): File {
+    val tempFile = File(importedDir, ".import-${System.currentTimeMillis()}.tmp")
+    val input = context.contentResolver.openInputStream(uri)
+    if (input != null) {
+        input.use { src ->
+            tempFile.outputStream().use { dst -> src.copyTo(dst) }
+        }
+    } else {
+        tempFile.writeBytes(fallbackReadUri(uri))
+    }
+    val headerSample = tempFile.inputStream().use { stream ->
+        val buf = ByteArray(256)
+        val count = stream.read(buf)
+        if (count > 0) buf.copyOf(count) else ByteArray(0)
+    }
+    val safeName = normalizeDeviceFileName(
+        rawName = rawDisplayName,
+        hintExtension = hintExtension,
+        headerBytes = headerSample,
+    )
+    val destFile = File(importedDir, safeName)
+    if (destFile.exists()) {
+        destFile.delete()
+    }
+    if (!tempFile.renameTo(destFile)) {
+        tempFile.copyTo(destFile, overwrite = true)
+        tempFile.delete()
+    }
+    return destFile
+}
+
+private fun buildInitialBookState(
+    hostStore: HostBookPersistenceStore,
+    documentId: String,
+): InitialBookState {
+    val savedProgress = hostStore.loadProgress(documentId)
+    return InitialBookState(
+        documentId = documentId,
+        initialPageIndex = savedProgress?.pageIndex ?: 0,
+        initialScrollY = savedProgress?.scrollY ?: 0,
+        isNightMode = hostStore.loadNightMode(),
+        readingMode = hostStore.loadReadingMode(),
+        fontScale = hostStore.loadFontScale(),
+        fontFamily = hostStore.loadFontFamily(),
+        savedPageHighlights = hostStore.loadHighlights(documentId),
+        savedPageForms = hostStore.loadPageForms(documentId),
+    )
+}
+
+private fun openDiskPublication(
+    engine: ReaderEngine,
+    hostStore: HostBookPersistenceStore,
+    file: File,
+): ReaderSession {
+    val okioPath = file.toOkioPath()
+    val documentId = Source.fromPath(okioPath).sha256DocumentId()
+    val opened = engine.open(
+        path = okioPath,
+        initialState = buildInitialBookState(hostStore, documentId),
+    )
+    hostStore.loadBookmarksJson(documentId)?.let { opened.importBookmarksJson(it) }
+    return opened
+}
+
 private fun bundledSamples(): List<SampleBook> = listOf(
     SampleBook("noite-clara", "Noite Clara (JSON)", "samples/noite-clara.json", "noite-clara.json"),
     SampleBook("epub-fixture", "EPUB Fixture", "samples/sample.epub", "sample.epub"),
@@ -475,6 +635,10 @@ private fun ReaderScreen(
     var session by remember { mutableStateOf<ReaderSession?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var activeSample by remember { mutableStateOf<String?>(null) }
+    val importedDir = remember { File(context.cacheDir, "imported_books").apply { mkdirs() } }
+    var importedFiles by remember { mutableStateOf(loadImportedBookFiles(importedDir)) }
+    var showOpenBookDialog by remember { mutableStateOf(false) }
+    var pendingFileFilter by remember { mutableStateOf(DeviceFileFilter.ALL) }
     var lastEventSummary by remember { mutableStateOf("Aguardando eventos...") }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var showBookmarks by remember { mutableStateOf(false) }
@@ -588,23 +752,10 @@ private fun ReaderScreen(
                 withContext(Dispatchers.IO) {
                     val (name, bytes) = loadNameAndBytes()
                     val documentId = sampleId ?: name.substringBeforeLast('.')
-                    val savedProgress = hostStore.loadProgress(documentId)
-                    val savedHighlights = hostStore.loadHighlights(documentId)
-                    val savedForms = hostStore.loadPageForms(documentId)
                     val opened = engine.open(
                         name = name,
                         bytes = bytes,
-                        initialState = InitialBookState(
-                            documentId = documentId,
-                            initialPageIndex = savedProgress?.pageIndex ?: 0,
-                            initialScrollY = savedProgress?.scrollY ?: 0,
-                            isNightMode = hostStore.loadNightMode(),
-                            readingMode = hostStore.loadReadingMode(),
-                            fontScale = hostStore.loadFontScale(),
-                            fontFamily = hostStore.loadFontFamily(),
-                            savedPageHighlights = savedHighlights,
-                            savedPageForms = savedForms,
-                        ),
+                        initialState = buildInitialBookState(hostStore, documentId),
                     )
                     hostStore.loadBookmarksJson(documentId)?.let { opened.importBookmarksJson(it) }
                     opened
@@ -621,21 +772,65 @@ private fun ReaderScreen(
         }
     }
 
+    fun openBookFromDiskAsync(file: File) {
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    openDiskPublication(engine, hostStore, file)
+                }
+            }.onSuccess { opened ->
+                session?.close()
+                session = opened
+                activeSample = file.absolutePath
+                importedFiles = loadImportedBookFiles(importedDir)
+                showOpenBookDialog = false
+                searchResults = emptyList()
+                error = null
+            }.onFailure {
+                error = it.message ?: it.toString()
+            }
+        }
+    }
+
+    fun openBookFromUriAsync(uri: Uri, hintExtension: String?) {
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val destFile = importUriToDisk(
+                        context = context,
+                        uri = uri,
+                        rawDisplayName = displayName(uri),
+                        hintExtension = hintExtension,
+                        importedDir = importedDir,
+                        fallbackReadUri = readUri,
+                    )
+                    destFile to openDiskPublication(engine, hostStore, destFile)
+                }
+            }.onSuccess { (destFile, opened) ->
+                session?.close()
+                session = opened
+                activeSample = destFile.absolutePath
+                importedFiles = loadImportedBookFiles(importedDir)
+                showOpenBookDialog = false
+                searchResults = emptyList()
+                error = null
+            }.onFailure {
+                error = it.message ?: it.toString()
+            }
+        }
+    }
+
     val picker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        openBookAsync(sampleId = null) {
-            displayName(uri) to readUri(uri)
-        }
+        openBookFromUriAsync(uri, hintExtension = pendingFileFilter.defaultExtension)
     }
 
     LaunchedEffect(samples, initialIntentUri) {
         if (session != null) return@LaunchedEffect
         if (initialIntentUri != null) {
-            openBookAsync(sampleId = null) {
-                displayName(initialIntentUri) to readUri(initialIntentUri)
-            }
+            openBookFromUriAsync(initialIntentUri, hintExtension = null)
         } else {
             val first = samples.firstOrNull() ?: return@LaunchedEffect
             openBookAsync(sampleId = first.id) {
@@ -770,6 +965,31 @@ private fun ReaderScreen(
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState()),
             ) {
+                Button(
+                    onClick = { showOpenBookDialog = true },
+                    modifier = Modifier.height(40.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Abrir arquivo")
+                }
+                importedFiles.forEach { file ->
+                    FilterChip(
+                        selected = activeSample == file.absolutePath,
+                        onClick = { openBookFromDiskAsync(file) },
+                        label = {
+                            Text(
+                                text = file.name,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                    )
+                }
                 samples.forEach { sample ->
                     FilterChip(
                         selected = activeSample == sample.id,
@@ -780,21 +1000,6 @@ private fun ReaderScreen(
                         },
                         label = { Text(sample.title) },
                     )
-                }
-                OutlinedButton(
-                    onClick = {
-                        picker.launch(
-                            arrayOf(
-                                "application/epub+zip",
-                                "application/json",
-                                "application/octet-stream",
-                                "*/*",
-                            ),
-                        )
-                    },
-                    modifier = Modifier.height(40.dp),
-                ) {
-                    Text("Abrir arquivo")
                 }
             }
 
@@ -1085,6 +1290,206 @@ private fun ReaderScreen(
         }
     }
     }
+
+    if (showOpenBookDialog) {
+        OpenBookDialog(
+            importedFiles = importedFiles,
+            samples = samples,
+            activeBookKey = activeSample,
+            onDismiss = { showOpenBookDialog = false },
+            onPickDeviceFile = { filter ->
+                pendingFileFilter = filter
+                picker.launch(filter.mimeTypes)
+            },
+            onOpenImportedFile = { file -> openBookFromDiskAsync(file) },
+            onDeleteImportedFile = { file ->
+                file.delete()
+                importedFiles = loadImportedBookFiles(importedDir)
+            },
+            onOpenSample = { sample ->
+                showOpenBookDialog = false
+                openBookAsync(sampleId = sample.id) {
+                    sample.fileName to readAsset(sample.assetPath)
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun OpenBookDialog(
+    importedFiles: List<File>,
+    samples: List<SampleBook>,
+    activeBookKey: String?,
+    onDismiss: () -> Unit,
+    onPickDeviceFile: (DeviceFileFilter) -> Unit,
+    onOpenImportedFile: (File) -> Unit,
+    onDeleteImportedFile: (File) -> Unit,
+    onOpenSample: (SampleBook) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Abrir publicação",
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = "Do seu dispositivo",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                DeviceFileFilter.entries.forEach { filter ->
+                    Surface(
+                        onClick = { onPickDeviceFile(filter) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.medium,
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                            ) {
+                                Text(
+                                    text = filter.badge,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = filter.title,
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                )
+                                Text(
+                                    text = filter.subtitle,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (importedFiles.isNotEmpty()) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    Text(
+                        text = "Recentes do dispositivo",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    importedFiles.forEach { file ->
+                        val isSelected = activeBookKey == file.absolutePath
+                        val extBadge = file.extension.uppercase().ifBlank { "ARQ" }
+                        Surface(
+                            onClick = { onOpenImportedFile(file) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = MaterialTheme.shapes.medium,
+                            color = if (isSelected) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                            },
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    text = extBadge,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                                Text(
+                                    text = file.name,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                IconButton(
+                                    onClick = { onDeleteImportedFile(file) },
+                                    modifier = Modifier.size(32.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Delete,
+                                        contentDescription = "Remover arquivo recente",
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (samples.isNotEmpty()) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    Text(
+                        text = "Exemplos inclusos no app",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    samples.forEach { sample ->
+                        val isSelected = activeBookKey == sample.id
+                        Surface(
+                            onClick = { onOpenSample(sample) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = MaterialTheme.shapes.medium,
+                            color = if (isSelected) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                            },
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text(
+                                    text = sample.title,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    text = sample.fileName.substringAfterLast('.').uppercase(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Fechar")
+            }
+        },
+    )
 }
 
 @Composable

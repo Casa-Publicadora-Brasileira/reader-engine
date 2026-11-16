@@ -123,6 +123,27 @@ dependencies {
 }
 ```
 
+#### Como configurar `gpr.user` e `gpr.key`
+
+O GitHub Packages exige autenticação mesmo para leitura via Gradle (sua senha normal não funciona — é necessário um Token):
+
+- **`gpr.user`**: seu **username do GitHub** (sem `@` e sem usar o e-mail, ex.: `seu-usuario`).
+- **`gpr.key`**: um **Personal Access Token (Classic)** (`ghp_...`) com a permissão **`read:packages`**.
+
+**Passo a passo para gerar e salvar com segurança:**
+
+1. Acesse [github.com/settings/tokens/new](https://github.com/settings/tokens/new) (*Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token (classic)*).
+2. Preencha **Note** (ex.: `Gradle GitHub Packages`) e marque o escopo **`read:packages`** (*Download packages from GitHub Package Registry*).
+3. Gere o token (`ghp_...`). Caso a organização utilize SAML SSO, clique em **Configure SSO → Authorize** ao lado do token recém-criado.
+4. Salve no arquivo global **`~/.gradle/gradle.properties`** da sua máquina (assim as credenciais valem para todos os projetos sem risco de commit no Git):
+
+```properties
+gpr.user=SEU_USERNAME_GITHUB
+gpr.key=ghp_SEU_TOKEN_COM_READ_PACKAGES
+```
+
+*(Em pipelines de CI como GitHub Actions, o Gradle também aceita automaticamente as variáveis de ambiente `GITHUB_ACTOR` e `GITHUB_TOKEN`, desde que o workflow tenha `packages: read` — e para publicação, `packages: write`).*
+
 ---
 
 ### 3.2 Android & JVM — Repositório Público Maven (Sem Credenciais)

@@ -3,6 +3,7 @@ package com.readerengine.core.theme
 import com.readerengine.core.error.ReaderException
 import com.readerengine.core.model.ReadingMode
 import com.readerengine.core.model.RenditionLayout
+import com.readerengine.core.model.RenditionSpread
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -47,7 +48,20 @@ public data class Typography(
     val baseSizePx: Float,
     @SerialName("line_height")
     val lineHeight: Float,
-)
+    @SerialName("text_align")
+    val textAlign: String = "justify",
+) {
+    public constructor(
+        fontFamily: String,
+        baseSizePx: Float,
+        lineHeight: Float,
+    ) : this(
+        fontFamily = fontFamily,
+        baseSizePx = baseSizePx,
+        lineHeight = lineHeight,
+        textAlign = "justify",
+    )
+}
 
 @Serializable
 public data class Shape(
@@ -55,7 +69,18 @@ public data class Shape(
     val cornerRadiusPx: Float,
     @SerialName("spacing_unit_px")
     val spacingUnitPx: Float,
-)
+    @SerialName("horizontal_padding_px")
+    val horizontalPaddingPx: Int = 24,
+) {
+    public constructor(
+        cornerRadiusPx: Float,
+        spacingUnitPx: Float,
+    ) : this(
+        cornerRadiusPx = cornerRadiusPx,
+        spacingUnitPx = spacingUnitPx,
+        horizontalPaddingPx = 24,
+    )
+}
 
 @Serializable
 public data class ThemeTokens(
@@ -67,16 +92,32 @@ public data class ThemeTokens(
 ) {
     /**
      * Gera o CSS injetado no HTML da WebView respeitando escala de fonte, família de fonte customizada,
-     * modo noturno, paginação horizontal por colunas CSS (`ReadingMode.PAGINATED`),
-     * layout fixo (`RenditionLayout.PRE_PAGINATED`) e blocos matemáticos (`<math>` / MathML),
-     * sanitizando todos os valores contra injeção de CSS/HTML.
+     * modo noturno, alinhamento de texto, margens horizontais, paginação horizontal por colunas CSS
+     * (`ReadingMode.PAGINATED`), layout fixo (`RenditionLayout.PRE_PAGINATED`), spreads (`RenditionSpread`)
+     * e blocos matemáticos (`<math>` / MathML), sanitizando todos os valores contra injeção de CSS/HTML.
      */
+    public fun toContentCss(
+        fontScale: Float,
+        customFontFamily: String?,
+        isNightMode: Boolean,
+        readingMode: ReadingMode,
+        layout: RenditionLayout,
+    ): String = toContentCss(
+        fontScale = fontScale,
+        customFontFamily = customFontFamily,
+        isNightMode = isNightMode,
+        readingMode = readingMode,
+        layout = layout,
+        spread = RenditionSpread.AUTO,
+    )
+
     public fun toContentCss(
         fontScale: Float = 1.0f,
         customFontFamily: String? = null,
         isNightMode: Boolean = false,
         readingMode: ReadingMode = ReadingMode.SCROLL,
         layout: RenditionLayout = RenditionLayout.REFLOWABLE,
+        spread: RenditionSpread = RenditionSpread.AUTO,
     ): String {
         val bg = sanitizeCssColor(
             raw = if (isNightMode) colors.nightBackground else colors.background,
@@ -105,29 +146,40 @@ public data class ThemeTokens(
             append(if (isNightMode) "dark" else "light")
             append(";}")
             if (layout == RenditionLayout.PRE_PAGINATED) {
-                append("html,body{background:$bg;color:$fg;margin:0;padding:0;overflow:hidden;}")
+                append("html,body{background:$bg;background-color:$bg !important;color:$fg !important;margin:0;padding:0;overflow:hidden;}")
+                if (spread == RenditionSpread.LANDSCAPE || spread == RenditionSpread.BOTH) {
+                    append("@media (orientation: landscape){html.reader-fixed-layout body{display:flex;justify-content:center;align-items:center;}}")
+                }
             } else {
-                append("html{background:$bg;color:$fg;font-family:$family;font-size:${fontSizePx}px;line-height:$lineHeight;}")
-                append("body{background:$bg;color:$fg;font-family:$family;}")
+                val safeTextAlign = sanitizeCssTextAlign(typography.textAlign) ?: "justify"
+                val padH = shape.horizontalPaddingPx.coerceIn(0, 240)
+                append("html,body{background-color:$bg !important;color:$fg !important;font-family:$family !important;font-size:${fontSizePx}px;line-height:$lineHeight !important;}")
+                append("body{padding-left:${padH}px !important;padding-right:${padH}px !important;text-align:$safeTextAlign !important;box-sizing:border-box;}")
+                append("body *:not([class*=\"highlight_\"]){color:$fg !important;background-color:transparent !important;line-height:inherit;}")
+                append("body,body p,body div,body li,body blockquote{text-align:$safeTextAlign !important;}")
                 if (readingMode == ReadingMode.PAGINATED) {
+                    val gap = padH * 2
                     append("html.reader-paginated,html.reader-paginated body{height:100vh;overflow:hidden;margin:0;box-sizing:border-box;}")
-                    append("html.reader-paginated body{column-width:calc(100vw - 32px);column-gap:32px;column-fill:auto;padding:16px;}")
+                    append("html.reader-paginated body{column-width:calc(100vw - ${gap}px);column-gap:${gap}px;column-fill:auto;padding:16px ${padH}px !important;}")
+                    if (spread == RenditionSpread.LANDSCAPE || spread == RenditionSpread.BOTH) {
+                        append("@media (orientation: landscape){html.reader-paginated body{column-count:2;column-width:auto;column-gap:${gap}px;}}")
+                    }
                 }
             }
-            append("a{color:$linkColor;}")
+            append("a,a *:not([class*=\"highlight_\"]){color:$linkColor !important;}")
             append("img,svg,video{max-width:100%;height:auto;}")
             append("math{font-family:'Latin Modern Math','STIX Two Math','Cambria Math','Noto Sans Math',serif;display:inline-block;max-width:100%;overflow-x:auto;vertical-align:middle;}")
             append("math[display=\"block\"]{display:block;text-align:center;margin:0.75em 0;}")
-            append(".highlight_yellow{background-color:#FFF59D;color:#111;}")
-            append(".highlight_green{background-color:#A5D6A7;color:#111;}")
-            append(".highlight_blue{background-color:#90CAF9;color:#111;}")
-            append(".highlight_pink{background-color:#F48FB1;color:#111;}")
-            append(".highlight_red{background-color:#EF9A9A;color:#111;}")
-            append(".highlight_orange{background-color:#FFCC80;color:#111;}")
-            append(".highlight_purple{background-color:#CE93D8;color:#111;}")
-            append(".highlight_dashed{text-decoration:line-through;}")
-            append(".highlight_under{text-decoration:underline;}")
-            append(".highlight_annotation{background-color:#FFE082;border-bottom:2px dotted #F57C00;color:#111;}")
+            append(".highlight_yellow,.highlight_yellow *{background-color:#FFF59D !important;color:#111 !important;}")
+            append(".highlight_green,.highlight_green *{background-color:#A5D6A7 !important;color:#111 !important;}")
+            append(".highlight_blue,.highlight_blue *{background-color:#90CAF9 !important;color:#111 !important;}")
+            append(".highlight_pink,.highlight_pink *{background-color:#F48FB1 !important;color:#111 !important;}")
+            append(".highlight_red,.highlight_red *{background-color:#EF9A9A !important;color:#111 !important;}")
+            append(".highlight_orange,.highlight_orange *{background-color:#FFCC80 !important;color:#111 !important;}")
+            append(".highlight_purple,.highlight_purple *{background-color:#CE93D8 !important;color:#111 !important;}")
+            append(".highlight_dashed{text-decoration:line-through !important;}")
+            append(".highlight_under{text-decoration:underline !important;}")
+            append(".highlight_annotation,.highlight_annotation *{background-color:#FFE082 !important;border-bottom:2px dotted #F57C00;color:#111 !important;}")
         }
     }
 
@@ -135,6 +187,12 @@ public data class ThemeTokens(
         private val jsonParser = Json { ignoreUnknownKeys = true }
         private val hexColorRegex = Regex("""^#[0-9a-fA-F]{3,8}$""")
         private val safeFontCharsRegex = Regex("""^[a-zA-Z0-9\s,'"_.-]+$""")
+        private val allowedTextAligns = setOf("justify", "left", "right", "center", "start", "end")
+
+        internal fun sanitizeCssTextAlign(raw: String?): String? {
+            val normalized = raw?.trim()?.lowercase() ?: return null
+            return normalized.takeIf { it in allowedTextAligns }
+        }
 
         internal fun sanitizeCssColor(raw: String, fallback: String): String {
             val trimmed = raw.trim()

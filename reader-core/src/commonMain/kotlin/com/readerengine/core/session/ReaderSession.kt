@@ -13,14 +13,17 @@ import com.readerengine.core.model.InitialBookState
 import com.readerengine.core.model.Locator
 import com.readerengine.core.model.Metadata
 import com.readerengine.core.model.PageFormState
+import com.readerengine.core.model.PagePreview
 import com.readerengine.core.model.PageProgressionDirection
 import com.readerengine.core.model.Publication
 import com.readerengine.core.model.ReaderStrings
 import com.readerengine.core.model.ReadingMode
 import com.readerengine.core.model.ReadingProgress
+import com.readerengine.core.model.ReadingStats
 import com.readerengine.core.model.SearchResult
 import com.readerengine.core.model.TocEntry
 import com.readerengine.core.model.TocItem
+import com.readerengine.core.parser.XmlEntities
 import com.readerengine.core.provider.normalizeHref
 import com.readerengine.core.search.BookSearchEngine
 import com.readerengine.core.theme.ThemeTokens
@@ -38,6 +41,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlin.math.abs
+import kotlin.math.ceil
 
 /**
  * Documento HTML pronto para renderização na WebView acompanhado de seu `href` no spine
@@ -73,6 +77,10 @@ public data class ReaderState(
     val currentPageFormState: PageFormState,
     val bookmarks: List<Bookmark>,
     val hasBookmarkAtCurrentPage: Boolean,
+    val pageList: List<TocItem> = emptyList(),
+    val landmarks: List<TocItem> = emptyList(),
+    val positions: List<Locator> = emptyList(),
+    val stats: ReadingStats = ReadingStats(),
 )
 
 /**
@@ -208,6 +216,19 @@ public class ReaderSession(
     }
 
     private val resolvedToc: List<TocItem> = flattenTocEntries(publication.toc, level = 0)
+    private val resolvedPageList: List<TocItem> = flattenTocEntries(publication.pageList, level = 0)
+    private val resolvedLandmarks: List<TocItem> = flattenTocEntries(publication.landmarks, level = 0)
+    private val resolvedPositions: List<Locator> = publication.positions()
+    private val chapterWordCounts: IntArray = IntArray(publication.spine.size) { idx ->
+        val href = publication.spine[idx]
+        val cleanText = runCatching {
+            publication.cachedPlainText(href) { raw ->
+                raw.replace(Regex("""<[^>]+>"""), " ").replace(Regex("""\s+"""), " ").trim()
+            }
+        }.getOrDefault("")
+        if (cleanText.isBlank()) 0 else cleanText.split(Regex("""\s+""")).count { it.isNotBlank() }
+    }
+    private val totalWordCount: Int = chapterWordCounts.sum()
 
     private val highlightNotes = LinkedHashMap<Int, String>().apply {
         putAll(initialBookState.savedHighlightNotes)
@@ -287,6 +308,10 @@ public class ReaderSession(
                 currentPageFormState = pageFormStates[startPage] ?: PageFormState(),
                 bookmarks = bookmarks.toList(),
                 hasBookmarkAtCurrentPage = bookmarks.any { it.pageIndex == startPage },
+                pageList = resolvedPageList,
+                landmarks = resolvedLandmarks,
+                positions = resolvedPositions,
+                stats = buildStats(startPage, initialProgress.pageProgression),
             ),
         )
         state = _state.asStateFlow()
@@ -448,6 +473,7 @@ public class ReaderSession(
                 _state.value = current.copy(
                     scrollY = clampedScroll,
                     progress = newProgress,
+                    stats = buildStats(current.pageIndex, newProgress.pageProgression),
                 )
                 if (current.pageIndex != lastEmittedProgressPage ||
                     abs(clampedScroll - lastEmittedProgressScrollY) >= 2
@@ -826,6 +852,26 @@ public class ReaderSession(
             InterceptedUrl.ClipboardAction -> true
 
             is InterceptedUrl.InternalResource -> {
+                if (!intercepted.anchor.isNullOrBlank()) {
+                    val targetHref = if (intercepted.href.isBlank()) {
+                        publication.spine.getOrNull(_state.value.pageIndex).orEmpty()
+                    } else {
+                        val idx = resolveSpineIndex(intercepted.href, baseDir = currentChapterDir())
+                        if (idx >= 0) publication.spine[idx] else resolveResourceHref(intercepted.href)
+                    }
+                    val footnoteText = extractFootnoteById(targetHref, intercepted.anchor)
+                    if (footnoteText != null) {
+                        _uiEffects.tryEmit(
+                            ReaderUiEffect.OpenCustomUri(
+                                scheme = "footnote",
+                                rawUrl = url,
+                                title = intercepted.anchor,
+                                content = footnoteText,
+                            ),
+                        )
+                        return true
+                    }
+                }
                 if (intercepted.href.isBlank() && intercepted.anchor != null) {
                     _uiEffects.tryEmit(ReaderUiEffect.ScrollToY(scrollYPx = 0, anchor = intercepted.anchor))
                     return true
@@ -866,6 +912,7 @@ public class ReaderSession(
             readingMode = current.readingMode,
             layout = publication.metadata.layout,
             direction = publication.metadata.pageProgressionDirection,
+            spread = publication.metadata.spread,
         )
         return RenderedDocument(
             html = html,
@@ -880,6 +927,51 @@ public class ReaderSession(
      */
     public fun readCoverBytes(): ByteArray? =
         publication.metadata.coverHref?.let { runCatching { readResource(it) }.getOrNull() }
+
+    /**
+     * Retorna o preview rápido (`title` e `excerpt` de texto limpo) de uma página da `spine`
+     * utilizando o cache interno `publication.cachedPlainText(href)`, ou `null` caso `pageIndex`
+     * esteja fora dos limites `0 until spine.size`.
+     */
+    public fun getPagePreview(pageIndex: Int): PagePreview? =
+        getPagePreview(pageIndex = pageIndex, maxExcerptChars = 180)
+
+    public fun getPagePreview(pageIndex: Int, maxExcerptChars: Int): PagePreview? {
+        if (pageIndex < 0 || pageIndex >= publication.spine.size) return null
+        val href = publication.spine[pageIndex]
+        val title = resolvedToc.firstOrNull { it.spineIndex == pageIndex }?.title
+            ?.takeIf { it.isNotBlank() }
+            ?: strings.formatPageLabel(pageIndex + 1)
+        val plainText = runCatching {
+            publication.cachedPlainText(href) { raw ->
+                raw.replace(Regex("""<script\b[^>]*>[\s\S]*?</script>""", RegexOption.IGNORE_CASE), " ")
+                    .replace(Regex("""<style\b[^>]*>[\s\S]*?</style>""", RegexOption.IGNORE_CASE), " ")
+                    .replace(Regex("""<[^>]+>"""), " ")
+                    .let { XmlEntities.decode(it) }
+                    .replace(Regex("""\s+"""), " ")
+                    .trim()
+            }
+        }.getOrDefault("")
+        val limit = maxExcerptChars.coerceAtLeast(16)
+        val excerpt = if (plainText.length <= limit) {
+            plainText
+        } else {
+            plainText.substring(0, limit).trimEnd() + "…"
+        }
+        return PagePreview(
+            pageIndex = pageIndex,
+            href = href,
+            title = title,
+            excerpt = excerpt,
+        )
+    }
+
+    /** Alias conciso para [getPagePreview]. */
+    public fun pagePreview(pageIndex: Int): PagePreview? =
+        getPagePreview(pageIndex = pageIndex, maxExcerptChars = 180)
+
+    public fun pagePreview(pageIndex: Int, maxExcerptChars: Int): PagePreview? =
+        getPagePreview(pageIndex = pageIndex, maxExcerptChars = maxExcerptChars)
 
     /** Sobrecarga concisa para iOS/Swift sem argumentos default. */
     public fun currentBaseUrl(): String = currentBaseUrl(schemeBase = DEFAULT_BOOK_BASE_URL)
@@ -1126,6 +1218,7 @@ public class ReaderSession(
             currentPageFormState = pageFormStates[targetPage] ?: PageFormState(),
             bookmarks = bookmarks.toList(),
             hasBookmarkAtCurrentPage = bookmarks.any { it.pageIndex == targetPage },
+            stats = buildStats(targetPage, updatedProgress.pageProgression),
         )
 
         _events.tryEmit(ReaderEvent.ProgressUpdated(updatedProgress))
@@ -1155,6 +1248,7 @@ public class ReaderSession(
             currentPageHighlights = pageHighlightSummaries[targetPageIndex].orEmpty(),
             currentPageFormState = pageFormStates[targetPageIndex] ?: PageFormState(),
             hasBookmarkAtCurrentPage = bookmarks.any { it.pageIndex == targetPageIndex },
+            stats = buildStats(targetPageIndex, newProgress.pageProgression),
         )
         lastEmittedProgressPage = targetPageIndex
         lastEmittedProgressScrollY = scrollY
@@ -1234,6 +1328,60 @@ public class ReaderSession(
                 progression = pageProgression,
                 title = chapterTitle,
             ),
+        )
+    }
+
+    private fun extractFootnoteById(targetHref: String, anchorId: String): String? {
+        if (targetHref.isBlank() || anchorId.isBlank()) return null
+        val html = runCatching { publication.readString(targetHref) }.getOrNull() ?: return null
+        val escapedId = Regex.escape(anchorId)
+        val regex = Regex(
+            """<([a-zA-Z0-9:_-]+)\b([^>]*\bid\s*=\s*(?:"$escapedId"|'$escapedId')[^>]*)>([\s\S]*?)</\1>""",
+            RegexOption.IGNORE_CASE,
+        )
+        val match = regex.find(html) ?: return null
+        val tagName = match.groupValues[1].lowercase()
+        val attrs = match.groupValues[2].lowercase()
+        val isFootnote = tagName == "aside" ||
+            attrs.contains("footnote") ||
+            attrs.contains("endnote") ||
+            attrs.contains("rearnote") ||
+            attrs.contains("doc-footnote") ||
+            attrs.contains("doc-endnote")
+        if (!isFootnote) return null
+        val body = match.groupValues[3]
+            .replace(Regex("""<[^>]+>"""), " ")
+            .let { XmlEntities.decode(it) }
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+        return body.takeIf { it.isNotEmpty() }
+    }
+
+    private fun buildStats(pageIndex: Int, pageProgression: Float): ReadingStats {
+        if (chapterWordCounts.isEmpty()) return ReadingStats()
+        val safePage = pageIndex.coerceIn(0, chapterWordCounts.size - 1)
+        val safeProg = pageProgression.coerceIn(0f, 1f)
+        val chapterWords = chapterWordCounts[safePage]
+        val remainingChapterWords = (chapterWords * (1f - safeProg)).coerceAtLeast(0f)
+        val subsequentWords = ((safePage + 1) until chapterWordCounts.size).sumOf { chapterWordCounts[it] }
+        val remainingBookWords = remainingChapterWords + subsequentWords.toFloat()
+        val wpm = 200
+        val chapterMins = if (chapterWords == 0 || safeProg >= 1f) {
+            0
+        } else {
+            ceil(remainingChapterWords / wpm.toDouble()).toInt().coerceAtLeast(1)
+        }
+        val bookMins = if (totalWordCount == 0 || (safePage == chapterWordCounts.size - 1 && safeProg >= 1f)) {
+            0
+        } else {
+            ceil(remainingBookWords / wpm.toDouble()).toInt().coerceAtLeast(1)
+        }
+        return ReadingStats(
+            chapterWordCount = chapterWords,
+            totalWordCount = totalWordCount,
+            estimatedChapterMinutesRemaining = chapterMins,
+            estimatedBookMinutesRemaining = bookMins,
+            wordsPerMinute = wpm,
         )
     }
 

@@ -153,9 +153,32 @@ public class Publication(
     public val toc: List<TocEntry>,
     public val provider: ResourceProvider,
     public val encryptedResources: Map<String, EncryptedResourceInfo> = emptyMap(),
+    public val pageList: List<TocEntry> = emptyList(),
+    public val landmarks: List<TocEntry> = emptyList(),
 ) {
+    public constructor(
+        metadata: Metadata,
+        spine: List<String>,
+        resources: List<Resource>,
+        toc: List<TocEntry>,
+        provider: ResourceProvider,
+        encryptedResources: Map<String, EncryptedResourceInfo>,
+    ) : this(
+        metadata = metadata,
+        spine = spine,
+        resources = resources,
+        toc = toc,
+        provider = provider,
+        encryptedResources = encryptedResources,
+        pageList = emptyList(),
+        landmarks = emptyList(),
+    )
+
     @kotlin.concurrent.Volatile
     private var plainTextCache: Map<String, String> = emptyMap()
+
+    @kotlin.concurrent.Volatile
+    private var cachedPositions: List<Locator>? = null
 
     public fun read(href: String): ByteArray = provider.read(href)
 
@@ -181,6 +204,45 @@ public class Publication(
     public fun findResource(href: String): Resource? {
         val clean = href.substringBefore('#').removePrefix("/")
         return resources.firstOrNull { it.href == clean || it.href.endsWith("/$clean") }
+    }
+
+    /** Gera a lista determinística global de posições da publicação em blocos de 1024 caracteres. */
+    public fun positions(): List<Locator> {
+        cachedPositions?.let { return it }
+        val computed = positions(blockSizeChars = 1024)
+        cachedPositions = computed
+        return computed
+    }
+
+    /** Gera a lista determinística global de posições dividida em blocos de `blockSizeChars` caracteres. */
+    public fun positions(blockSizeChars: Int): List<Locator> {
+        val safeBlock = blockSizeChars.coerceAtLeast(128)
+        val result = mutableListOf<Locator>()
+        for ((pageIdx, href) in spine.withIndex()) {
+            val text = runCatching {
+                cachedPlainText(href) { raw ->
+                    raw.replace(Regex("""<[^>]+>"""), " ").replace(Regex("""\s+"""), " ").trim()
+                }
+            }.getOrDefault("")
+            val length = text.length
+            val chunks = if (length == 0) 1 else ((length + safeBlock - 1) / safeBlock).coerceAtLeast(1)
+            for (chunkIdx in 0 until chunks) {
+                val progression = if (chunks <= 1) 0f else (chunkIdx.toFloat() / chunks.toFloat()).coerceIn(0f, 1f)
+                val startChar = (chunkIdx * safeBlock).coerceAtMost(length)
+                val endChar = (startChar + 80).coerceAtMost(length)
+                val quote = if (startChar < endChar) text.substring(startChar, endChar).trim() else null
+                result.add(
+                    Locator(
+                        href = href,
+                        pageIndex = pageIdx,
+                        progression = progression,
+                        title = "Posição ${result.size + 1}",
+                        textQuote = quote,
+                    ),
+                )
+            }
+        }
+        return result
     }
 }
 
@@ -381,4 +443,26 @@ public data class BookStateSnapshot(
     val pageForms: Map<Int, String> = emptyMap(),
     val bookmarks: List<Bookmark> = emptyList(),
     val updatedAtEpochMs: Long = 0L,
+)
+
+/** Estatísticas e estimativa de tempo de leitura do capítulo e do livro. */
+@Serializable
+public data class ReadingStats(
+    val chapterWordCount: Int = 0,
+    val totalWordCount: Int = 0,
+    val estimatedChapterMinutesRemaining: Int = 0,
+    val estimatedBookMinutesRemaining: Int = 0,
+    val wordsPerMinute: Int = 200,
+)
+
+/**
+ * Preview rápido de um capítulo/página da spine (`title` + `excerpt` de texto limpo),
+ * ideal para cards laterais de navegação (capítulo anterior / próximo).
+ */
+@Serializable
+public data class PagePreview(
+    val pageIndex: Int,
+    val href: String,
+    val title: String,
+    val excerpt: String,
 )

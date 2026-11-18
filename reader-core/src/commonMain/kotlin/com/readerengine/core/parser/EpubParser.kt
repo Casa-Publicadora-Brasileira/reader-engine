@@ -103,10 +103,31 @@ public class EpubParser : FormatParser {
             .mapNotNull { idToHref[it] }
         val spine = linearHrefs.ifEmpty { allHrefs }
 
+        val navXhtml = navHref?.let { runCatching { zip.readString(it) }.getOrNull() }
+        val ncxXml = ncxHref?.let { runCatching { zip.readString(it) }.getOrNull() }
+
         val toc = when {
-            navHref != null -> runCatching { parseNavXhtml(zip.readString(navHref), navHref) }.getOrDefault(emptyList())
-            ncxHref != null -> runCatching { parseNcx(zip.readString(ncxHref), ncxHref) }.getOrDefault(emptyList())
+            navXhtml != null && navHref != null -> runCatching { parseNavXhtml(navXhtml, navHref) }.getOrDefault(emptyList())
+            ncxXml != null && ncxHref != null -> runCatching { parseNcx(ncxXml, ncxHref) }.getOrDefault(emptyList())
             else -> emptyList()
+        }
+
+        val navPageList = if (navXhtml != null && navHref != null) {
+            runCatching { parseNavByType(navXhtml, navHref, "page-list") }.getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
+        val pageList = if (navPageList.isNotEmpty()) {
+            navPageList
+        } else if (ncxXml != null && ncxHref != null) {
+            runCatching { parseNcxPageList(ncxXml, ncxHref) }.getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
+        val landmarks = if (navXhtml != null && navHref != null) {
+            runCatching { parseNavByType(navXhtml, navHref, "landmarks") }.getOrDefault(emptyList())
+        } else {
+            emptyList()
         }
 
         val encryptedResources = if (zip.hasEntry("META-INF/encryption.xml")) {
@@ -143,6 +164,8 @@ public class EpubParser : FormatParser {
             toc = toc,
             provider = effectiveProvider,
             encryptedResources = encryptedResources,
+            pageList = pageList,
+            landmarks = landmarks,
         )
     }
 
@@ -204,15 +227,27 @@ public class EpubParser : FormatParser {
         return null
     }
 
-    internal fun parseNavXhtml(xhtml: String, navPath: String): List<TocEntry> {
+    internal fun parseNavXhtml(xhtml: String, navPath: String): List<TocEntry> =
+        parseNavByType(xhtml = xhtml, navPath = navPath, navType = "toc", fallbackToWholeDoc = true)
+
+    internal fun parseNavByType(
+        xhtml: String,
+        navPath: String,
+        navType: String,
+        fallbackToWholeDoc: Boolean = false,
+    ): List<TocEntry> {
         val navDir = navPath.substringBeforeLast('/', missingDelimiterValue = "")
             .let { if (it.isEmpty()) "" else "$it/" }
 
+        val escapedType = Regex.escape(navType)
         val navBlockRegex = Regex(
-            """<nav\b[^>]*?(?:epub:type|type)\s*=\s*(?:"[^"]*toc[^"]*"|'[^']*toc[^']*')[^>]*>([\s\S]*?)</nav>""",
+            """<nav\b[^>]*?(?:epub:type|type)\s*=\s*(?:"[^"]*\b$escapedType\b[^"]*"|'[^']*\b$escapedType\b[^']*')[^>]*>([\s\S]*?)</nav>""",
             RegexOption.IGNORE_CASE,
         )
-        val navContent = navBlockRegex.find(xhtml)?.groupValues?.get(1) ?: xhtml
+        val navMatch = navBlockRegex.find(xhtml)
+        val navContent = navMatch?.groupValues?.get(1)
+            ?: if (fallbackToWholeDoc) xhtml else return emptyList()
+
         val nested = parseNestedOlToc(navContent, navDir)
         if (nested.isNotEmpty()) return nested
 
@@ -362,6 +397,37 @@ public class EpubParser : FormatParser {
         }
 
         return roots
+    }
+
+    internal fun parseNcxPageList(ncxXml: String, ncxPath: String): List<TocEntry> {
+        val ncxDir = ncxPath.substringBeforeLast('/', missingDelimiterValue = "")
+            .let { if (it.isEmpty()) "" else "$it/" }
+        val pageListRegex = Regex(
+            """<(?:[a-zA-Z0-9_-]+:)?pageList\b[^>]*>([\s\S]*?)</(?:[a-zA-Z0-9_-]+:)?pageList>""",
+            RegexOption.IGNORE_CASE,
+        )
+        val pageListContent = pageListRegex.find(ncxXml)?.groupValues?.get(1) ?: return emptyList()
+        val pageTargetRegex = Regex(
+            """<(?:[a-zA-Z0-9_-]+:)?pageTarget\b([^>]*)>([\s\S]*?)</(?:[a-zA-Z0-9_-]+:)?pageTarget>""",
+            RegexOption.IGNORE_CASE,
+        )
+        val contentRegex = Regex(
+            """<(?:[a-zA-Z0-9_-]+:)?content\b([^>]*)/?>""",
+            RegexOption.IGNORE_CASE,
+        )
+        return pageTargetRegex.findAll(pageListContent).mapNotNull { match ->
+            val targetAttrs = match.groupValues[1]
+            val targetBody = match.groupValues[2]
+            val textTitle = extractFirstTagText(targetBody, "text")
+                ?: extractAttribute(targetAttrs, "value")?.trim()
+                ?: return@mapNotNull null
+            val contentMatch = contentRegex.find(targetBody) ?: return@mapNotNull null
+            val src = extractAttribute(contentMatch.groupValues[1], "src") ?: return@mapNotNull null
+            TocEntry(
+                title = textTitle,
+                href = resolveHrefWithAnchor(ncxDir, src),
+            )
+        }.toList()
     }
 
     private fun resolveHrefWithAnchor(baseDir: String, rawHref: String): String {

@@ -7,6 +7,7 @@ import com.readerengine.core.model.PageFormState
 import com.readerengine.core.model.PageProgressionDirection
 import com.readerengine.core.model.ReadingMode
 import com.readerengine.core.model.RenditionLayout
+import com.readerengine.core.model.RenditionSpread
 import com.readerengine.core.theme.ThemeTokens
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -111,6 +112,7 @@ public object ReaderJsBridge {
         readingMode: ReadingMode = ReadingMode.SCROLL,
         layout: RenditionLayout = RenditionLayout.REFLOWABLE,
         direction: PageProgressionDirection = PageProgressionDirection.DEFAULT,
+        spread: RenditionSpread = RenditionSpread.AUTO,
     ): String {
         val css = theme.toContentCss(
             fontScale = fontScale,
@@ -118,6 +120,7 @@ public object ReaderJsBridge {
             isNightMode = isNightMode,
             readingMode = readingMode,
             layout = layout,
+            spread = spread,
         )
         val safeFontClass = sanitizeClassToken(fontSizeClass)
         val classes = buildString {
@@ -136,12 +139,12 @@ public object ReaderJsBridge {
             }
         }.trim()
 
-        val htmlOpenRegex = Regex("<html\\s+", RegexOption.IGNORE_CASE)
+        val htmlOpenRegex = Regex("<html(\\b)", RegexOption.IGNORE_CASE)
         val isRtl = direction == PageProgressionDirection.RTL
         val hasDirAttr = Regex("""<html\b[^>]*\bdir\s*=""", RegexOption.IGNORE_CASE).containsMatchIn(rawHtml)
 
         var processedHtml = if (classes.isNotEmpty() && htmlOpenRegex.containsMatchIn(rawHtml)) {
-            rawHtml.replaceFirst(htmlOpenRegex, Regex.escapeReplacement("<html class=\"$classes\" "))
+            rawHtml.replaceFirst(htmlOpenRegex, Regex.escapeReplacement("<html class=\"$classes\""))
         } else {
             rawHtml
         }
@@ -621,6 +624,36 @@ public object ReaderJsBridge {
                         }
                     }, 80);
                 }, { passive: true });
+            }
+            if (typeof window.__readerFootnoteHooked === 'undefined') {
+                window.__readerFootnoteHooked = true;
+                document.addEventListener('click', function(e) {
+                    var el = e.target;
+                    while (el && el.tagName && el.tagName.toLowerCase() !== 'a') {
+                        el = el.parentElement;
+                    }
+                    if (!el || !el.getAttribute) return;
+                    var epubType = (el.getAttribute('epub:type') || el.getAttribute('type') || '').toLowerCase();
+                    var role = (el.getAttribute('role') || '').toLowerCase();
+                    var href = el.getAttribute('href') || '';
+                    var isNoteref = epubType.indexOf('noteref') >= 0 || role.indexOf('doc-noteref') >= 0;
+                    var hashIdx = href.indexOf('#');
+                    if (hashIdx >= 0) {
+                        var targetId = href.substring(hashIdx + 1);
+                        var targetEl = targetId ? document.getElementById(targetId) : null;
+                        if (targetEl) {
+                            var targetType = (targetEl.getAttribute('epub:type') || targetEl.getAttribute('role') || '').toLowerCase();
+                            var isTargetFootnote = targetEl.tagName.toLowerCase() === 'aside' || targetType.indexOf('footnote') >= 0 || targetType.indexOf('endnote') >= 0 || targetType.indexOf('note') >= 0;
+                            if (isNoteref || isTargetFootnote) {
+                                e.preventDefault();
+                                var title = (el.textContent || targetId || 'Nota').trim();
+                                var text = (targetEl.textContent || '').trim();
+                                var payload = JSON.stringify([{ title: title, text: text }]);
+                                window.location.href = 'footnote://?q=' + encodeURIComponent(payload);
+                            }
+                        }
+                    }
+                }, false);
             }
         })();
     """

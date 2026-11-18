@@ -158,7 +158,13 @@ public object ReaderJsBridge {
             }
         }
 
-        val headInjection = "<style id=\"reader-engine-theme\">$css</style><script>$FALLBACK_READER_JS</script>"
+        val hasViewportMeta = Regex("""<meta\b[^>]*\bname\s*=\s*["']viewport["']""", RegexOption.IGNORE_CASE).containsMatchIn(rawHtml)
+        val viewportInjection = if (!hasViewportMeta && layout == RenditionLayout.REFLOWABLE) {
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
+        } else {
+            ""
+        }
+        val headInjection = "$viewportInjection<style id=\"reader-engine-theme\">$css</style><script>$FALLBACK_READER_JS</script>"
         val headCloseRegex = Regex("</head>", RegexOption.IGNORE_CASE)
         val bodyOpenRegex = Regex("<body\\b", RegexOption.IGNORE_CASE)
 
@@ -460,13 +466,48 @@ public object ReaderJsBridge {
                         }
                     }
                 }
+                function _resolvePaginatedWidth() {
+                    var cw = document.documentElement ? (document.documentElement.clientWidth || 0) : 0;
+                    var iw = window.innerWidth || 0;
+                    var w = cw > 0 ? cw : iw;
+                    if (w >= 120) return w;
+                    var sw = (window.screen && (window.screen.availWidth || window.screen.width)) ? (window.screen.availWidth || window.screen.width) : 360;
+                    return Math.max(240, sw);
+                }
+                function _resolvePaginatedHeight() {
+                    var ih = window.innerHeight || 0;
+                    var ch = document.documentElement ? (document.documentElement.clientHeight || 0) : 0;
+                    var sh = (window.screen && (window.screen.availHeight || window.screen.height)) ? (window.screen.availHeight || window.screen.height) : 720;
+                    var maxReasonable = Math.max(400, Math.round(sh * 0.85));
+                    var minReasonable = Math.max(240, Math.round(sh * 0.40));
+                    var measured = ih >= ch ? ih : ch;
+                    if (measured >= minReasonable && measured <= maxReasonable) {
+                        return measured;
+                    }
+                    return Math.max(360, Math.round(sh * 0.68));
+                }
+                function _syncPaginatedMetrics() {
+                    var root = document.documentElement;
+                    if (!root || !root.classList.contains('reader-paginated')) return;
+                    var vh = _resolvePaginatedHeight();
+                    root.style.setProperty('--reader-page-height', vh + 'px');
+                    if (window.scrollY > 0 || root.scrollTop > 0) {
+                        window.scrollTo(0, 0);
+                        root.scrollTop = 0;
+                        if (document.body) document.body.scrollTop = 0;
+                    }
+                }
                 function _computeTotalSubPages() {
-                    var vw = Math.max(1, window.innerWidth || 1);
-                    var sw = Math.max(vw, document.body ? document.body.scrollWidth : vw);
+                    _syncPaginatedMetrics();
+                    var vw = _resolvePaginatedWidth();
+                    var bodySw = document.body ? (document.body.scrollWidth || 0) : 0;
+                    var docSw = document.documentElement ? (document.documentElement.scrollWidth || 0) : 0;
+                    var sw = Math.max(vw, bodySw, docSw);
                     return Math.max(1, Math.round(sw / vw));
                 }
                 function _applySubPageOffset() {
-                    var vw = Math.max(1, window.innerWidth || 1);
+                    _syncPaginatedMetrics();
+                    var vw = _resolvePaginatedWidth();
                     if (document.body) {
                         var isRtl = (document.documentElement && document.documentElement.dir === 'rtl') || (document.body && document.body.dir === 'rtl');
                         var sign = isRtl ? '' : '-';
@@ -654,6 +695,23 @@ public object ReaderJsBridge {
                         }
                     }
                 }, false);
+            }
+            if (typeof window.__readerPaginatedHooked === 'undefined') {
+                window.__readerPaginatedHooked = true;
+                var _onPaginatedReady = function() {
+                    if (document.documentElement && document.documentElement.classList.contains('reader-paginated')) {
+                        if (typeof window.readerJS !== 'undefined' && window.readerJS.getSubPageState) {
+                            window.readerJS.getSubPageState();
+                        }
+                    }
+                };
+                if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                    setTimeout(_onPaginatedReady, 0);
+                } else {
+                    window.addEventListener('DOMContentLoaded', _onPaginatedReady);
+                }
+                window.addEventListener('load', _onPaginatedReady);
+                window.addEventListener('resize', _onPaginatedReady);
             }
         })();
     """

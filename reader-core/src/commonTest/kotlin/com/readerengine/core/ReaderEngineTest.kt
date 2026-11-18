@@ -911,6 +911,8 @@ class ReaderEngineTest {
             layout = RenditionLayout.REFLOWABLE,
             spread = RenditionSpread.LANDSCAPE,
         )
+        assertTrue(spreadCss.contains("html.reader-paginated{height:var(--reader-page-height,560px) !important;min-height:var(--reader-page-height,560px) !important;max-height:var(--reader-page-height,560px) !important;width:100% !important;overflow:hidden !important;"))
+        assertTrue(spreadCss.contains("html.reader-paginated body{height:var(--reader-page-height,560px) !important;min-height:var(--reader-page-height,560px) !important;max-height:var(--reader-page-height,560px) !important;width:100% !important;overflow:visible !important;"))
         assertTrue(spreadCss.contains("html.reader-paginated body{column-width:calc(100vw - 64px);column-gap:64px;column-fill:auto;padding:16px 32px !important;}"))
         assertTrue(spreadCss.contains("@media (orientation: landscape){html.reader-paginated body{column-count:2;column-width:auto;column-gap:64px;}}"))
 
@@ -922,6 +924,7 @@ class ReaderEngineTest {
             isNightMode = true,
         )
         assertTrue(injectedBareHtml.contains("<html class=\"nightMode\">"))
+        assertTrue(injectedBareHtml.contains("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"))
 
         // Inject into <html lang="pt"> tag preserving existing attributes
         val injectedWithAttr = ReaderJsBridge.injectThemeAndBridge(
@@ -972,7 +975,7 @@ class ReaderEngineTest {
         val chap1Words = (1..250).joinToString(" ") { "palavra$it" }
         val chap2Words = (1..200).joinToString(" ") { "termo$it" }
         val chap1Html = """
-            <html><body>
+            <html><head><title>3MensAngelicas</title></head><body>
               <p>$chap1Words <a href="#fn1" epub:type="noteref">1</a></p>
               <aside id="fn1" epub:type="footnote"><p>Nota explicativa sobre Zaqueu.</p></aside>
             </body></html>
@@ -1028,6 +1031,7 @@ class ReaderEngineTest {
         val preview0 = session.getPagePreview(0)
         assertNotNull(preview0)
         assertEquals("Cap 1", preview0.title)
+        assertFalse(preview0.excerpt.contains("3MensAngelicas"))
         assertTrue(preview0.excerpt.startsWith("palavra1"))
         val preview1 = session.pagePreview(1)
         assertNotNull(preview1)

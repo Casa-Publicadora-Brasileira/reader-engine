@@ -221,7 +221,12 @@ public class Publication(
         for ((pageIdx, href) in spine.withIndex()) {
             val text = runCatching {
                 cachedPlainText(href) { raw ->
-                    raw.replace(Regex("""<[^>]+>"""), " ").replace(Regex("""\s+"""), " ").trim()
+                    raw.replace(Regex("""<head\b[^>]*>[\s\S]*?</head>""", RegexOption.IGNORE_CASE), " ")
+                        .replace(Regex("""<script\b[^>]*>[\s\S]*?</script>""", RegexOption.IGNORE_CASE), " ")
+                        .replace(Regex("""<style\b[^>]*>[\s\S]*?</style>""", RegexOption.IGNORE_CASE), " ")
+                        .replace(Regex("""<[^>]+>"""), " ")
+                        .replace(Regex("""\s+"""), " ")
+                        .trim()
                 }
             }.getOrDefault("")
             val length = text.length

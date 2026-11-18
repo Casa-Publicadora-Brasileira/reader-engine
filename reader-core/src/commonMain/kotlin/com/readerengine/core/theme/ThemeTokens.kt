@@ -153,17 +153,18 @@ public data class ThemeTokens(
             } else {
                 val safeTextAlign = sanitizeCssTextAlign(typography.textAlign) ?: "justify"
                 val padH = shape.horizontalPaddingPx.coerceIn(0, 240)
+                val gap = padH * 2
                 append("html,body{background-color:$bg !important;color:$fg !important;font-family:$family !important;font-size:${fontSizePx}px;line-height:$lineHeight !important;}")
                 append("body{padding-left:${padH}px !important;padding-right:${padH}px !important;text-align:$safeTextAlign !important;box-sizing:border-box;}")
                 append("body *:not([class*=\"highlight_\"]){color:$fg !important;background-color:transparent !important;line-height:inherit;}")
                 append("body,body p,body div,body li,body blockquote{text-align:$safeTextAlign !important;}")
-                if (readingMode == ReadingMode.PAGINATED) {
-                    val gap = padH * 2
-                    append("html.reader-paginated,html.reader-paginated body{height:100vh;overflow:hidden;margin:0;box-sizing:border-box;}")
-                    append("html.reader-paginated body{column-width:calc(100vw - ${gap}px);column-gap:${gap}px;column-fill:auto;padding:16px ${padH}px !important;}")
-                    if (spread == RenditionSpread.LANDSCAPE || spread == RenditionSpread.BOTH) {
-                        append("@media (orientation: landscape){html.reader-paginated body{column-count:2;column-width:auto;column-gap:${gap}px;}}")
-                    }
+                append("html.reader-paginated{height:var(--reader-page-height,560px) !important;min-height:var(--reader-page-height,560px) !important;max-height:var(--reader-page-height,560px) !important;width:100% !important;overflow:hidden !important;margin:0 !important;padding:0 !important;box-sizing:border-box !important;}")
+                append("html.reader-paginated body{height:var(--reader-page-height,560px) !important;min-height:var(--reader-page-height,560px) !important;max-height:var(--reader-page-height,560px) !important;width:100% !important;overflow:visible !important;margin:0 !important;box-sizing:border-box !important;}")
+                append("html.reader-paginated body{column-width:calc(100vw - ${gap}px);column-gap:${gap}px;column-fill:auto;padding:16px ${padH}px !important;}")
+                append("html.reader-paginated body > div,html.reader-paginated body > section,html.reader-paginated body > article,html.reader-paginated body > main{height:auto !important;min-height:0 !important;max-height:none !important;overflow:visible !important;}")
+                append("html.reader-paginated img,html.reader-paginated svg,html.reader-paginated video{max-height:calc(var(--reader-page-height,560px) - 64px) !important;max-width:100% !important;break-inside:avoid;}")
+                if (spread == RenditionSpread.LANDSCAPE || spread == RenditionSpread.BOTH) {
+                    append("@media (orientation: landscape){html.reader-paginated body{column-count:2;column-width:auto;column-gap:${gap}px;}}")
                 }
             }
             append("a,a *:not([class*=\"highlight_\"]){color:$linkColor !important;}")

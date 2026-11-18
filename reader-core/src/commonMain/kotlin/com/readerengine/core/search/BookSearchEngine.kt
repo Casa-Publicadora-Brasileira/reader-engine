@@ -14,7 +14,7 @@ import com.readerengine.core.parser.XmlEntities
  */
 public object BookSearchEngine {
 
-    private val scriptOrStyleRegex = Regex("""<(script|style)\b[^>]*>[\s\S]*?</\1>""", RegexOption.IGNORE_CASE)
+    private val scriptOrStyleRegex = Regex("""<(head|script|style)\b[^>]*>[\s\S]*?</\1>""", RegexOption.IGNORE_CASE)
     private val htmlTagRegex = Regex("""<[^>]+>""")
     private val whitespaceRegex = Regex("""\s+""")
 

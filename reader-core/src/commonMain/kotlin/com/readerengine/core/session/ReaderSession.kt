@@ -223,7 +223,13 @@ public class ReaderSession(
         val href = publication.spine[idx]
         val cleanText = runCatching {
             publication.cachedPlainText(href) { raw ->
-                raw.replace(Regex("""<[^>]+>"""), " ").replace(Regex("""\s+"""), " ").trim()
+                raw.replace(Regex("""<head\b[^>]*>[\s\S]*?</head>""", RegexOption.IGNORE_CASE), " ")
+                    .replace(Regex("""<script\b[^>]*>[\s\S]*?</script>""", RegexOption.IGNORE_CASE), " ")
+                    .replace(Regex("""<style\b[^>]*>[\s\S]*?</style>""", RegexOption.IGNORE_CASE), " ")
+                    .replace(Regex("""<[^>]+>"""), " ")
+                    .let { XmlEntities.decode(it) }
+                    .replace(Regex("""\s+"""), " ")
+                    .trim()
             }
         }.getOrDefault("")
         if (cleanText.isBlank()) 0 else cleanText.split(Regex("""\s+""")).count { it.isNotBlank() }
@@ -944,7 +950,8 @@ public class ReaderSession(
             ?: strings.formatPageLabel(pageIndex + 1)
         val plainText = runCatching {
             publication.cachedPlainText(href) { raw ->
-                raw.replace(Regex("""<script\b[^>]*>[\s\S]*?</script>""", RegexOption.IGNORE_CASE), " ")
+                raw.replace(Regex("""<head\b[^>]*>[\s\S]*?</head>""", RegexOption.IGNORE_CASE), " ")
+                    .replace(Regex("""<script\b[^>]*>[\s\S]*?</script>""", RegexOption.IGNORE_CASE), " ")
                     .replace(Regex("""<style\b[^>]*>[\s\S]*?</style>""", RegexOption.IGNORE_CASE), " ")
                     .replace(Regex("""<[^>]+>"""), " ")
                     .let { XmlEntities.decode(it) }
@@ -952,11 +959,19 @@ public class ReaderSession(
                     .trim()
             }
         }.getOrDefault("")
-        val limit = maxExcerptChars.coerceAtLeast(16)
-        val excerpt = if (plainText.length <= limit) {
-            plainText
+        val cleanBody = if (title.isNotBlank() &&
+            plainText.startsWith(title, ignoreCase = true) &&
+            plainText.length > title.length
+        ) {
+            plainText.substring(title.length).trim()
         } else {
-            plainText.substring(0, limit).trimEnd() + "…"
+            plainText
+        }
+        val limit = maxExcerptChars.coerceAtLeast(16)
+        val excerpt = if (cleanBody.length <= limit) {
+            cleanBody
+        } else {
+            cleanBody.substring(0, limit).trimEnd() + "…"
         }
         return PagePreview(
             pageIndex = pageIndex,

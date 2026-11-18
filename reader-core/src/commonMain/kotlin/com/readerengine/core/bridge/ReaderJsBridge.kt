@@ -4,8 +4,10 @@ import com.readerengine.core.model.FormEntry
 import com.readerengine.core.model.HighlightItem
 import com.readerengine.core.model.HighlightStyle
 import com.readerengine.core.model.PageFormState
+import com.readerengine.core.model.PageProgressionDirection
 import com.readerengine.core.model.ReadingMode
 import com.readerengine.core.model.RenditionLayout
+import com.readerengine.core.model.RenditionSpread
 import com.readerengine.core.theme.ThemeTokens
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -81,6 +83,11 @@ public object ReaderJsBridge {
         return "javascript:(function(){var h=document.documentElement;if(h){if($isPaginated){h.classList.add('reader-paginated');if(typeof readerJS!=='undefined'&&readerJS.getSubPageState){return readerJS.getSubPageState();}}else{h.classList.remove('reader-paginated');if(typeof readerJS!=='undefined'&&readerJS.resetSubPage){readerJS.resetSubPage();}else if(document.body){document.body.style.transform='';document.body.style.transition='';}window.scrollTo(0,0);}}return '{\"subPage\":0,\"totalSubPages\":1}';})();"
     }
 
+    public fun goToSubPageCommand(subPage: Int): String {
+        val clamped = subPage.coerceAtLeast(0)
+        return "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.goToSubPage){return readerJS.goToSubPage($clamped);}return '{\"subPage\":0,\"totalSubPages\":1}';})();"
+    }
+
     public fun scrollToYCommand(scrollYPx: Int, anchor: String? = null): String {
         val clamped = scrollYPx.coerceAtLeast(0)
         if (!anchor.isNullOrBlank()) {
@@ -104,6 +111,8 @@ public object ReaderJsBridge {
         isNightMode: Boolean = false,
         readingMode: ReadingMode = ReadingMode.SCROLL,
         layout: RenditionLayout = RenditionLayout.REFLOWABLE,
+        direction: PageProgressionDirection = PageProgressionDirection.DEFAULT,
+        spread: RenditionSpread = RenditionSpread.AUTO,
     ): String {
         val css = theme.toContentCss(
             fontScale = fontScale,
@@ -111,6 +120,7 @@ public object ReaderJsBridge {
             isNightMode = isNightMode,
             readingMode = readingMode,
             layout = layout,
+            spread = spread,
         )
         val safeFontClass = sanitizeClassToken(fontSizeClass)
         val classes = buildString {
@@ -129,11 +139,23 @@ public object ReaderJsBridge {
             }
         }.trim()
 
-        val htmlOpenRegex = Regex("<html\\s+", RegexOption.IGNORE_CASE)
-        val htmlWithClass = if (classes.isNotEmpty() && htmlOpenRegex.containsMatchIn(rawHtml)) {
-            rawHtml.replaceFirst(htmlOpenRegex, Regex.escapeReplacement("<html class=\"$classes\" "))
+        val htmlOpenRegex = Regex("<html(\\b)", RegexOption.IGNORE_CASE)
+        val isRtl = direction == PageProgressionDirection.RTL
+        val hasDirAttr = Regex("""<html\b[^>]*\bdir\s*=""", RegexOption.IGNORE_CASE).containsMatchIn(rawHtml)
+
+        var processedHtml = if (classes.isNotEmpty() && htmlOpenRegex.containsMatchIn(rawHtml)) {
+            rawHtml.replaceFirst(htmlOpenRegex, Regex.escapeReplacement("<html class=\"$classes\""))
         } else {
             rawHtml
+        }
+
+        if (isRtl && !hasDirAttr) {
+            val htmlTagRegex = Regex("""<html\b""", RegexOption.IGNORE_CASE)
+            processedHtml = if (htmlTagRegex.containsMatchIn(processedHtml)) {
+                processedHtml.replaceFirst(htmlTagRegex, "<html dir=\"rtl\"")
+            } else {
+                processedHtml
+            }
         }
 
         val headInjection = "<style id=\"reader-engine-theme\">$css</style><script>$FALLBACK_READER_JS</script>"
@@ -141,13 +163,14 @@ public object ReaderJsBridge {
         val bodyOpenRegex = Regex("<body\\b", RegexOption.IGNORE_CASE)
 
         return when {
-            headCloseRegex.containsMatchIn(htmlWithClass) ->
-                htmlWithClass.replaceFirst(headCloseRegex, Regex.escapeReplacement("$headInjection</head>"))
-            bodyOpenRegex.containsMatchIn(htmlWithClass) ->
-                htmlWithClass.replaceFirst(bodyOpenRegex, Regex.escapeReplacement("<head>$headInjection</head><body"))
+            headCloseRegex.containsMatchIn(processedHtml) ->
+                processedHtml.replaceFirst(headCloseRegex, Regex.escapeReplacement("$headInjection</head>"))
+            bodyOpenRegex.containsMatchIn(processedHtml) ->
+                processedHtml.replaceFirst(bodyOpenRegex, Regex.escapeReplacement("<head>$headInjection</head><body"))
             else -> {
                 val classAttr = if (classes.isNotEmpty()) " class=\"$classes\"" else ""
-                "<!doctype html><html$classAttr><head>$headInjection</head><body>$htmlWithClass</body></html>"
+                val dirAttr = if (isRtl && !hasDirAttr) " dir=\"rtl\"" else ""
+                "<!doctype html><html$dirAttr$classAttr><head>$headInjection</head><body>$processedHtml</body></html>"
             }
         }
     }
@@ -445,7 +468,9 @@ public object ReaderJsBridge {
                 function _applySubPageOffset() {
                     var vw = Math.max(1, window.innerWidth || 1);
                     if (document.body) {
-                        document.body.style.transform = 'translateX(-' + (_subPage * vw) + 'px)';
+                        var isRtl = (document.documentElement && document.documentElement.dir === 'rtl') || (document.body && document.body.dir === 'rtl');
+                        var sign = isRtl ? '' : '-';
+                        document.body.style.transform = 'translateX(' + sign + (_subPage * vw) + 'px)';
                         document.body.style.transition = 'transform 0.18s ease-out';
                     }
                 }
@@ -548,6 +573,12 @@ public object ReaderJsBridge {
                         }
                         return JSON.stringify({ subPage: _subPage, totalSubPages: total });
                     },
+                    goToSubPage: function(index) {
+                        var total = _computeTotalSubPages();
+                        _subPage = Math.max(0, Math.min(total - 1, parseInt(index, 10) || 0));
+                        _applySubPageOffset();
+                        return JSON.stringify({ subPage: _subPage, totalSubPages: total });
+                    },
                     resetSubPage: function() {
                         _subPage = 0;
                         if (document.body) {
@@ -564,6 +595,8 @@ public object ReaderJsBridge {
                         var str = typeof payload === 'string' ? payload : (payload ? JSON.stringify(payload) : '');
                         if (typeof window.AndroidActionBridge !== 'undefined' && window.AndroidActionBridge.postAction) {
                             window.AndroidActionBridge.postAction(name, str);
+                        } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ReaderActionBridge) {
+                            window.webkit.messageHandlers.ReaderActionBridge.postMessage({ name: name, payload: str });
                         } else {
                             var q = str ? ('?q=' + encodeURIComponent(str)) : '';
                             window.location.href = 'action://' + encodeURIComponent(name) + q;
@@ -577,14 +610,50 @@ public object ReaderJsBridge {
                 window.addEventListener('scroll', function() {
                     if (_scrollTimer) clearTimeout(_scrollTimer);
                     _scrollTimer = setTimeout(function() {
+                        var sy = Math.round(window.scrollY || window.pageYOffset || 0);
+                        var ch = Math.round(Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0));
+                        var vh = Math.round(window.innerHeight || 0);
                         if (typeof window.AndroidScrollProgress !== 'undefined' && window.AndroidScrollProgress.onScrollChanged) {
-                            var sy = Math.round(window.scrollY || window.pageYOffset || 0);
-                            var ch = Math.round(Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0));
-                            var vh = Math.round(window.innerHeight || 0);
                             window.AndroidScrollProgress.onScrollChanged(sy, ch, vh);
+                        } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ReaderScrollProgress) {
+                            window.webkit.messageHandlers.ReaderScrollProgress.postMessage({
+                                scrollY: sy,
+                                contentHeightPx: ch,
+                                viewportHeightPx: vh
+                            });
                         }
                     }, 80);
                 }, { passive: true });
+            }
+            if (typeof window.__readerFootnoteHooked === 'undefined') {
+                window.__readerFootnoteHooked = true;
+                document.addEventListener('click', function(e) {
+                    var el = e.target;
+                    while (el && el.tagName && el.tagName.toLowerCase() !== 'a') {
+                        el = el.parentElement;
+                    }
+                    if (!el || !el.getAttribute) return;
+                    var epubType = (el.getAttribute('epub:type') || el.getAttribute('type') || '').toLowerCase();
+                    var role = (el.getAttribute('role') || '').toLowerCase();
+                    var href = el.getAttribute('href') || '';
+                    var isNoteref = epubType.indexOf('noteref') >= 0 || role.indexOf('doc-noteref') >= 0;
+                    var hashIdx = href.indexOf('#');
+                    if (hashIdx >= 0) {
+                        var targetId = href.substring(hashIdx + 1);
+                        var targetEl = targetId ? document.getElementById(targetId) : null;
+                        if (targetEl) {
+                            var targetType = (targetEl.getAttribute('epub:type') || targetEl.getAttribute('role') || '').toLowerCase();
+                            var isTargetFootnote = targetEl.tagName.toLowerCase() === 'aside' || targetType.indexOf('footnote') >= 0 || targetType.indexOf('endnote') >= 0 || targetType.indexOf('note') >= 0;
+                            if (isNoteref || isTargetFootnote) {
+                                e.preventDefault();
+                                var title = (el.textContent || targetId || 'Nota').trim();
+                                var text = (targetEl.textContent || '').trim();
+                                var payload = JSON.stringify([{ title: title, text: text }]);
+                                window.location.href = 'footnote://?q=' + encodeURIComponent(payload);
+                            }
+                        }
+                    }
+                }, false);
             }
         })();
     """

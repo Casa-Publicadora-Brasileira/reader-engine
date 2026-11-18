@@ -123,6 +123,27 @@ dependencies {
 }
 ```
 
+#### Como configurar `gpr.user` e `gpr.key`
+
+O GitHub Packages exige autenticação mesmo para leitura via Gradle (sua senha normal não funciona — é necessário um Token):
+
+- **`gpr.user`**: seu **username do GitHub** (sem `@` e sem usar o e-mail, ex.: `seu-usuario`).
+- **`gpr.key`**: um **Personal Access Token (Classic)** (`ghp_...`) com a permissão **`read:packages`**.
+
+**Passo a passo para gerar e salvar com segurança:**
+
+1. Acesse [github.com/settings/tokens/new](https://github.com/settings/tokens/new) (*Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token (classic)*).
+2. Preencha **Note** (ex.: `Gradle GitHub Packages`) e marque o escopo **`read:packages`** (*Download packages from GitHub Package Registry*).
+3. Gere o token (`ghp_...`). Caso a organização utilize SAML SSO, clique em **Configure SSO → Authorize** ao lado do token recém-criado.
+4. Salve no arquivo global **`~/.gradle/gradle.properties`** da sua máquina (assim as credenciais valem para todos os projetos sem risco de commit no Git):
+
+```properties
+gpr.user=SEU_USERNAME_GITHUB
+gpr.key=ghp_SEU_TOKEN_COM_READ_PACKAGES
+```
+
+*(Em pipelines de CI como GitHub Actions, o Gradle também aceita automaticamente as variáveis de ambiente `GITHUB_ACTOR` e `GITHUB_TOKEN`, desde que o workflow tenha `packages: read` — e para publicação, `packages: write`).*
+
 ---
 
 ### 3.2 Android & JVM — Repositório Público Maven (Sem Credenciais)
@@ -592,6 +613,7 @@ reader-engine/
 │       │   └── theme/                 # ThemeTokens (Material 3, HIG, Fluent, Custom)
 │       └── commonTest/                # 76 testes unitários e de regressão multiplataforma
 ├── sample-android/                    # App Android de referência (:sample-android) em Jetpack Compose
+├── sample-ios/                        # App iOS de referência (SwiftUI + WKWebView + ReaderCore.xcframework)
 ├── fixtures/                          # Arquivos de teste (.epub, .hpub, .json)
 └── _reversa_sdd/                      # Especificação arquitetural completa (C4, ERD, ADRs, Contratos SDD)
 ```
@@ -608,8 +630,13 @@ reader-engine/
 # Compilar o aplicativo Android de demonstração (:sample-android)
 ./gradlew :sample-android:assembleDebug
 
-# Gerar o XCFramework universal para iOS (requer macOS + Xcode)
+# Gerar o XCFramework para o sample-ios (Debug) e para distribuição (Release) (requer macOS + Xcode)
+./gradlew :reader-core:assembleReaderCoreDebugXCFramework
 ./gradlew :reader-core:assembleReaderCoreReleaseXCFramework
+
+# Abrir ou compilar o aplicativo iOS de demonstração (sample-ios)
+open sample-ios/ReaderEngineSample.xcodeproj
+xcodebuild -project sample-ios/ReaderEngineSample.xcodeproj -scheme ReaderEngineSample -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build
 
 # Publicar artefatos no GitHub Packages / GitHub Enterprise
 ./gradlew :reader-core:publishAndroidReleasePublicationToGitHubPackagesRepository \

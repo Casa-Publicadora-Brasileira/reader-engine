@@ -8,14 +8,20 @@ import com.readerengine.core.drm.EncryptedResourceInfo
 import com.readerengine.core.drm.EpubEncryptionParser
 import com.readerengine.core.drm.StandardEpubFontDeobfuscator
 import com.readerengine.core.error.ReaderException
+import com.readerengine.core.model.Bookmark
+import com.readerengine.core.model.BookStateSnapshot
 import com.readerengine.core.model.HighlightStyle
 import com.readerengine.core.model.InitialBookState
+import com.readerengine.core.model.Metadata
+import com.readerengine.core.model.PageProgressionDirection
+import com.readerengine.core.model.Publication
 import com.readerengine.core.model.ReaderStrings
 import com.readerengine.core.model.ReadingMode
 import com.readerengine.core.model.ReadingProgress
 import com.readerengine.core.model.RenditionLayout
 import com.readerengine.core.model.RenditionOrientation
 import com.readerengine.core.model.RenditionSpread
+import com.readerengine.core.model.Resource
 import com.readerengine.core.parser.EpubParser
 import com.readerengine.core.parser.HpubParser
 import com.readerengine.core.parser.XmlEntities
@@ -25,9 +31,12 @@ import com.readerengine.core.provider.ZipResourceProvider
 import com.readerengine.core.session.ReaderCommand
 import com.readerengine.core.session.ReaderEngine
 import com.readerengine.core.session.ReaderEvent
+import com.readerengine.core.session.ReaderSession
 import com.readerengine.core.session.ReaderState
 import com.readerengine.core.session.ReaderUiEffect
+import com.readerengine.core.theme.Shape
 import com.readerengine.core.theme.ThemeTokens
+import com.readerengine.core.theme.Typography
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -266,7 +275,7 @@ class ReaderEngineTest {
         assertEquals(ReadingMode.PAGINATED, session.state.value.readingMode)
         val paginatedHtml = session.currentHtml()
         assertTrue(paginatedHtml.contains("reader-paginated"))
-        assertTrue(paginatedHtml.contains("column-width:calc(100vw - 32px)"))
+        assertTrue(paginatedHtml.contains("column-width:calc(100vw - 48px)"))
         assertTrue(paginatedHtml.contains("math{font-family:"))
         assertTrue(ReaderJsBridge.setReadingModeCommand(ReadingMode.SCROLL).contains("resetSubPage"))
         assertEquals(1 to 4, ReaderJsBridge.parseSubPageState("\"{\\\"subPage\\\":1,\\\"totalSubPages\\\":4}\""))
@@ -661,6 +670,373 @@ class ReaderEngineTest {
         assertEquals(data.size.toLong(), provider.size("media/test.mp4"))
         val range = provider.readRange("media/test.mp4", offset = 7L, byteCount = 10)
         assertEquals("Multimedia", range.decodeToString())
+    }
+
+    @Test
+    fun paginatedModeRestoresSubPageAndEmitsProgress() = runTest {
+        val epubBytes = readFixture("sample.epub")
+        val session = engine.open(
+            name = "sample.epub",
+            bytes = epubBytes,
+            initialState = InitialBookState(
+                readingMode = ReadingMode.PAGINATED,
+                initialPageIndex = 0,
+                initialSubPage = 2,
+            ),
+        )
+
+        assertEquals(ReadingMode.PAGINATED, session.state.value.readingMode)
+        assertEquals(2, session.state.value.currentSubPage)
+        assertEquals(2, session.state.value.progress.subPage)
+
+        val progressEvents = mutableListOf<ReadingProgress>()
+        val sub = session.watchEvents { event ->
+            if (event is ReaderEvent.ProgressUpdated) {
+                progressEvents.add(event.progress)
+            }
+        }
+
+        // On reported subpage from webview
+        session.onSubPageReported(currentSubPage = 3, totalSubPages = 5)
+        assertEquals(3, session.state.value.currentSubPage)
+        assertEquals(5, session.state.value.totalSubPages)
+        assertEquals(3, session.state.value.progress.subPage)
+
+        // PrevPage in paginated mode decreases subpage
+        session.dispatch(ReaderCommand.PrevPage)
+        assertEquals(2, session.state.value.currentSubPage)
+        assertEquals(2, session.state.value.progress.subPage)
+
+        // NextPage in paginated mode increases subpage
+        session.dispatch(ReaderCommand.NextPage)
+        assertEquals(3, session.state.value.currentSubPage)
+        assertEquals(3, session.state.value.progress.subPage)
+
+        sub.cancel()
+        session.close()
+    }
+
+    @Test
+    fun coverDiscoveryAndExtractionForEpubAndHpub() {
+        val coverBytes = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47)
+        val pub = Publication(
+            metadata = Metadata(title = "Cover Test", coverHref = "images/my-cover.png"),
+            spine = listOf("chap1.xhtml"),
+            resources = listOf(Resource(href = "images/my-cover.png", mediaType = "image/png")),
+            toc = emptyList(),
+            provider = MemoryResourceProvider(
+                files = mapOf(
+                    "images/my-cover.png" to coverBytes,
+                    "chap1.xhtml" to "<html><body>Chapter 1</body></html>".encodeToByteArray(),
+                ),
+            ),
+        )
+
+        assertEquals("images/my-cover.png", pub.metadata.coverHref)
+
+        val session = ReaderSession(pub)
+        val readCover = session.readCoverBytes()
+        assertNotNull(readCover)
+        assertEquals(coverBytes.size, readCover.size)
+        session.close()
+
+        // 2. HPUB metadata check from real fixture
+        val hpubBytes = readFixture("sample.hpub")
+        val hpubSession = engine.open(name = "sample.hpub", bytes = hpubBytes)
+        assertNotNull(hpubSession.state.value.metadata)
+        hpubSession.close()
+    }
+
+    @Test
+    fun highlightNotesUpdateAndPersistence() = runTest {
+        val epubBytes = readFixture("sample.epub")
+        val session = engine.open(
+            name = "sample.epub",
+            bytes = epubBytes,
+            initialState = InitialBookState(
+                savedPageHighlights = mapOf(0 to "type:textContent|42\$yellow\$Interesting Text|"),
+                savedHighlightNotes = mapOf(42 to "Initial observation"),
+            ),
+        )
+
+        val initialHighlights = session.state.value.currentPageHighlights
+        assertEquals(1, initialHighlights.size)
+        assertEquals(42, initialHighlights.first().id)
+        assertEquals("Initial observation", initialHighlights.first().note)
+
+        val highlightEvents = mutableListOf<ReaderEvent.PageHighlightsChanged>()
+        val sub = session.watchEvents { event ->
+            if (event is ReaderEvent.PageHighlightsChanged) {
+                highlightEvents.add(event)
+            }
+        }
+
+        // Update note
+        session.dispatch(ReaderCommand.UpdateHighlightNote(highlightId = 42, note = "Updated observation"))
+        assertEquals("Updated observation", session.state.value.currentPageHighlights.first().note)
+        assertEquals("Updated observation", highlightEvents.last().summaryItems.first().note)
+
+        // Clear note
+        session.dispatch(ReaderCommand.UpdateHighlightNote(highlightId = 42, note = null))
+        assertNull(session.state.value.currentPageHighlights.first().note)
+
+        sub.cancel()
+        session.close()
+    }
+
+    @Test
+    fun rtlProgressionDirectionAndCssInjection() {
+        val opfRtl = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+                <metadata><title>Arabic Book</title><language>ar</language></metadata>
+                <manifest>
+                    <item id="c1" href="chap1.xhtml" media-type="application/xhtml+xml"/>
+                </manifest>
+                <spine page-progression-direction="rtl">
+                    <itemref idref="c1"/>
+                </spine>
+            </package>
+        """.trimIndent()
+
+        val parsedMeta = EpubParser().parseMetadata(opfRtl)
+        assertEquals(PageProgressionDirection.RTL, parsedMeta.pageProgressionDirection)
+
+        val injectedHtml = ReaderJsBridge.injectThemeAndBridge(
+            rawHtml = "<html><head><title>RTL</title></head><body><p>مرحبا</p></body></html>",
+            theme = ThemeTokens.material3(),
+            fontScale = 1.0f,
+            direction = PageProgressionDirection.RTL,
+        )
+        assertTrue(injectedHtml.contains("dir=\"rtl\""))
+
+        val goToSubPageScript = ReaderJsBridge.goToSubPageCommand(2)
+        assertTrue(goToSubPageScript.contains("readerJS.goToSubPage(2)"))
+    }
+
+    @Test
+    fun bookStateSnapshotExportAndImport() = runTest {
+        val epubBytes = readFixture("sample.epub")
+        val session = engine.open(
+            name = "sample.epub",
+            bytes = epubBytes,
+            initialState = InitialBookState(
+                documentId = "book-snap-1",
+                savedBookmarks = listOf(
+                    Bookmark(id = "bm-1", pageIndex = 0, scrollY = 120, label = "Mark 1"),
+                ),
+            ),
+        )
+
+        // Mutate state
+        session.dispatch(ReaderCommand.SetNightMode(true))
+        session.dispatch(ReaderCommand.SetReadingMode(ReadingMode.PAGINATED))
+        session.onSubPageReported(currentSubPage = 2, totalSubPages = 4)
+        session.dispatch(ReaderCommand.UpdateHighlightNote(highlightId = 99, note = "Saved Note"))
+
+        val snapshotJson = session.exportBookStateSnapshot()
+        assertTrue(snapshotJson.contains("book-snap-1"))
+        assertTrue(snapshotJson.contains("Saved Note"))
+        assertTrue(snapshotJson.contains("bm-1"))
+
+        // Create clean second session and import snapshot
+        val cleanSession = engine.open("sample.epub", epubBytes)
+        assertFalse(cleanSession.state.value.isNightMode)
+        assertEquals(ReadingMode.SCROLL, cleanSession.state.value.readingMode)
+
+        val restoredState = cleanSession.importBookStateSnapshot(snapshotJson)
+        assertTrue(restoredState.isNightMode)
+        assertEquals(ReadingMode.PAGINATED, restoredState.readingMode)
+        assertEquals(2, restoredState.currentSubPage)
+        assertEquals(1, restoredState.bookmarks.size)
+        assertEquals("bm-1", restoredState.bookmarks.first().id)
+
+        cleanSession.close()
+        session.close()
+    }
+
+    @Test
+    fun darkThemeForcesColorsPreservesHighlightsAndSupportsTypographyLayout() {
+        val baseTheme = ThemeTokens.material3()
+        assertEquals("justify", baseTheme.typography.textAlign)
+        assertEquals(24, baseTheme.shape.horizontalPaddingPx)
+
+        val defaultCss = baseTheme.toContentCss(
+            fontScale = 1.0f,
+            customFontFamily = null,
+            isNightMode = false,
+            readingMode = ReadingMode.SCROLL,
+            layout = RenditionLayout.REFLOWABLE,
+        )
+        assertTrue(defaultCss.contains("body{padding-left:24px !important;padding-right:24px !important;text-align:justify !important;box-sizing:border-box;}"))
+
+        val customTheme = baseTheme.copy(
+            typography = Typography(
+                fontFamily = "Georgia, serif",
+                baseSizePx = 20f,
+                lineHeight = 1.8f,
+                textAlign = "left",
+            ),
+            shape = Shape(
+                cornerRadiusPx = 8f,
+                spacingUnitPx = 8f,
+                horizontalPaddingPx = 32,
+            ),
+        )
+
+        val css = customTheme.toContentCss(
+            fontScale = 1.2f,
+            customFontFamily = "Georgia, serif",
+            isNightMode = true,
+            readingMode = ReadingMode.SCROLL,
+            layout = RenditionLayout.REFLOWABLE,
+        )
+
+        assertTrue(
+            css.contains("html,body{background-color:#131313 !important;color:#EAEAEA !important;font-family:Georgia, serif !important;font-size:24.0px;line-height:1.8 !important;}") ||
+                css.contains("html,body{background-color:#131313 !important;color:#EAEAEA !important;font-family:Georgia, serif !important;font-size:24px;line-height:1.8 !important;}"),
+        )
+        assertTrue(css.contains("""body *:not([class*="highlight_"]){color:#EAEAEA !important;background-color:transparent !important;line-height:inherit;}"""))
+        assertTrue(css.contains("""a,a *:not([class*="highlight_"]){color:#6AB7FF !important;}"""))
+        assertTrue(css.contains(".highlight_yellow,.highlight_yellow *{background-color:#FFF59D !important;color:#111 !important;}"))
+        assertTrue(css.contains("body{padding-left:32px !important;padding-right:32px !important;text-align:left !important;box-sizing:border-box;}"))
+        assertTrue(css.contains("body,body p,body div,body li,body blockquote{text-align:left !important;}"))
+
+        // Paginated spread CSS
+        val spreadCss = customTheme.toContentCss(
+            fontScale = 1.0f,
+            customFontFamily = null,
+            isNightMode = false,
+            readingMode = ReadingMode.PAGINATED,
+            layout = RenditionLayout.REFLOWABLE,
+            spread = RenditionSpread.LANDSCAPE,
+        )
+        assertTrue(spreadCss.contains("html.reader-paginated body{column-width:calc(100vw - 64px);column-gap:64px;column-fill:auto;padding:16px 32px !important;}"))
+        assertTrue(spreadCss.contains("@media (orientation: landscape){html.reader-paginated body{column-count:2;column-width:auto;column-gap:64px;}}"))
+
+        // Inject into <html> tag without attributes/spaces after <html
+        val injectedBareHtml = ReaderJsBridge.injectThemeAndBridge(
+            rawHtml = "<html><head></head><body><p style=\"color:#000\">Texto</p></body></html>",
+            theme = customTheme,
+            fontScale = 1.0f,
+            isNightMode = true,
+        )
+        assertTrue(injectedBareHtml.contains("<html class=\"nightMode\">"))
+
+        // Inject into <html lang="pt"> tag preserving existing attributes
+        val injectedWithAttr = ReaderJsBridge.injectThemeAndBridge(
+            rawHtml = "<html lang=\"pt\"><head></head><body><p>Texto</p></body></html>",
+            theme = customTheme,
+            fontScale = 1.0f,
+            isNightMode = true,
+        )
+        assertTrue(injectedWithAttr.contains("<html class=\"nightMode\" lang=\"pt\">"))
+    }
+
+    @Test
+    fun positionsPageListLandmarksFootnotePopupAndReadingStats() = runTest {
+        val parser = EpubParser()
+        val navHtml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+              <body>
+                <nav epub:type="toc"><ol><li><a href="chap1.xhtml">Cap 1</a></li></ol></nav>
+                <nav epub:type="page-list"><ol><li><a href="chap1.xhtml#p45">45</a></li><li><a href="chap2.xhtml#p46">46</a></li></ol></nav>
+                <nav epub:type="landmarks"><ol><li><a href="chap1.xhtml" epub:type="bodymatter">Início do Livro</a></li></ol></nav>
+              </body>
+            </html>
+        """.trimIndent()
+
+        val pageListEntries = parser.parseNavByType(navHtml, "OEBPS/nav.xhtml", "page-list")
+        assertEquals(2, pageListEntries.size)
+        assertEquals("45", pageListEntries[0].title)
+        assertEquals("OEBPS/chap1.xhtml#p45", pageListEntries[0].href)
+
+        val landmarkEntries = parser.parseNavByType(navHtml, "OEBPS/nav.xhtml", "landmarks")
+        assertEquals(1, landmarkEntries.size)
+        assertEquals("Início do Livro", landmarkEntries[0].title)
+        assertEquals("OEBPS/chap1.xhtml", landmarkEntries[0].href)
+
+        val ncxXml = """
+            <ncx>
+              <pageList>
+                <pageTarget id="pt1" value="10"><navLabel><text>10</text></navLabel><content src="chap1.xhtml#pg10"/></pageTarget>
+              </pageList>
+            </ncx>
+        """.trimIndent()
+        val ncxPages = parser.parseNcxPageList(ncxXml, "OEBPS/toc.ncx")
+        assertEquals(1, ncxPages.size)
+        assertEquals("10", ncxPages[0].title)
+        assertEquals("OEBPS/chap1.xhtml#pg10", ncxPages[0].href)
+
+        val chap1Words = (1..250).joinToString(" ") { "palavra$it" }
+        val chap2Words = (1..200).joinToString(" ") { "termo$it" }
+        val chap1Html = """
+            <html><body>
+              <p>$chap1Words <a href="#fn1" epub:type="noteref">1</a></p>
+              <aside id="fn1" epub:type="footnote"><p>Nota explicativa sobre Zaqueu.</p></aside>
+            </body></html>
+        """.trimIndent()
+        val chap2Html = "<html><body><p>$chap2Words</p></body></html>"
+
+        val pub = Publication(
+            metadata = Metadata(title = "Estudo", spread = RenditionSpread.LANDSCAPE),
+            spine = listOf("OEBPS/chap1.xhtml", "OEBPS/chap2.xhtml"),
+            resources = listOf(
+                Resource("OEBPS/chap1.xhtml", "application/xhtml+xml"),
+                Resource("OEBPS/chap2.xhtml", "application/xhtml+xml"),
+            ),
+            toc = parser.parseNavXhtml(navHtml, "OEBPS/nav.xhtml"),
+            provider = MemoryResourceProvider(
+                mapOf(
+                    "OEBPS/chap1.xhtml" to chap1Html.encodeToByteArray(),
+                    "OEBPS/chap2.xhtml" to chap2Html.encodeToByteArray(),
+                ),
+            ),
+            pageList = pageListEntries,
+            landmarks = landmarkEntries,
+        )
+
+        val positions = pub.positions()
+        assertTrue(positions.size >= 3)
+        assertEquals("OEBPS/chap1.xhtml", positions.first().href)
+
+        val session = ReaderSession(pub)
+        val initialState = session.state.value
+        assertEquals(2, initialState.pageList.size)
+        assertEquals("45", initialState.pageList[0].title)
+        assertEquals(1, initialState.landmarks.size)
+        assertEquals(positions.size, initialState.positions.size)
+        assertTrue(initialState.stats.chapterWordCount >= 250)
+        assertTrue(initialState.stats.totalWordCount >= 450)
+        assertTrue(initialState.stats.estimatedChapterMinutesRemaining >= 2)
+
+        val effects = mutableListOf<ReaderUiEffect>()
+        val effectSub = session.watchUiEffects { effects.add(it) }
+
+        // Footnote popup via handleUrlNavigation without changing current page
+        val handledFootnote = session.handleUrlNavigation("book://content/OEBPS/chap1.xhtml#fn1")
+        assertTrue(handledFootnote)
+        val footnoteEffect = effects.filterIsInstance<ReaderUiEffect.OpenCustomUri>().lastOrNull()
+        assertNotNull(footnoteEffect)
+        assertEquals("footnote", footnoteEffect.scheme)
+        assertEquals("fn1", footnoteEffect.title)
+        assertEquals("Nota explicativa sobre Zaqueu.", footnoteEffect.content)
+        assertEquals(0, session.state.value.pageIndex)
+
+        // Chapter preview helper (getPagePreview & pagePreview)
+        val preview0 = session.getPagePreview(0)
+        assertNotNull(preview0)
+        assertEquals("Cap 1", preview0.title)
+        assertTrue(preview0.excerpt.startsWith("palavra1"))
+        val preview1 = session.pagePreview(1)
+        assertNotNull(preview1)
+        assertTrue(preview1.excerpt.contains("termo1"))
+        assertNull(session.getPagePreview(-1))
+        assertNull(session.getPagePreview(99))
+
+        effectSub.cancel()
+        session.close()
     }
 }
 

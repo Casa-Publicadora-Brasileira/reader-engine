@@ -2,6 +2,7 @@ package com.readerengine.core.parser
 
 import com.readerengine.core.error.ReaderException
 import com.readerengine.core.model.Metadata
+import com.readerengine.core.model.PageProgressionDirection
 import com.readerengine.core.model.Publication
 import com.readerengine.core.model.Resource
 import com.readerengine.core.model.TocEntry
@@ -84,12 +85,20 @@ public class HpubParser : FormatParser {
             }
         }
 
+        val rawCover = root["cover"]?.jsonPrimitiveOrNull()?.content
+        val coverHref = rawCover?.takeIf { it.isNotBlank() }?.let { normalizeContentHref(it) }
+        val rawDirection = root["pageProgressionDirection"]?.jsonPrimitiveOrNull()?.content
+            ?: root["direction"]?.jsonPrimitiveOrNull()?.content
+        val pageProgressionDirection = PageProgressionDirection.fromRaw(rawDirection)
+
         return Publication(
             metadata = Metadata(
                 title = title,
                 authors = authors,
                 language = language,
                 identifier = identifier,
+                coverHref = coverHref,
+                pageProgressionDirection = pageProgressionDirection,
             ),
             spine = spine,
             resources = allResources.values.toList(),

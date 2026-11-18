@@ -462,8 +462,7 @@ public class ReaderSession(
             }
 
             is ReaderCommand.TriggerAction -> {
-                _events.tryEmit(ReaderEvent.ActionTriggered(command.action, command.payload))
-                _uiEffects.tryEmit(ReaderUiEffect.CustomAction(command.action, command.payload))
+                handleActionInternal(command.action, command.payload)
             }
 
             is ReaderCommand.UpdateScroll -> {
@@ -838,8 +837,7 @@ public class ReaderSession(
             }
 
             is InterceptedUrl.Action -> {
-                _events.tryEmit(ReaderEvent.ActionTriggered(intercepted.action, intercepted.payload))
-                _uiEffects.tryEmit(ReaderUiEffect.CustomAction(intercepted.action, intercepted.payload))
+                handleActionInternal(intercepted.action, intercepted.payload)
                 true
             }
 
@@ -919,6 +917,7 @@ public class ReaderSession(
             layout = publication.metadata.layout,
             direction = publication.metadata.pageProgressionDirection,
             spread = publication.metadata.spread,
+            initialSubPage = if (current.readingMode == ReadingMode.PAGINATED) current.currentSubPage else 0,
         )
         return RenderedDocument(
             html = html,
@@ -1270,6 +1269,39 @@ public class ReaderSession(
         _events.tryEmit(ReaderEvent.ProgressUpdated(newProgress))
         if (scrollY > 0) {
             _uiEffects.tryEmit(ReaderUiEffect.ScrollToY(scrollYPx = scrollY))
+        }
+    }
+
+    private fun handleActionInternal(action: String, payload: String?) {
+        val current = _state.value
+        val lastIndex = (current.spineLen - 1).coerceAtLeast(0)
+        when (action) {
+            ReaderJsBridge.ACTION_SUB_PAGE_CHANGED -> {
+                ReaderJsBridge.parseSubPageState(payload)?.let { (sub, total) ->
+                    onSubPageReported(currentSubPage = sub, totalSubPages = total)
+                }
+            }
+
+            ReaderJsBridge.ACTION_GESTURE_NEXT_PAGE -> {
+                val nextIdx = (current.pageIndex + 1).coerceAtMost(lastIndex)
+                if (nextIdx != current.pageIndex) {
+                    navigateToPageInternal(nextIdx, scrollY = 0, targetSubPage = 0)
+                }
+                _events.tryEmit(ReaderEvent.ActionTriggered(action, payload))
+            }
+
+            ReaderJsBridge.ACTION_GESTURE_PREV_PAGE -> {
+                val prevIdx = (current.pageIndex - 1).coerceAtLeast(0)
+                if (prevIdx != current.pageIndex) {
+                    navigateToPageInternal(prevIdx, scrollY = 0, targetSubPage = 0)
+                }
+                _events.tryEmit(ReaderEvent.ActionTriggered(action, payload))
+            }
+
+            else -> {
+                _events.tryEmit(ReaderEvent.ActionTriggered(action, payload))
+                _uiEffects.tryEmit(ReaderUiEffect.CustomAction(action, payload))
+            }
         }
     }
 

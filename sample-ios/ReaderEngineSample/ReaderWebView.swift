@@ -247,14 +247,29 @@ struct ReaderWebView: UIViewRepresentable {
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
-            guard navigationAction.navigationType == .linkActivated,
-                  let url = navigationAction.request.url?.absoluteString,
+            guard let url = navigationAction.request.url,
                   let session = viewModel?.activeSession else {
                 decisionHandler(.allow)
                 return
             }
 
-            if session.handleUrlNavigation(url: url) {
+            let scheme = (url.scheme ?? "").lowercased()
+            let isCustomScheme = !scheme.isEmpty &&
+                scheme != "book" &&
+                scheme != "http" &&
+                scheme != "https" &&
+                scheme != "file" &&
+                scheme != "about" &&
+                scheme != "data" &&
+                scheme != "blob" &&
+                scheme != "javascript"
+
+            guard navigationAction.navigationType == .linkActivated || isCustomScheme else {
+                decisionHandler(.allow)
+                return
+            }
+
+            if session.handleUrlNavigation(url: url.absoluteString) {
                 decisionHandler(.cancel)
             } else {
                 decisionHandler(.allow)

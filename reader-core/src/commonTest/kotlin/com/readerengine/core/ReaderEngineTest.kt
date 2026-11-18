@@ -1042,6 +1042,100 @@ class ReaderEngineTest {
         effectSub.cancel()
         session.close()
     }
+
+    @Test
+    fun gestureDetectionScriptAndSessionGestureNavigationActions() = runTest {
+        val pub = Publication(
+            metadata = Metadata(title = "Gestos"),
+            spine = listOf("ch1.xhtml", "ch2.xhtml", "ch3.xhtml"),
+            resources = listOf(
+                Resource("ch1.xhtml", "application/xhtml+xml"),
+                Resource("ch2.xhtml", "application/xhtml+xml"),
+                Resource("ch3.xhtml", "application/xhtml+xml"),
+            ),
+            toc = emptyList(),
+            provider = MemoryResourceProvider(
+                mapOf(
+                    "ch1.xhtml" to "<html><body><p>Capítulo 1</p></body></html>".encodeToByteArray(),
+                    "ch2.xhtml" to "<html><body><p>Capítulo 2</p></body></html>".encodeToByteArray(),
+                    "ch3.xhtml" to "<html><body><p>Capítulo 3</p></body></html>".encodeToByteArray(),
+                ),
+            ),
+        )
+
+        val injectedPaginated = ReaderJsBridge.injectThemeAndBridge(
+            rawHtml = "<html><head></head><body><p>Olá</p></body></html>",
+            theme = ThemeTokens.material3(),
+            fontScale = 1.0f,
+            fontFamily = "Default",
+            fontSizeClass = "",
+            isNightMode = false,
+            readingMode = ReadingMode.PAGINATED,
+            layout = RenditionLayout.REFLOWABLE,
+            direction = PageProgressionDirection.DEFAULT,
+            spread = RenditionSpread.AUTO,
+            initialSubPage = 2,
+        )
+        assertTrue(injectedPaginated.contains("data-reader-subpage=\"2\""))
+        assertTrue(injectedPaginated.contains("handlePageTurnGesture"))
+        assertTrue(injectedPaginated.contains("__readerGestureHooked"))
+
+        val session = ReaderSession(
+            publication = pub,
+            initialBookState = InitialBookState(
+                readingMode = ReadingMode.PAGINATED,
+                initialPageIndex = 0,
+                initialSubPage = 1,
+            ),
+        )
+
+        val events = mutableListOf<ReaderEvent>()
+        val effects = mutableListOf<ReaderUiEffect>()
+        val eventSub = session.watchEvents { events.add(it) }
+        val effectSub = session.watchUiEffects { effects.add(it) }
+
+        assertTrue(session.currentHtml().contains("data-reader-subpage=\"1\""))
+
+        // Sync sub-page via action:// URL fallback
+        val subHandled = session.handleUrlNavigation(
+            "action://${ReaderJsBridge.ACTION_SUB_PAGE_CHANGED}?q=%7B%22subPage%22%3A2%2C%22totalSubPages%22%3A4%7D",
+        )
+        assertTrue(subHandled)
+        assertEquals(2, session.state.value.currentSubPage)
+        assertEquals(4, session.state.value.totalSubPages)
+
+        // Advance chapter via swipe gesture (URL action://)
+        assertTrue(session.handleUrlNavigation("action://${ReaderJsBridge.ACTION_GESTURE_NEXT_PAGE}"))
+        assertEquals(1, session.state.value.pageIndex)
+        assertEquals(0, session.state.value.currentSubPage)
+        assertEquals(ReaderJsBridge.ACTION_GESTURE_NEXT_PAGE, events.filterIsInstance<ReaderEvent.ActionTriggered>().last().action)
+
+        // Advance again via JS bridge TriggerAction command
+        session.dispatch(ReaderCommand.TriggerAction(ReaderJsBridge.ACTION_GESTURE_NEXT_PAGE, """{"source":"tap"}"""))
+        assertEquals(2, session.state.value.pageIndex)
+        assertEquals(0, session.state.value.currentSubPage)
+
+        // Go back chapter via prev gesture
+        assertTrue(session.handleUrlNavigation("action://${ReaderJsBridge.ACTION_GESTURE_PREV_PAGE}"))
+        assertEquals(1, session.state.value.pageIndex)
+        session.dispatch(ReaderCommand.TriggerAction(ReaderJsBridge.ACTION_GESTURE_PREV_PAGE, """{"source":"swipe"}"""))
+        assertEquals(0, session.state.value.pageIndex)
+
+        // Boundary check: prev at page 0 stays at page 0 without crashing
+        assertTrue(session.handleUrlNavigation("action://${ReaderJsBridge.ACTION_GESTURE_PREV_PAGE}"))
+        assertEquals(0, session.state.value.pageIndex)
+
+        // Center tap emits CustomAction effect for host toolbar toggle
+        val customEffectsBefore = effects.filterIsInstance<ReaderUiEffect.CustomAction>().size
+        assertTrue(session.handleUrlNavigation("action://${ReaderJsBridge.ACTION_GESTURE_TAP_CENTER}?q=%7B%22x%22%3A200%2C%22y%22%3A300%7D"))
+        val customEffects = effects.filterIsInstance<ReaderUiEffect.CustomAction>()
+        assertEquals(customEffectsBefore + 1, customEffects.size)
+        assertEquals(ReaderJsBridge.ACTION_GESTURE_TAP_CENTER, customEffects.last().action)
+
+        eventSub.cancel()
+        effectSub.cancel()
+        session.close()
+    }
 }
 
 

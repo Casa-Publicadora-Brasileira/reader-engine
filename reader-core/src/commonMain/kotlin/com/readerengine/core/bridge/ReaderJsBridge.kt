@@ -30,6 +30,11 @@ public object ReaderJsBridge {
     private val json = Json { ignoreUnknownKeys = true }
     private val safeCssClassRegex = Regex("""[^a-zA-Z0-9_-]""")
 
+    public const val ACTION_SUB_PAGE_CHANGED: String = "reader_sub_page_changed"
+    public const val ACTION_GESTURE_NEXT_PAGE: String = "reader_gesture_next_page"
+    public const val ACTION_GESTURE_PREV_PAGE: String = "reader_gesture_prev_page"
+    public const val ACTION_GESTURE_TAP_CENTER: String = "reader_gesture_tap_center"
+
     public const val SCRIPT_SELECTION: String = "javascript:window.getSelection().toString()"
     public const val SCRIPT_GET_HIGHLIGHTS: String = "javascript:readerJS.getHighlights()"
     public const val SCRIPT_SUMMARY_HIGHLIGHTS: String = "javascript:readerJS.summaryHighlights()"
@@ -80,7 +85,7 @@ public object ReaderJsBridge {
 
     public fun setReadingModeCommand(mode: ReadingMode): String {
         val isPaginated = mode == ReadingMode.PAGINATED
-        return "javascript:(function(){var h=document.documentElement;if(h){if($isPaginated){h.classList.add('reader-paginated');if(typeof readerJS!=='undefined'&&readerJS.getSubPageState){return readerJS.getSubPageState();}}else{h.classList.remove('reader-paginated');if(typeof readerJS!=='undefined'&&readerJS.resetSubPage){readerJS.resetSubPage();}else if(document.body){document.body.style.transform='';document.body.style.transition='';}window.scrollTo(0,0);}}return '{\"subPage\":0,\"totalSubPages\":1}';})();"
+        return "javascript:(function(){var h=document.documentElement;if(h){if($isPaginated){h.classList.add('reader-paginated');if(typeof readerJS!=='undefined'&&readerJS.getSubPageState){var st=readerJS.getSubPageState();if(window.ReaderEngine&&window.ReaderEngine.postAction){window.ReaderEngine.postAction('$ACTION_SUB_PAGE_CHANGED',st,false);}return st;}}else{h.classList.remove('reader-paginated');if(typeof readerJS!=='undefined'&&readerJS.resetSubPage){readerJS.resetSubPage();}else if(document.body){document.body.style.transform='';document.body.style.transition='';}window.scrollTo(0,0);}}return '{\"subPage\":0,\"totalSubPages\":1}';})();"
     }
 
     public fun goToSubPageCommand(subPage: Int): String {
@@ -98,9 +103,7 @@ public object ReaderJsBridge {
     }
 
     /**
-     * Injeta o CSS do tema, classes opcionais de tamanho/modo noturno/paginação horizontal
-     * e o polyfill `readerJS` completo (suportando grifos no DOM, paginação por colunas CSS
-     * e preservação de viewport para EPUB 3 Fixed-Layout).
+     * Sobrecarga compatível com chamadas de até 10 parâmetros mantendo compatibilidade binária e Swift.
      */
     public fun injectThemeAndBridge(
         rawHtml: String,
@@ -113,6 +116,37 @@ public object ReaderJsBridge {
         layout: RenditionLayout = RenditionLayout.REFLOWABLE,
         direction: PageProgressionDirection = PageProgressionDirection.DEFAULT,
         spread: RenditionSpread = RenditionSpread.AUTO,
+    ): String = injectThemeAndBridge(
+        rawHtml = rawHtml,
+        theme = theme,
+        fontScale = fontScale,
+        fontFamily = fontFamily,
+        fontSizeClass = fontSizeClass,
+        isNightMode = isNightMode,
+        readingMode = readingMode,
+        layout = layout,
+        direction = direction,
+        spread = spread,
+        initialSubPage = 0,
+    )
+
+    /**
+     * Injeta o CSS do tema, classes opcionais de tamanho/modo noturno/paginação horizontal,
+     * `data-reader-subpage` opcional e o polyfill `readerJS` completo (suportando grifos no DOM,
+     * paginação por colunas CSS, detecção de gestos swipe/tap e preservação de viewport).
+     */
+    public fun injectThemeAndBridge(
+        rawHtml: String,
+        theme: ThemeTokens,
+        fontScale: Float,
+        fontFamily: String,
+        fontSizeClass: String,
+        isNightMode: Boolean,
+        readingMode: ReadingMode,
+        layout: RenditionLayout,
+        direction: PageProgressionDirection,
+        spread: RenditionSpread,
+        initialSubPage: Int,
     ): String {
         val css = theme.toContentCss(
             fontScale = fontScale,
@@ -142,11 +176,19 @@ public object ReaderJsBridge {
         val htmlOpenRegex = Regex("<html(\\b)", RegexOption.IGNORE_CASE)
         val isRtl = direction == PageProgressionDirection.RTL
         val hasDirAttr = Regex("""<html\b[^>]*\bdir\s*=""", RegexOption.IGNORE_CASE).containsMatchIn(rawHtml)
+        val clampedSubPage = initialSubPage.coerceAtLeast(0)
 
         var processedHtml = if (classes.isNotEmpty() && htmlOpenRegex.containsMatchIn(rawHtml)) {
             rawHtml.replaceFirst(htmlOpenRegex, Regex.escapeReplacement("<html class=\"$classes\""))
         } else {
             rawHtml
+        }
+
+        if (clampedSubPage > 0 && htmlOpenRegex.containsMatchIn(processedHtml)) {
+            processedHtml = processedHtml.replaceFirst(
+                htmlOpenRegex,
+                Regex.escapeReplacement("<html data-reader-subpage=\"$clampedSubPage\""),
+            )
         }
 
         if (isRtl && !hasDirAttr) {
@@ -176,7 +218,8 @@ public object ReaderJsBridge {
             else -> {
                 val classAttr = if (classes.isNotEmpty()) " class=\"$classes\"" else ""
                 val dirAttr = if (isRtl && !hasDirAttr) " dir=\"rtl\"" else ""
-                "<!doctype html><html$dirAttr$classAttr><head>$headInjection</head><body>$processedHtml</body></html>"
+                val subPageAttr = if (clampedSubPage > 0) " data-reader-subpage=\"$clampedSubPage\"" else ""
+                "<!doctype html><html$dirAttr$classAttr$subPageAttr><head>$headInjection</head><body>$processedHtml</body></html>"
             }
         }
     }
@@ -417,11 +460,19 @@ public object ReaderJsBridge {
 
     private const val FALLBACK_READER_JS = """
         (function(){
+            function _resolvePaginatedWidth() {
+                var cw = document.documentElement ? (document.documentElement.clientWidth || 0) : 0;
+                var iw = window.innerWidth || 0;
+                var w = cw > 0 ? cw : iw;
+                if (w >= 120) return w;
+                var sw = (window.screen && (window.screen.availWidth || window.screen.width)) ? (window.screen.availWidth || window.screen.width) : 360;
+                return Math.max(240, sw);
+            }
             if (typeof window.readerJS === 'undefined') {
                 var _serialized = '';
                 var _items = [];
                 var _nextId = 1;
-                var _subPage = 0;
+                var _subPage = parseInt((document.documentElement && document.documentElement.getAttribute('data-reader-subpage')) || '0', 10) || 0;
                 function _rebuildSerialized() {
                     if (!_items.length) { _serialized = ''; return; }
                     _serialized = 'type:textContent|' + _items.map(function(i){
@@ -466,14 +517,6 @@ public object ReaderJsBridge {
                         }
                     }
                 }
-                function _resolvePaginatedWidth() {
-                    var cw = document.documentElement ? (document.documentElement.clientWidth || 0) : 0;
-                    var iw = window.innerWidth || 0;
-                    var w = cw > 0 ? cw : iw;
-                    if (w >= 120) return w;
-                    var sw = (window.screen && (window.screen.availWidth || window.screen.width)) ? (window.screen.availWidth || window.screen.width) : 360;
-                    return Math.max(240, sw);
-                }
                 function _resolvePaginatedHeight() {
                     var ih = window.innerHeight || 0;
                     var ch = document.documentElement ? (document.documentElement.clientHeight || 0) : 0;
@@ -511,7 +554,8 @@ public object ReaderJsBridge {
                     if (document.body) {
                         var isRtl = (document.documentElement && document.documentElement.dir === 'rtl') || (document.body && document.body.dir === 'rtl');
                         var sign = isRtl ? '' : '-';
-                        document.body.style.transform = 'translateX(' + sign + (_subPage * vw) + 'px)';
+                        var offsetPx = _subPage * vw;
+                        document.body.style.transform = 'translateX(' + (offsetPx === 0 ? '0px' : (sign + offsetPx + 'px')) + ')';
                         document.body.style.transition = 'transform 0.18s ease-out';
                     }
                 }
@@ -610,6 +654,8 @@ public object ReaderJsBridge {
                         var total = _computeTotalSubPages();
                         if (_subPage >= total) {
                             _subPage = Math.max(0, total - 1);
+                        }
+                        if (document.documentElement && document.documentElement.classList.contains('reader-paginated')) {
                             _applySubPageOffset();
                         }
                         return JSON.stringify({ subPage: _subPage, totalSubPages: total });
@@ -632,18 +678,53 @@ public object ReaderJsBridge {
             }
             if (typeof window.ReaderEngine === 'undefined') {
                 window.ReaderEngine = {
-                    postAction: function(name, payload) {
+                    postAction: function(name, payload, allowUrlFallback) {
                         var str = typeof payload === 'string' ? payload : (payload ? JSON.stringify(payload) : '');
+                        var useFallback = (allowUrlFallback === undefined) ? true : !!allowUrlFallback;
                         if (typeof window.AndroidActionBridge !== 'undefined' && window.AndroidActionBridge.postAction) {
                             window.AndroidActionBridge.postAction(name, str);
+                            return true;
                         } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ReaderActionBridge) {
                             window.webkit.messageHandlers.ReaderActionBridge.postMessage({ name: name, payload: str });
-                        } else {
+                            return true;
+                        } else if (useFallback) {
                             var q = str ? ('?q=' + encodeURIComponent(str)) : '';
                             window.location.href = 'action://' + encodeURIComponent(name) + q;
+                            return true;
                         }
+                        return false;
                     }
                 };
+            }
+            function _dispatchPageTurnGesture(direction, source) {
+                var dir = direction === 'prev' ? 'prev' : 'next';
+                var src = source || 'swipe';
+                var isPaginated = !!(document.documentElement && document.documentElement.classList.contains('reader-paginated'));
+                if (isPaginated && typeof window.readerJS !== 'undefined' &&
+                    typeof window.readerJS.nextSubPage === 'function' &&
+                    typeof window.readerJS.prevSubPage === 'function') {
+                    var resStr = (dir === 'next') ? window.readerJS.nextSubPage() : window.readerJS.prevSubPage();
+                    var res = null;
+                    try { res = JSON.parse(resStr); } catch (e) {}
+                    if (res && res.advanced) {
+                        if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                            window.ReaderEngine.postAction('reader_sub_page_changed', JSON.stringify({
+                                subPage: res.subPage,
+                                totalSubPages: res.totalSubPages,
+                                source: src
+                            }));
+                        }
+                        return true;
+                    }
+                }
+                if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                    var actionName = (dir === 'next') ? 'reader_gesture_next_page' : 'reader_gesture_prev_page';
+                    window.ReaderEngine.postAction(actionName, JSON.stringify({ source: src }));
+                }
+                return true;
+            }
+            if (typeof window.readerJS !== 'undefined' && typeof window.readerJS.handlePageTurnGesture !== 'function') {
+                window.readerJS.handlePageTurnGesture = _dispatchPageTurnGesture;
             }
             if (typeof window.__readerScrollHooked === 'undefined') {
                 window.__readerScrollHooked = true;
@@ -696,12 +777,151 @@ public object ReaderJsBridge {
                     }
                 }, false);
             }
+            if (typeof window.__readerGestureHooked === 'undefined') {
+                window.__readerGestureHooked = true;
+                var _touchActive = false;
+                var _multiTouch = false;
+                var _startedInteractive = false;
+                var _hadSelectionAtStart = false;
+                var _startX = 0;
+                var _startY = 0;
+                var _startTime = 0;
+                var _lastTouchTime = 0;
+                function _hasActiveTextSelection() {
+                    var sel = window.getSelection ? window.getSelection() : null;
+                    return !!(sel && sel.toString && sel.toString().trim().length > 0);
+                }
+                function _isInteractiveTarget(target) {
+                    var el = target;
+                    if (el && el.nodeType === 3) el = el.parentElement;
+                    while (el && el.nodeType === 1) {
+                        var tag = el.tagName ? el.tagName.toLowerCase() : '';
+                        if (tag === 'a' || tag === 'button' || tag === 'input' || tag === 'textarea' ||
+                            tag === 'select' || tag === 'option' || tag === 'label' ||
+                            tag === 'video' || tag === 'audio' || tag === 'summary' || tag === 'details') {
+                            return true;
+                        }
+                        if (el.getAttribute) {
+                            var role = (el.getAttribute('role') || '').toLowerCase();
+                            if (role === 'button' || role === 'link' || role === 'checkbox' ||
+                                role === 'radio' || role === 'slider' || role.indexOf('doc-noteref') >= 0) {
+                                return true;
+                            }
+                            var ce = el.getAttribute('contenteditable');
+                            if (ce !== null && ce !== 'false') {
+                                return true;
+                            }
+                            if (el.hasAttribute('onclick')) {
+                                return true;
+                            }
+                            var epubType = (el.getAttribute('epub:type') || '').toLowerCase();
+                            if (epubType.indexOf('noteref') >= 0) {
+                                return true;
+                            }
+                        }
+                        if (tag === 'body' || tag === 'html') break;
+                        el = el.parentElement;
+                    }
+                    return false;
+                }
+                function _isRtlDocument() {
+                    return !!((document.documentElement && document.documentElement.dir === 'rtl') ||
+                        (document.body && document.body.dir === 'rtl'));
+                }
+                function _handleTapAt(x, y) {
+                    var isPaginated = !!(document.documentElement && document.documentElement.classList.contains('reader-paginated'));
+                    var vw = _resolvePaginatedWidth();
+                    var ratio = vw > 0 ? (x / vw) : 0.5;
+                    var isRtl = _isRtlDocument();
+                    if (isPaginated) {
+                        if (ratio < 0.28) {
+                            _dispatchPageTurnGesture(isRtl ? 'next' : 'prev', 'tap');
+                            return;
+                        }
+                        if (ratio > 0.72) {
+                            _dispatchPageTurnGesture(isRtl ? 'prev' : 'next', 'tap');
+                            return;
+                        }
+                    }
+                    if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                        window.ReaderEngine.postAction('reader_gesture_tap_center', JSON.stringify({
+                            x: Math.round(x),
+                            y: Math.round(y)
+                        }));
+                    }
+                }
+                document.addEventListener('touchstart', function(e) {
+                    if (e.touches && e.touches.length > 1) {
+                        _multiTouch = true;
+                        _touchActive = false;
+                        return;
+                    }
+                    var touch = (e.touches && e.touches[0]) ? e.touches[0] : null;
+                    if (!touch) return;
+                    _multiTouch = false;
+                    _touchActive = true;
+                    _startX = touch.clientX;
+                    _startY = touch.clientY;
+                    _startTime = Date.now();
+                    _startedInteractive = _isInteractiveTarget(e.target);
+                    _hadSelectionAtStart = _hasActiveTextSelection();
+                }, { passive: true });
+                document.addEventListener('touchmove', function(e) {
+                    if (e.touches && e.touches.length > 1) {
+                        _multiTouch = true;
+                        _touchActive = false;
+                    }
+                }, { passive: true });
+                document.addEventListener('touchcancel', function() {
+                    _touchActive = false;
+                    _multiTouch = false;
+                }, { passive: true });
+                document.addEventListener('touchend', function(e) {
+                    if (_multiTouch) {
+                        if (!e.touches || e.touches.length === 0) _multiTouch = false;
+                        _touchActive = false;
+                        return;
+                    }
+                    if (!_touchActive) return;
+                    _touchActive = false;
+                    _lastTouchTime = Date.now();
+                    if (_startedInteractive || _hadSelectionAtStart || _hasActiveTextSelection()) {
+                        return;
+                    }
+                    var touch = (e.changedTouches && e.changedTouches[0]) ? e.changedTouches[0] : null;
+                    if (!touch) return;
+                    var dx = touch.clientX - _startX;
+                    var dy = touch.clientY - _startY;
+                    var dt = _lastTouchTime - _startTime;
+                    var absDx = Math.abs(dx);
+                    var absDy = Math.abs(dy);
+                    if (dt <= 800 && absDx >= 48 && absDx > absDy * 1.5) {
+                        var isRtl = _isRtlDocument();
+                        var dir = (isRtl ? (dx > 0) : (dx < 0)) ? 'next' : 'prev';
+                        _dispatchPageTurnGesture(dir, 'swipe');
+                        return;
+                    }
+                    if (dt < 320 && absDx < 14 && absDy < 14) {
+                        _handleTapAt(touch.clientX, touch.clientY);
+                    }
+                }, { passive: true });
+                document.addEventListener('click', function(e) {
+                    if (Date.now() - _lastTouchTime < 500) return;
+                    if (_isInteractiveTarget(e.target) || _hasActiveTextSelection()) return;
+                    _handleTapAt(e.clientX || 0, e.clientY || 0);
+                }, false);
+            }
             if (typeof window.__readerPaginatedHooked === 'undefined') {
                 window.__readerPaginatedHooked = true;
+                var _lastReportedSubState = '';
                 var _onPaginatedReady = function() {
                     if (document.documentElement && document.documentElement.classList.contains('reader-paginated')) {
                         if (typeof window.readerJS !== 'undefined' && window.readerJS.getSubPageState) {
-                            window.readerJS.getSubPageState();
+                            var st = window.readerJS.getSubPageState();
+                            if (st && st !== _lastReportedSubState && window.ReaderEngine && window.ReaderEngine.postAction) {
+                                _lastReportedSubState = st;
+                                window.ReaderEngine.postAction('reader_sub_page_changed', st, false);
+                            }
                         }
                     }
                 };

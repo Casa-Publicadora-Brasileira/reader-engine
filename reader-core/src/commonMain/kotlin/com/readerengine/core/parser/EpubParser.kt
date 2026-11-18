@@ -5,6 +5,7 @@ import com.readerengine.core.drm.EpubEncryptionParser
 import com.readerengine.core.drm.StandardEpubFontDeobfuscator
 import com.readerengine.core.error.ReaderException
 import com.readerengine.core.model.Metadata
+import com.readerengine.core.model.PageProgressionDirection
 import com.readerengine.core.model.Publication
 import com.readerengine.core.model.RenditionLayout
 import com.readerengine.core.model.RenditionOrientation
@@ -51,6 +52,7 @@ public class EpubParser : FormatParser {
         val idToHref = LinkedHashMap<String, String>()
         var navHref: String? = null
         var ncxHref: String? = null
+        var coverHref: String? = null
 
         for (itemTag in findOpeningTags(opfXml, "item")) {
             val id = extractAttribute(itemTag, "id") ?: continue
@@ -59,8 +61,12 @@ public class EpubParser : FormatParser {
             val properties = extractAttribute(itemTag, "properties").orEmpty()
 
             val fullHref = normalizeHref("$baseDir$href")
-            if (properties.split(Regex("\\s+")).any { it == "nav" }) {
+            val propsList = properties.split(Regex("\\s+"))
+            if (propsList.any { it == "nav" }) {
                 navHref = fullHref
+            }
+            if (propsList.any { it == "cover-image" }) {
+                coverHref = fullHref
             }
             if (mediaType == "application/x-dtbncx+xml" || fullHref.endsWith(".ncx", ignoreCase = true)) {
                 ncxHref = fullHref
@@ -68,6 +74,23 @@ public class EpubParser : FormatParser {
 
             idToHref[id] = fullHref
             resources.add(Resource(href = fullHref, mediaType = mediaType))
+        }
+
+        if (coverHref == null) {
+            val metaCoverId = extractMetaNameContent(opfXml, "cover")
+            if (!metaCoverId.isNullOrBlank()) {
+                coverHref = idToHref[metaCoverId]
+            }
+        }
+        if (coverHref == null) {
+            coverHref = resources.firstOrNull { res ->
+                val isImage = res.mediaType.startsWith("image/", ignoreCase = true) ||
+                    res.href.endsWith(".jpg", ignoreCase = true) ||
+                    res.href.endsWith(".jpeg", ignoreCase = true) ||
+                    res.href.endsWith(".png", ignoreCase = true) ||
+                    res.href.endsWith(".webp", ignoreCase = true)
+                isImage && res.href.contains("cover", ignoreCase = true)
+            }?.href
         }
 
         val itemrefTags = findOpeningTags(opfXml, "itemref")
@@ -104,8 +127,17 @@ public class EpubParser : FormatParser {
             zip
         }
 
+        val spineTag = findOpeningTags(opfXml, "spine").firstOrNull()
+        val spineDirection = spineTag?.let { extractAttribute(it, "page-progression-direction") }
+        val pageProgressionDirection = PageProgressionDirection.fromRaw(spineDirection)
+
+        val finalMetadata = metadata.copy(
+            coverHref = coverHref,
+            pageProgressionDirection = pageProgressionDirection,
+        )
+
         return Publication(
-            metadata = metadata,
+            metadata = finalMetadata,
             spine = spine,
             resources = resources,
             toc = toc,
@@ -136,6 +168,10 @@ public class EpubParser : FormatParser {
             else -> RenditionSpread.AUTO
         }
 
+        val spineTag = findOpeningTags(opfXml, "spine").firstOrNull()
+        val spineDirection = spineTag?.let { extractAttribute(it, "page-progression-direction") }
+        val pageProgressionDirection = PageProgressionDirection.fromRaw(spineDirection)
+
         return Metadata(
             title = extractFirstTagText(opfXml, "title").orEmpty(),
             authors = extractAllTagTexts(opfXml, "creator"),
@@ -144,6 +180,7 @@ public class EpubParser : FormatParser {
             layout = layout,
             orientation = orientation,
             spread = spread,
+            pageProgressionDirection = pageProgressionDirection,
         )
     }
 

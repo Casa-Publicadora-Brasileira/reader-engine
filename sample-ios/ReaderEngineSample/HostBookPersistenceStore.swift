@@ -12,6 +12,7 @@ final class HostBookPersistenceStore {
     func saveProgress(_ progress: ReadingProgress) {
         let id = progress.documentId
         defaults.set(Int(progress.pageIndex), forKey: "\(id)_page")
+        defaults.set(Int(progress.subPage), forKey: "\(id)_subPage")
         defaults.set(Int(progress.totalPages), forKey: "\(id)_total")
         defaults.set(Int(progress.scrollY), forKey: "\(id)_scrollY")
         defaults.set(Double(progress.totalPercentage), forKey: "\(id)_percent")
@@ -22,6 +23,7 @@ final class HostBookPersistenceStore {
             return nil
         }
         let page = Int32(defaults.integer(forKey: "\(documentId)_page"))
+        let subPage = Int32(defaults.integer(forKey: "\(documentId)_subPage"))
         let total = Int32(max(1, defaults.integer(forKey: "\(documentId)_total")))
         let scrollY = Int32(defaults.integer(forKey: "\(documentId)_scrollY"))
         let percent = Float(defaults.double(forKey: "\(documentId)_percent"))
@@ -31,6 +33,7 @@ final class HostBookPersistenceStore {
             pageNumber: page + 1,
             totalPages: total,
             scrollY: scrollY,
+            subPage: subPage,
             pageProgression: 0,
             totalPercentage: percent,
             chapterTitle: "",

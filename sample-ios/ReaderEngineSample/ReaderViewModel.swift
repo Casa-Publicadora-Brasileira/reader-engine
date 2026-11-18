@@ -368,6 +368,7 @@ final class ReaderViewModel: ObservableObject {
             documentId: documentId,
             initialPageIndex: savedProgress?.pageIndex ?? 0,
             initialScrollY: savedProgress?.scrollY ?? 0,
+            initialSubPage: savedProgress?.subPage ?? 0,
             isNightMode: hostStore.loadNightMode(),
             readingMode: hostStore.loadReadingMode(),
             fontFamily: hostStore.loadFontFamily(),
@@ -375,6 +376,7 @@ final class ReaderViewModel: ObservableObject {
             fontScale: hostStore.loadFontScale(),
             theme: ThemeTokens.companion.hig(),
             savedPageHighlights: hostStore.loadHighlights(documentId: documentId),
+            savedHighlightNotes: [:],
             savedPageForms: hostStore.loadPageForms(documentId: documentId),
             savedBookmarks: [],
             strings: ReaderStrings.companion.portuguese()

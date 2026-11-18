@@ -13,17 +13,17 @@
 
 ## 2. Severidade Moderada (🟡 Inferências e Limitações Arquiteturais Conhecidas)
 
-| ID | Unit Afetada | Descrição | Evidência / Localização | Recomendação |
-|----|--------------|-----------|-------------------------|--------------|
-| **GAP-01** | `reader-core` | **`InitialBookState` não armazena `currentSubPage`:** No modo `PAGINATED`, a reabertura do livro restaura o capítulo (`currentPage`) e o modo `PAGINATED`, mas reinicia `currentSubPage = 0`. | `Models.kt:255`, `ReaderSession.kt:92` | Adicionar `currentSubPage: Int = 0` em `InitialBookState` caso seja necessário restaurar a coluna exata em capítulos longos. |
-| **GAP-02** | `reader-core` | **Descriptografia em `DecryptingResourceProvider.readRange`:** Para recursos criptografados/ofuscados em `META-INF/encryption.xml`, `readRange` precisa ler e descriptografar o recurso completo antes de fatiar o intervalo `[offset, offset + length)`. | `DrmProvider.kt:182-196` | Comportamento esperado para fontes ofuscadas (pequenas), mas se um vídeo grande usar DRM customizado (`ContentDecryptor`), recomenda-se suportar descriptografia em blocos (CTR/CBC chunked) no futuro. |
-| **GAP-03** | `reader-core` | **Parsing XML/OPF baseado em Regex:** `EpubParser` e `EpubEncryptionParser` usam expressões regulares em vez de parser XML StAX/DOM. | `EpubParser.kt:360-640`, `DrmProvider.kt:40-78` | Adequado para manter zero dependências pesadas em `commonMain`; manter cobertura de testes ao adicionar novos atributos OPF. |
+| ID | Unit Afetada | Descrição | Evidência / Localização | Status / Resolução |
+|----|--------------|-----------|-------------------------|--------------------|
+| **GAP-01** | `reader-core` | **`InitialBookState` não armazena `currentSubPage`:** No modo `PAGINATED`, a reabertura do livro restaura o capítulo (`currentPage`) e o modo `PAGINATED`, mas reiniciava `currentSubPage = 0`. | `Models.kt`, `ReaderSession.kt`, `ReaderJsBridge.kt` | ✅ **RESOLVIDO (v0.4.0)**: Adicionado `initialSubPage: Int = 0` em `InitialBookState`, `subPage` em `ReadingProgress`, comando `goToSubPageCommand(index)` e persistência reativa. |
+| **GAP-02** | `reader-core` | **Descriptografia em `DecryptingResourceProvider.readRange`:** Para recursos criptografados/ofuscados em `META-INF/encryption.xml`, `readRange` precisa ler e descriptografar o recurso completo antes de fatiar o intervalo `[offset, offset + length)`. | `DrmProvider.kt:182-196` | ⏳ *Planejado para Fase 3 (v0.6.0)*: Adicionar `decryptRange` no `ContentDecryptor`. |
+| **GAP-03** | `reader-core` | **Parsing XML/OPF baseado em Regex:** `EpubParser` e `EpubEncryptionParser` usam expressões regulares em vez de parser XML StAX/DOM. | `EpubParser.kt:360-640`, `DrmProvider.kt:40-78` | ⏳ *Planejado para Fase 4 (v0.7.0)*: Tokenizer XML determinístico em Kotlin puro. |
 
 ---
 
 ## 3. Severidade Cosmética / Manutenibilidade (🟢 Dívidas Técnicas Leves)
 
-| ID | Unit Afetada | Descrição | Evidência / Localização | Recomendação |
-|----|--------------|-----------|-------------------------|--------------|
-| **GAP-04** | `reader-core` | **Código idêntico entre `PlatformCompression.jvm.kt` e `PlatformCompression.android.kt`:** Os dois arquivos compartilham exatamente as mesmas 61 linhas baseadas em `java.util.zip`. | `reader-core/src/jvmMain/...`, `reader-core/src/androidMain/...` | Opcionalmente unificar em um sourceSet intermediário `jvmAndAndroidMain` no `build.gradle.kts`. |
-| **GAP-05** | `sample-android` | **Concentração de classes em `MainActivity.kt`:** O app demonstrativo Android reúne UI Compose, `WebViewClient`, bridges JS, persistência e gerador de fixtures em um único arquivo de 1.127 linhas. | `sample-android/src/main/java/com/readerengine/app/MainActivity.kt` | Caso o `sample-android` cresça, separar `BookResourceWebViewClient` e `HostBookPersistenceStore` em arquivos próprios. |
+| ID | Unit Afetada | Descrição | Evidência / Localização | Status / Resolução |
+|----|--------------|-----------|-------------------------|--------------------|
+| **GAP-04** | `reader-core` | **Código idêntico entre `PlatformCompression.jvm.kt` e `PlatformCompression.android.kt`:** Os dois arquivos compartilhavam código `java.util.zip`. | `reader-core/src/commonMain/.../PayloadCodec.kt` | ✅ **RESOLVIDO (v0.4.0)**: Substituído por `PayloadCodec` multiplataforma com Okio `GzipSink`/`GzipSource` em `commonMain`. |
+| **GAP-05** | `sample-android` | **Concentração de classes em `MainActivity.kt`:** O app demonstrativo Android reunia persistência, bridges JS, dialogs e telas em um único arquivo. | `sample-android/src/main/java/com/readerengine/app/` | ✅ **RESOLVIDO (v0.4.0)**: Modularizado em `HostBookPersistenceStore.kt`, `ReaderBridges.kt` e `OpenBookDialog.kt`. |

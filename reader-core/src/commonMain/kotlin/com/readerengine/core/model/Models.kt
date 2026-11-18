@@ -54,6 +54,29 @@ public enum class ReadingMode {
     PAGINATED,
 }
 
+/** Direção de progressão das páginas (EPUB 3 `page-progression-direction` no spine). */
+@Serializable
+public enum class PageProgressionDirection {
+    @SerialName("default")
+    DEFAULT,
+
+    @SerialName("ltr")
+    LTR,
+
+    @SerialName("rtl")
+    RTL;
+
+    public companion object {
+        public fun fromRaw(raw: String?): PageProgressionDirection {
+            return when (raw?.trim()?.lowercase()) {
+                "rtl" -> RTL
+                "ltr" -> LTR
+                else -> DEFAULT
+            }
+        }
+    }
+}
+
 @Serializable
 public data class Metadata(
     val title: String = "",
@@ -63,6 +86,8 @@ public data class Metadata(
     val layout: RenditionLayout = RenditionLayout.REFLOWABLE,
     val orientation: RenditionOrientation = RenditionOrientation.AUTO,
     val spread: RenditionSpread = RenditionSpread.AUTO,
+    val coverHref: String? = null,
+    val pageProgressionDirection: PageProgressionDirection = PageProgressionDirection.DEFAULT,
 )
 
 @Serializable
@@ -171,6 +196,7 @@ public data class ReadingProgress(
     val pageNumber: Int = 1,
     val totalPages: Int = 1,
     val scrollY: Int = 0,
+    val subPage: Int = 0,
     val pageProgression: Float = 0f,
     val totalPercentage: Float = 0f,
     val chapterTitle: String = "",
@@ -263,6 +289,7 @@ public data class HighlightItem(
     val style: HighlightStyle,
     val scrollPositionY: Double,
     val locator: Locator? = null,
+    val note: String? = null,
 ) {
     /** Offset recomendado para `scrollTo(0, targetScrollY)` ao clicar no grifo na lista. */
     public val targetScrollY: Int
@@ -316,6 +343,7 @@ public data class InitialBookState(
     val documentId: String = "",
     val initialPageIndex: Int = 0,
     val initialScrollY: Int = 0,
+    val initialSubPage: Int = 0,
     val isNightMode: Boolean = false,
     val readingMode: ReadingMode = ReadingMode.SCROLL,
     val fontFamily: String = "Default",
@@ -325,10 +353,32 @@ public data class InitialBookState(
     val theme: ThemeTokens? = null,
     /** Mapa `pageIndex -> string serializada Rangy` (aceita texto puro ou comprimido `gz:`). */
     val savedPageHighlights: Map<Int, String> = emptyMap(),
+    /** Mapa `highlightId -> nota textual`. */
+    val savedHighlightNotes: Map<Int, String> = emptyMap(),
     /** Mapa `pageIndex -> JSON annotations/answers` (aceita texto puro ou comprimido `gz:`). */
     val savedPageForms: Map<Int, String> = emptyMap(),
     /** Lista inicial de marcadores de página (Bookmarks) do usuário. */
     val savedBookmarks: List<Bookmark> = emptyList(),
     /** Textos localizados usados para rótulos padrão de página, capítulo e mensagens. */
     val strings: ReaderStrings = ReaderStrings.portuguese(),
+)
+
+/**
+ * Snapshot completo e serializável do estado do leitor para backup, sincronização
+ * remota e exportação/importação em arquivo único ou nuvem.
+ */
+@Serializable
+public data class BookStateSnapshot(
+    val documentId: String,
+    val progress: ReadingProgress? = null,
+    val readingMode: ReadingMode = ReadingMode.SCROLL,
+    val isNightMode: Boolean = false,
+    val fontFamily: String = "Default",
+    val fontSizeClass: String = "",
+    val fontScale: Float = 1.0f,
+    val pageHighlights: Map<Int, String> = emptyMap(),
+    val highlightNotes: Map<Int, String> = emptyMap(),
+    val pageForms: Map<Int, String> = emptyMap(),
+    val bookmarks: List<Bookmark> = emptyList(),
+    val updatedAtEpochMs: Long = 0L,
 )

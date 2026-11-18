@@ -5,6 +5,7 @@ import com.readerengine.core.bridge.PayloadCodec
 import com.readerengine.core.bridge.ReaderJsBridge
 import com.readerengine.core.error.ReaderException
 import com.readerengine.core.model.Bookmark
+import com.readerengine.core.model.BookStateSnapshot
 import com.readerengine.core.model.FormEntry
 import com.readerengine.core.model.HighlightItem
 import com.readerengine.core.model.HighlightStyle
@@ -12,6 +13,7 @@ import com.readerengine.core.model.InitialBookState
 import com.readerengine.core.model.Locator
 import com.readerengine.core.model.Metadata
 import com.readerengine.core.model.PageFormState
+import com.readerengine.core.model.PageProgressionDirection
 import com.readerengine.core.model.Publication
 import com.readerengine.core.model.ReaderStrings
 import com.readerengine.core.model.ReadingMode
@@ -185,6 +187,7 @@ public sealed interface ReaderCommand {
     public data object RemoveSelectedHighlight : ReaderCommand
     public data class SelectHighlightItem(val item: HighlightItem) : ReaderCommand
     public data class RemoveHighlightItem(val highlightId: Int) : ReaderCommand
+    public data class UpdateHighlightNote(val highlightId: Int, val note: String?) : ReaderCommand
     public data class ToggleBookmark(val label: String? = null, val timestampEpochMs: Long = 0L) : ReaderCommand
     public data class RemoveBookmark(val bookmarkId: String) : ReaderCommand
     public data class GoToBookmark(val bookmarkId: String) : ReaderCommand
@@ -205,6 +208,10 @@ public class ReaderSession(
     }
 
     private val resolvedToc: List<TocItem> = flattenTocEntries(publication.toc, level = 0)
+
+    private val highlightNotes = LinkedHashMap<Int, String>().apply {
+        putAll(initialBookState.savedHighlightNotes)
+    }
 
     private val pageSerializedHighlights = LinkedHashMap<Int, String>().apply {
         initialBookState.savedPageHighlights.forEach { (page, raw) ->
@@ -245,12 +252,14 @@ public class ReaderSession(
         val lastIndex = (publication.spine.size - 1).coerceAtLeast(0)
         val startPage = initialBookState.initialPageIndex.coerceIn(0, lastIndex)
         val startScroll = initialBookState.initialScrollY.coerceAtLeast(0)
+        val startSubPage = initialBookState.initialSubPage.coerceAtLeast(0)
         val startTheme = initialBookState.theme ?: ThemeTokens.material3()
         val startScale = initialBookState.fontScale.coerceIn(0.5f, 3.0f)
 
         val initialProgress = buildProgress(
             pageIndex = startPage,
             scrollY = startScroll,
+            subPage = startSubPage,
             contentHeightPx = 0,
             viewportHeightPx = 0,
             timestampEpochMs = 0L,
@@ -263,7 +272,7 @@ public class ReaderSession(
                 pageIndex = startPage,
                 spineLen = publication.spine.size,
                 scrollY = startScroll,
-                currentSubPage = 0,
+                currentSubPage = startSubPage,
                 totalSubPages = 1,
                 readingMode = initialBookState.readingMode,
                 progress = initialProgress,
@@ -371,7 +380,12 @@ public class ReaderSession(
                     current.currentSubPage + 1 < current.totalSubPages
                 ) {
                     val nextSub = current.currentSubPage + 1
-                    _state.value = current.copy(currentSubPage = nextSub)
+                    val newProgress = current.progress.copy(subPage = nextSub)
+                    _state.value = current.copy(
+                        currentSubPage = nextSub,
+                        progress = newProgress,
+                    )
+                    _events.tryEmit(ReaderEvent.ProgressUpdated(newProgress))
                     _uiEffects.tryEmit(ReaderUiEffect.EvaluateJs(ReaderJsBridge.SCRIPT_NEXT_SUB_PAGE))
                 } else {
                     val nextIdx = (current.pageIndex + 1).coerceAtMost(lastIndex)
@@ -384,7 +398,12 @@ public class ReaderSession(
             ReaderCommand.PrevPage -> {
                 if (current.readingMode == ReadingMode.PAGINATED && current.currentSubPage > 0) {
                     val prevSub = current.currentSubPage - 1
-                    _state.value = current.copy(currentSubPage = prevSub)
+                    val newProgress = current.progress.copy(subPage = prevSub)
+                    _state.value = current.copy(
+                        currentSubPage = prevSub,
+                        progress = newProgress,
+                    )
+                    _events.tryEmit(ReaderEvent.ProgressUpdated(newProgress))
                     _uiEffects.tryEmit(ReaderUiEffect.EvaluateJs(ReaderJsBridge.SCRIPT_PREV_SUB_PAGE))
                 } else {
                     val prevIdx = (current.pageIndex - 1).coerceAtLeast(0)
@@ -421,6 +440,7 @@ public class ReaderSession(
                 val newProgress = buildProgress(
                     pageIndex = current.pageIndex,
                     scrollY = clampedScroll,
+                    subPage = current.currentSubPage,
                     contentHeightPx = command.contentHeightPx,
                     viewportHeightPx = command.viewportHeightPx,
                     timestampEpochMs = command.timestampEpochMs,
@@ -512,8 +532,35 @@ public class ReaderSession(
             }
 
             is ReaderCommand.RemoveHighlightItem -> {
+                highlightNotes.remove(command.highlightId)
                 _uiEffects.tryEmit(
                     ReaderUiEffect.EvaluateJs(ReaderJsBridge.removeHighlightByIdCommand(command.highlightId)),
+                )
+            }
+
+            is ReaderCommand.UpdateHighlightNote -> {
+                val cleanNote = command.note?.trim()?.takeIf { it.isNotBlank() }
+                if (cleanNote == null) {
+                    highlightNotes.remove(command.highlightId)
+                } else {
+                    highlightNotes[command.highlightId] = cleanNote
+                }
+                val curPage = current.pageIndex
+                val currentItems = pageHighlightSummaries[curPage].orEmpty().map { item ->
+                    if (item.id == command.highlightId) item.copy(note = cleanNote) else item
+                }
+                pageHighlightSummaries[curPage] = currentItems
+                _state.value = current.copy(currentPageHighlights = currentItems)
+                val rawSerialized = pageSerializedHighlights[curPage].orEmpty()
+                val compressedPayload = PayloadCodec.encodeIfNeeded(rawSerialized)
+                _events.tryEmit(
+                    ReaderEvent.PageHighlightsChanged(
+                        documentId = documentId,
+                        pageIndex = curPage,
+                        rawSerializedHighlights = rawSerialized,
+                        compressedPayload = compressedPayload,
+                        summaryItems = currentItems,
+                    ),
                 )
             }
 
@@ -568,10 +615,20 @@ public class ReaderSession(
     public fun onSubPageReported(currentSubPage: Int, totalSubPages: Int) {
         val safeTotal = totalSubPages.coerceAtLeast(1)
         val safeCurrent = currentSubPage.coerceIn(0, safeTotal - 1)
-        _state.value = _state.value.copy(
+        val cur = _state.value
+        val progressUpdated = if (cur.progress.subPage != safeCurrent) {
+            cur.progress.copy(subPage = safeCurrent)
+        } else {
+            cur.progress
+        }
+        _state.value = cur.copy(
             currentSubPage = safeCurrent,
             totalSubPages = safeTotal,
+            progress = progressUpdated,
         )
+        if (progressUpdated !== cur.progress) {
+            _events.tryEmit(ReaderEvent.ProgressUpdated(progressUpdated))
+        }
     }
 
     /**
@@ -596,6 +653,7 @@ public class ReaderSession(
                         pageIndex = pageIndex,
                         textQuote = item.text,
                     ),
+                    note = highlightNotes[item.id],
                 )
             }
             pageHighlightSummaries[pageIndex] != null -> pageHighlightSummaries[pageIndex].orEmpty()
@@ -631,7 +689,9 @@ public class ReaderSession(
         rawSummaryJson: String,
         pageIndex: Int = _state.value.pageIndex,
     ): List<HighlightItem> {
-        val items = ReaderJsBridge.parseSummaryHighlights(rawSummaryJson, pageIndex)
+        val items = ReaderJsBridge.parseSummaryHighlights(rawSummaryJson, pageIndex).map { item ->
+            item.copy(note = highlightNotes[item.id])
+        }
         pageHighlightSummaries[pageIndex] = items
         if (pageIndex == _state.value.pageIndex) {
             _state.value = _state.value.copy(currentPageHighlights = items)
@@ -805,6 +865,7 @@ public class ReaderSession(
             isNightMode = current.isNightMode,
             readingMode = current.readingMode,
             layout = publication.metadata.layout,
+            direction = publication.metadata.pageProgressionDirection,
         )
         return RenderedDocument(
             html = html,
@@ -812,6 +873,13 @@ public class ReaderSession(
             baseUrl = currentBaseUrl(schemeBase),
         )
     }
+
+    /**
+     * Retorna os bytes da capa do livro (`coverHref`) se detectada no manifesto/OPF ou book.json,
+     * permitindo que telas de biblioteca ou estante renderizem a miniatura diretamente.
+     */
+    public fun readCoverBytes(): ByteArray? =
+        publication.metadata.coverHref?.let { runCatching { readResource(it) }.getOrNull() }
 
     /** Sobrecarga concisa para iOS/Swift sem argumentos default. */
     public fun currentBaseUrl(): String = currentBaseUrl(schemeBase = DEFAULT_BOOK_BASE_URL)
@@ -916,6 +984,7 @@ public class ReaderSession(
                                 pageIndex = pageIndex,
                                 textQuote = text,
                             ),
+                            note = highlightNotes[id],
                         ),
                     )
                 }
@@ -966,11 +1035,112 @@ public class ReaderSession(
         }
     }
 
-    private fun navigateToPageInternal(targetPageIndex: Int, scrollY: Int) {
+    /**
+     * Exporta um snapshot completo e auto-contido do estado atual do leitor em formato JSON,
+     * incluindo posição/progresso, sub-página, preferências, grifos, notas, formulários e bookmarks.
+     */
+    public fun exportBookStateSnapshot(): String {
+        val cur = _state.value
+        val snapshot = BookStateSnapshot(
+            documentId = documentId,
+            progress = cur.progress,
+            readingMode = cur.readingMode,
+            isNightMode = cur.isNightMode,
+            fontFamily = cur.fontFamily,
+            fontSizeClass = cur.fontSizeClass,
+            fontScale = cur.fontScale,
+            pageHighlights = pageSerializedHighlights.toMap(),
+            highlightNotes = highlightNotes.toMap(),
+            pageForms = pageFormStates.mapValues { (_, form) ->
+                ReaderJsBridge.serializePageFormState(form)
+            },
+            bookmarks = bookmarks.toList(),
+            updatedAtEpochMs = cur.progress.lastUpdateEpochMs,
+        )
+        return json.encodeToString(BookStateSnapshot.serializer(), snapshot)
+    }
+
+    /**
+     * Importa um snapshot de estado previamente exportado (ou vindo da nuvem/backup),
+     * restaurando progressivamente o estado da sessão e emitindo os eventos correspondentes.
+     */
+    public fun importBookStateSnapshot(payload: String): ReaderState {
+        val decodedPayload = PayloadCodec.decodeIfNeeded(payload)
+        val snapshot = json.decodeFromString(BookStateSnapshot.serializer(), decodedPayload)
+
+        val nextReadingMode = snapshot.readingMode
+        val nextFontFamily = snapshot.fontFamily
+        val nextFontSizeClass = snapshot.fontSizeClass
+        val nextFontScale = snapshot.fontScale
+        val nextNightMode = snapshot.isNightMode
+
+        pageSerializedHighlights.clear()
+        snapshot.pageHighlights.forEach { (page, raw) ->
+            pageSerializedHighlights[page] = PayloadCodec.decodeIfNeeded(raw)
+        }
+        highlightNotes.clear()
+        highlightNotes.putAll(snapshot.highlightNotes)
+        pageHighlightSummaries.clear()
+        pageSerializedHighlights.forEach { (page, decoded) ->
+            val parsed = parseHighlightsFromSerializedString(decoded, page)
+            if (parsed.isNotEmpty()) {
+                pageHighlightSummaries[page] = parsed
+            }
+        }
+
+        pageFormStates.clear()
+        snapshot.pageForms.forEach { (page, raw) ->
+            pageFormStates[page] = ReaderJsBridge.parsePageFormState(raw)
+        }
+
+        bookmarks.clear()
+        bookmarks.addAll(snapshot.bookmarks)
+        nextBookmarkSeq = bookmarks.size + 1
+
+        val lastIndex = (publication.spine.size - 1).coerceAtLeast(0)
+        val targetPage = (snapshot.progress?.pageIndex ?: _state.value.pageIndex).coerceIn(0, lastIndex)
+        val targetScroll = (snapshot.progress?.scrollY ?: 0).coerceAtLeast(0)
+        val targetSubPage = (snapshot.progress?.subPage ?: 0).coerceAtLeast(0)
+
+        val updatedProgress = snapshot.progress ?: buildProgress(
+            pageIndex = targetPage,
+            scrollY = targetScroll,
+            subPage = targetSubPage,
+            contentHeightPx = 0,
+            viewportHeightPx = 0,
+            timestampEpochMs = snapshot.updatedAtEpochMs,
+        )
+
+        _state.value = _state.value.copy(
+            pageIndex = targetPage,
+            scrollY = targetScroll,
+            currentSubPage = targetSubPage,
+            readingMode = nextReadingMode,
+            fontFamily = nextFontFamily,
+            fontSizeClass = nextFontSizeClass,
+            fontScale = nextFontScale,
+            isNightMode = nextNightMode,
+            progress = updatedProgress,
+            currentPageSerializedHighlights = pageSerializedHighlights[targetPage].orEmpty(),
+            currentPageHighlights = pageHighlightSummaries[targetPage].orEmpty(),
+            currentPageFormState = pageFormStates[targetPage] ?: PageFormState(),
+            bookmarks = bookmarks.toList(),
+            hasBookmarkAtCurrentPage = bookmarks.any { it.pageIndex == targetPage },
+        )
+
+        _events.tryEmit(ReaderEvent.ProgressUpdated(updatedProgress))
+        syncBookmarksStateAndEmit()
+        emitPreferencesChanged(_state.value)
+
+        return _state.value
+    }
+
+    private fun navigateToPageInternal(targetPageIndex: Int, scrollY: Int, targetSubPage: Int = 0) {
         val current = _state.value
         val newProgress = buildProgress(
             pageIndex = targetPageIndex,
             scrollY = scrollY,
+            subPage = targetSubPage,
             contentHeightPx = 0,
             viewportHeightPx = 0,
             timestampEpochMs = 0L,
@@ -978,7 +1148,7 @@ public class ReaderSession(
         _state.value = current.copy(
             pageIndex = targetPageIndex,
             scrollY = scrollY,
-            currentSubPage = 0,
+            currentSubPage = targetSubPage,
             totalSubPages = 1,
             progress = newProgress,
             currentPageSerializedHighlights = pageSerializedHighlights[targetPageIndex].orEmpty(),
@@ -1026,6 +1196,7 @@ public class ReaderSession(
     private fun buildProgress(
         pageIndex: Int,
         scrollY: Int,
+        subPage: Int = _state.value.currentSubPage,
         contentHeightPx: Int,
         viewportHeightPx: Int,
         timestampEpochMs: Long,
@@ -1052,6 +1223,7 @@ public class ReaderSession(
             pageNumber = if (totalPages > 0) pageIndex + 1 else 0,
             totalPages = totalPages,
             scrollY = scrollY,
+            subPage = subPage,
             pageProgression = pageProgression,
             totalPercentage = percentage,
             chapterTitle = chapterTitle,

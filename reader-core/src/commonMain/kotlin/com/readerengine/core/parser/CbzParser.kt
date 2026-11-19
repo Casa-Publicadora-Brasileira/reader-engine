@@ -8,6 +8,7 @@ import com.readerengine.core.model.RenditionLayout
 import com.readerengine.core.model.Resource
 import com.readerengine.core.model.ResourceProvider
 import com.readerengine.core.model.TocEntry
+import com.readerengine.core.observability.ZipCacheStats
 import com.readerengine.core.provider.ZipResourceProvider
 import com.readerengine.core.provider.normalizeHref
 
@@ -274,6 +275,8 @@ public class CbzParser : FormatParser {
                 if (decoded != clean) delegate.readRange(decoded, offset, byteCount) else throw e
             }
         }
+
+        override fun cacheStats(): ZipCacheStats? = delegate.cacheStats()
 
         override fun close() {
             delegate.close()

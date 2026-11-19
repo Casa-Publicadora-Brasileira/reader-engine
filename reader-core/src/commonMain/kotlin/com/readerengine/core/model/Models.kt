@@ -1,6 +1,7 @@
 package com.readerengine.core.model
 
 import com.readerengine.core.drm.EncryptedResourceInfo
+import com.readerengine.core.observability.ZipCacheStats
 import com.readerengine.core.theme.ThemeTokens
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -142,6 +143,8 @@ public interface ResourceProvider {
         val end = (start + byteCount).coerceAtMost(all.size)
         return all.copyOfRange(start, end)
     }
+
+    public fun cacheStats(): ZipCacheStats? = null
 
     public fun close(): Unit = Unit
 }

@@ -29,6 +29,14 @@ import com.readerengine.core.model.SearchResult
 import com.readerengine.core.model.TocEntry
 import com.readerengine.core.model.TocItem
 import com.readerengine.core.model.TtsSentence
+import com.readerengine.core.observability.CompositeReaderObserver
+import com.readerengine.core.observability.InMemoryDiagnosticsBuffer
+import com.readerengine.core.observability.ReaderDiagnosticsSnapshot
+import com.readerengine.core.observability.ReaderLogLevel
+import com.readerengine.core.observability.ReaderLogRecord
+import com.readerengine.core.observability.ReaderMetric
+import com.readerengine.core.observability.ReaderObservability
+import com.readerengine.core.observability.ReaderObserver
 import com.readerengine.core.parser.XmlEntities
 import com.readerengine.core.platform.defaultFileSystem
 import com.readerengine.core.provider.normalizeHref
@@ -238,7 +246,24 @@ public sealed interface ReaderCommand {
 public class ReaderSession(
     private val publication: Publication,
     initialBookState: InitialBookState = InitialBookState(),
+    observer: ReaderObserver = ReaderObserver.NoOp,
 ) {
+    public constructor(
+        publication: Publication,
+        initialBookState: InitialBookState,
+    ) : this(
+        publication = publication,
+        initialBookState = initialBookState,
+        observer = ReaderObserver.NoOp,
+    )
+
+    private val diagnosticsBuffer = InMemoryDiagnosticsBuffer(maxEntries = 100)
+    private val effectiveObserver: ReaderObserver = if (observer === ReaderObserver.NoOp) {
+        diagnosticsBuffer
+    } else {
+        CompositeReaderObserver(diagnosticsBuffer, observer)
+    }
+
     private val json = Json { ignoreUnknownKeys = true }
     private val strings: ReaderStrings = initialBookState.strings
     private val watchScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
@@ -408,14 +433,30 @@ public class ReaderSession(
      * Realiza busca textual case-insensitive e insensível a acentos em todos os capítulos do livro,
      * retornando trechos com contexto (`snippet`), índice da página, posição relativa e `Locator`.
      */
-    public fun search(query: String, maxResults: Int = 50): List<SearchResult> =
-        BookSearchEngine.search(
-            publication = publication,
-            resolvedToc = resolvedToc,
-            query = query,
-            maxResults = maxResults,
-            strings = strings,
+    public fun search(query: String, maxResults: Int = 50): List<SearchResult> {
+        val results = ReaderObservability.measureSpan(
+            observer = effectiveObserver,
+            name = "search.query",
+            attributes = mapOf("queryLength" to query.trim().length.toString(), "maxResults" to maxResults.toString()),
+        ) {
+            BookSearchEngine.search(
+                publication = publication,
+                resolvedToc = resolvedToc,
+                query = query,
+                maxResults = maxResults,
+                strings = strings,
+            )
+        }
+        effectiveObserver.onMetric(
+            ReaderMetric(
+                name = "search.results_count",
+                value = results.size.toDouble(),
+                unit = "matches",
+                attributes = mapOf("documentId" to documentId),
+            ),
         )
+        return results
+    }
 
     /** Exporta o índice de busca textual de todos os capítulos como JSON serializado. */
     public fun exportSearchIndexJson(): String =
@@ -1118,7 +1159,6 @@ public class ReaderSession(
         val current = _state.value
         val href = publication.spine.getOrNull(current.pageIndex)
             ?: throw ReaderException.InvalidContent("Spine vazio ou índice inválido (${current.pageIndex})")
-        val rawHtml = publication.readString(href)
         val openAtLast = pendingOpenAtLastSubPage
         pendingOpenAtLastSubPage = false
         val targetInitialSubPage = when {
@@ -1126,20 +1166,31 @@ public class ReaderSession(
             openAtLast -> ReaderJsBridge.INITIAL_SUB_PAGE_LAST
             else -> current.currentSubPage
         }
-        val html = ReaderJsBridge.injectThemeAndBridge(
-            rawHtml = rawHtml,
-            theme = current.theme,
-            fontScale = current.fontScale,
-            fontFamily = current.fontFamily,
-            fontSizeClass = current.fontSizeClass,
-            isNightMode = current.isNightMode,
-            readingMode = current.readingMode,
-            layout = publication.metadata.layout,
-            direction = publication.metadata.pageProgressionDirection,
-            spread = publication.metadata.spread,
-            initialSubPage = targetInitialSubPage,
-            language = publication.metadata.language,
-        )
+        val html = ReaderObservability.measureSpan(
+            observer = effectiveObserver,
+            name = "session.render_document",
+            attributes = mapOf(
+                "pageIndex" to current.pageIndex.toString(),
+                "href" to href,
+                "readingMode" to current.readingMode.name,
+            ),
+        ) {
+            val rawHtml = publication.readString(href)
+            ReaderJsBridge.injectThemeAndBridge(
+                rawHtml = rawHtml,
+                theme = current.theme,
+                fontScale = current.fontScale,
+                fontFamily = current.fontFamily,
+                fontSizeClass = current.fontSizeClass,
+                isNightMode = current.isNightMode,
+                readingMode = current.readingMode,
+                layout = publication.metadata.layout,
+                direction = publication.metadata.pageProgressionDirection,
+                spread = publication.metadata.spread,
+                initialSubPage = targetInitialSubPage,
+                language = publication.metadata.language,
+            )
+        }
         return RenderedDocument(
             html = html,
             href = href,
@@ -1493,6 +1544,33 @@ public class ReaderSession(
         )
 
     /**
+     * Retorna um snapshot de diagnóstico técnico da sessão ativa (versão do SDK, posição,
+     * estatísticas do cache LRU e últimos logs/spans/métricas coletados).
+     */
+    public fun diagnosticsSnapshot(): ReaderDiagnosticsSnapshot {
+        val cur = _state.value
+        return ReaderDiagnosticsSnapshot(
+            sdkVersion = ReaderObservability.SDK_VERSION,
+            documentId = documentId,
+            title = publication.metadata.title,
+            language = publication.metadata.language,
+            pageIndex = cur.pageIndex,
+            spineLen = cur.spineLen,
+            readingMode = cur.readingMode,
+            currentSubPage = cur.currentSubPage,
+            totalSubPages = cur.totalSubPages,
+            cacheStats = publication.provider.cacheStats(),
+            recentSpans = diagnosticsBuffer.recentSpans(),
+            recentLogs = diagnosticsBuffer.recentLogs(),
+            recentMetrics = diagnosticsBuffer.recentMetrics(),
+        )
+    }
+
+    /** Exporta [diagnosticsSnapshot] como JSON pronto para anexar em tickets de suporte/debug. */
+    public fun exportDiagnosticsJson(): String =
+        json.encodeToString(ReaderDiagnosticsSnapshot.serializer(), diagnosticsSnapshot())
+
+    /**
      * Formata uma citação a partir de um [HighlightItem] com referência bibliográfica automática
      * (título, autores, capítulo e página impressa do `pageList`, se disponível).
      */
@@ -1615,6 +1693,49 @@ public class ReaderSession(
                     )
                 } else {
                     _uiEffects.tryEmit(ReaderUiEffect.CustomAction(action, payload))
+                }
+            }
+
+            ReaderJsBridge.ACTION_JS_ERROR -> {
+                val attrs = ReaderJsBridge.parseJsErrorPayload(payload).orEmpty()
+                val msg = attrs["message"] ?: payload.orEmpty().ifBlank { "Erro JS na WebView" }
+                effectiveObserver.onLog(
+                    ReaderLogRecord(
+                        level = ReaderLogLevel.ERROR,
+                        tag = "WebViewJS",
+                        message = msg,
+                        attributes = attrs + mapOf(
+                            "documentId" to documentId,
+                            "pageIndex" to current.pageIndex.toString(),
+                        ),
+                        errorType = "JavaScriptError",
+                        errorMessage = msg,
+                    ),
+                )
+                effectiveObserver.onMetric(
+                    ReaderMetric(
+                        name = "webview.js_error",
+                        value = 1.0,
+                        unit = "count",
+                        attributes = mapOf("documentId" to documentId),
+                    ),
+                )
+                _events.tryEmit(ReaderEvent.ActionTriggered(action, payload))
+            }
+
+            ReaderJsBridge.ACTION_JS_METRIC -> {
+                ReaderJsBridge.parseJsMetricPayload(payload)?.let { (name, value, unit) ->
+                    effectiveObserver.onMetric(
+                        ReaderMetric(
+                            name = name,
+                            value = value,
+                            unit = unit,
+                            attributes = mapOf(
+                                "documentId" to documentId,
+                                "pageIndex" to current.pageIndex.toString(),
+                            ),
+                        ),
+                    )
                 }
             }
 

@@ -18,7 +18,7 @@ val resolvedVersion = providers.gradleProperty("version")
         .orNull
         ?.takeIf { it.startsWith("v") && it.length > 1 }
         ?.removePrefix("v")
-    ?: "0.8.0"
+    ?: "0.9.0"
 version = resolvedVersion
 
 kotlin {

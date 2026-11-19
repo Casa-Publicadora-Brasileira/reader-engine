@@ -2,6 +2,20 @@
 
 Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 
+## [0.9.0] - 2026-11-19
+
+### Added
+- **Sistema de Observabilidade Multiplataforma (`com.readerengine.core.observability`):**
+  - SPI plugável `ReaderObserver` (Logs estruturados + Spans monotônicos + Métricas) com implementação padrão `ReaderObserver.NoOp` (zero overhead), fan-out resiliente `CompositeReaderObserver`, ring buffer `InMemoryDiagnosticsBuffer` e helper `ReaderObservability.measureSpan(...)` baseado em `kotlin.time.TimeSource.Monotonic`.
+  - Instrumentação automática em `ReaderEngine` (`book.open`, `book.spine_pages`) e `ReaderSession` (`session.render_document`, `search.query`, `search.results_count`).
+  - Estatísticas em tempo real do cache LRU (`ZipCacheStats`: `hits`, `misses`, `evictions`, `entryCount`, `currentBytes`, `maxBytes`, `hitRate`) em `ZipResourceProvider` com delegação transparente em `DecryptingResourceProvider` e `CbzResourceProvider`.
+- **Observabilidade dentro da WebView (JS Runtime Errors & Pagination Metrics):**
+  - Novas ações `ReaderJsBridge.ACTION_JS_ERROR` (`window.onerror` e `unhandledrejection`) e `ReaderJsBridge.ACTION_JS_METRIC` (`webview.pagination_ms` medido em `_computeTotalSubPages()`) roteadas automaticamente para o `ReaderObserver` pelo `ReaderSession`.
+- **Snapshot de Diagnóstico Técnico (`diagnosticsSnapshot`):**
+  - Novos métodos `ReaderSession.diagnosticsSnapshot()` e `ReaderSession.exportDiagnosticsJson()` retornando versão do SDK, estado de leitura, `ZipCacheStats` e últimos logs/spans/métricas em memória para suporte e depuração.
+- **Exemplo no `sample-android`:**
+  - `LogcatReaderObserver` conectado ao `ReaderEngine` em `MainActivity.kt`.
+
 ## [0.8.0] - 2026-11-19
 
 ### Added

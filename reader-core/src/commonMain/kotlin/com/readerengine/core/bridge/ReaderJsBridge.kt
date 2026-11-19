@@ -35,6 +35,8 @@ public object ReaderJsBridge {
     public const val ACTION_GESTURE_PREV_PAGE: String = "reader_gesture_prev_page"
     public const val ACTION_GESTURE_TAP_CENTER: String = "reader_gesture_tap_center"
     public const val ACTION_IMAGE_TAP: String = "reader_image_tap"
+    public const val ACTION_JS_ERROR: String = "reader_js_error"
+    public const val ACTION_JS_METRIC: String = "reader_js_metric"
 
     /** Valor sentinela para `initialSubPage` indicando abertura direta na última sub-página do capítulo. */
     public const val INITIAL_SUB_PAGE_LAST: Int = -1
@@ -513,6 +515,37 @@ public object ReaderJsBridge {
         }
     }
 
+    internal fun parseJsErrorPayload(rawPayload: String?): Map<String, String>? {
+        val unquoted = unquoteJsEvaluation(rawPayload).trim()
+        if (unquoted.isEmpty()) return null
+        return try {
+            val obj = json.parseToJsonElement(unquoted).jsonObject
+            val out = LinkedHashMap<String, String>()
+            obj["message"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { out["message"] = it }
+            obj["source"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { out["source"] = it }
+            obj["line"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { out["line"] = it }
+            obj["col"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { out["col"] = it }
+            out.takeIf { it.isNotEmpty() }
+        } catch (_: Exception) {
+            mapOf("message" to unquoted)
+        }
+    }
+
+    internal fun parseJsMetricPayload(rawPayload: String?): Triple<String, Double, String>? {
+        val unquoted = unquoteJsEvaluation(rawPayload).trim()
+        if (unquoted.isEmpty()) return null
+        return try {
+            val obj = json.parseToJsonElement(unquoted).jsonObject
+            val name = obj["name"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+                ?: return null
+            val value = obj["value"]?.jsonPrimitive?.doubleOrNull ?: return null
+            val unit = obj["unit"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() } ?: "count"
+            Triple(name, value, unit)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /**
      * Serializa uma string para um literal JavaScript seguro entre aspas duplas,
      * escapando caracteres de controle, aspas, barras e fechamento de tag `</script>`.
@@ -641,12 +674,22 @@ public object ReaderJsBridge {
                     }
                 }
                 function _computeTotalSubPages() {
+                    var t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
                     _syncPaginatedMetrics();
                     var vw = _resolvePaginatedWidth();
                     var bodySw = document.body ? (document.body.scrollWidth || 0) : 0;
                     var docSw = document.documentElement ? (document.documentElement.scrollWidth || 0) : 0;
                     var sw = Math.max(vw, bodySw, docSw);
-                    return Math.max(1, Math.round(sw / vw));
+                    var total = Math.max(1, Math.round(sw / vw));
+                    if (t0 > 0 && window.ReaderEngine && window.ReaderEngine.postAction) {
+                        var elapsed = Math.round((performance.now() - t0) * 100) / 100;
+                        window.ReaderEngine.postAction('reader_js_metric', JSON.stringify({
+                            name: 'webview.pagination_ms',
+                            value: elapsed,
+                            unit: 'ms'
+                        }), false);
+                    }
+                    return total;
                 }
                 function _applySubPageOffset() {
                     _syncPaginatedMetrics();
@@ -1242,6 +1285,28 @@ public object ReaderJsBridge {
                 }
                 window.addEventListener('load', _onPaginatedReady);
                 window.addEventListener('resize', _onPaginatedReady);
+            }
+            if (typeof window.__readerObservabilityHooked === 'undefined') {
+                window.__readerObservabilityHooked = true;
+                window.addEventListener('error', function(e) {
+                    if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                        window.ReaderEngine.postAction('reader_js_error', JSON.stringify({
+                            message: String((e && e.message) || 'Unknown JS error'),
+                            source: String((e && e.filename) || ''),
+                            line: String((e && e.lineno) || 0),
+                            col: String((e && e.colno) || 0)
+                        }), false);
+                    }
+                });
+                window.addEventListener('unhandledrejection', function(e) {
+                    if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                        var reason = e && e.reason ? (e.reason.message || String(e.reason)) : 'Unhandled Promise rejection';
+                        window.ReaderEngine.postAction('reader_js_error', JSON.stringify({
+                            message: String(reason),
+                            source: 'promise'
+                        }), false);
+                    }
+                });
             }
         })();
     """

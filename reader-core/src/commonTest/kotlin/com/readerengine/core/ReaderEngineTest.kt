@@ -25,6 +25,14 @@ import com.readerengine.core.model.RenditionSpread
 import com.readerengine.core.model.Resource
 import com.readerengine.core.model.ResourceProvider
 import com.readerengine.core.model.TocEntry
+import com.readerengine.core.observability.CompositeReaderObserver
+import com.readerengine.core.observability.InMemoryDiagnosticsBuffer
+import com.readerengine.core.observability.ReaderLogLevel
+import com.readerengine.core.observability.ReaderLogRecord
+import com.readerengine.core.observability.ReaderMetric
+import com.readerengine.core.observability.ReaderObservability
+import com.readerengine.core.observability.ReaderObserver
+import com.readerengine.core.observability.ReaderSpan
 import com.readerengine.core.parser.CbzParser
 import com.readerengine.core.parser.EpubParser
 import com.readerengine.core.parser.HpubParser
@@ -1937,6 +1945,113 @@ class ReaderEngineTest {
         val pubFromZip = registry.open(Source.fromBytes("dom-casmurro.fb2.zip", zippedFb2))
         assertEquals("Dom Casmurro", pubFromZip.metadata.title)
         assertEquals(2, pubFromZip.spine.size)
+    }
+
+    // --- FASE 6 (v0.9.0) ---
+
+    @Test
+    fun observabilityTracksSpansMetricsWebViewErrorsAndExportsDiagnosticsSnapshot() {
+        val buffer = InMemoryDiagnosticsBuffer(maxEntries = 50)
+        val failingObserver = object : ReaderObserver {
+            override fun onLog(record: ReaderLogRecord) {
+                throw IllegalStateException("Crash simulado no coletor")
+            }
+
+            override fun onSpanFinished(span: ReaderSpan) {
+                throw IllegalStateException("Crash simulado no coletor")
+            }
+
+            override fun onMetric(metric: ReaderMetric) {
+                throw IllegalStateException("Crash simulado no coletor")
+            }
+        }
+        val composite = CompositeReaderObserver(failingObserver, buffer)
+
+        val fb2Xml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+              <description><title-info><book-title>Livro Observável</book-title><lang>pt-BR</lang></title-info></description>
+              <body><section><title><p>Cap 1</p></title><p>Texto de teste para observabilidade.</p></section></body>
+            </FictionBook>
+        """.trimIndent()
+
+        val engine = ReaderEngine(observer = composite)
+        val session = engine.open("obs.fb2", fb2Xml.encodeToByteArray())
+
+        // Render e busca geram spans e métricas
+        val html = session.currentHtml()
+        assertTrue(html.contains("__readerObservabilityHooked"))
+        val matches = session.search("observabilidade")
+        assertEquals(1, matches.size)
+
+        // Erros JS e métricas da WebView são roteados para o Observer
+        session.dispatch(
+            ReaderCommand.TriggerAction(
+                action = ReaderJsBridge.ACTION_JS_ERROR,
+                payload = """{"message":"TypeError: cannot read x","source":"chapter.xhtml","line":"42","col":"7"}""",
+            ),
+        )
+        session.dispatch(
+            ReaderCommand.TriggerAction(
+                action = ReaderJsBridge.ACTION_JS_METRIC,
+                payload = """{"name":"webview.pagination_ms","value":4.25,"unit":"ms"}""",
+            ),
+        )
+
+        val spans = buffer.recentSpans()
+        assertTrue(spans.any { it.name == "book.open" && it.success })
+        assertTrue(spans.any { it.name == "session.render_document" && it.success })
+        assertTrue(spans.any { it.name == "search.query" && it.success })
+
+        val logs = buffer.recentLogs()
+        assertTrue(logs.any { it.level == ReaderLogLevel.INFO && it.tag == "ReaderEngine" })
+        assertTrue(logs.any { it.level == ReaderLogLevel.ERROR && it.tag == "WebViewJS" && it.message.contains("TypeError") })
+
+        val metrics = buffer.recentMetrics()
+        assertTrue(metrics.any { it.name == "book.spine_pages" && it.value == 1.0 })
+        assertTrue(metrics.any { it.name == "search.results_count" && it.value == 1.0 })
+        assertTrue(metrics.any { it.name == "webview.js_error" && it.value == 1.0 })
+        assertTrue(metrics.any { it.name == "webview.pagination_ms" && it.value == 4.25 && it.unit == "ms" })
+
+        val diag = session.diagnosticsSnapshot()
+        assertEquals(ReaderObservability.SDK_VERSION, diag.sdkVersion)
+        assertEquals("Livro Observável", diag.title)
+        assertTrue(diag.recentSpans.isNotEmpty())
+        assertTrue(diag.recentLogs.isNotEmpty())
+        assertTrue(diag.recentMetrics.isNotEmpty())
+
+        val diagJson = session.exportDiagnosticsJson()
+        assertTrue(diagJson.contains("\"sdkVersion\":\"${ReaderObservability.SDK_VERSION}\""))
+        assertTrue(diagJson.contains("webview.pagination_ms"))
+    }
+
+    @Test
+    fun zipResourceProviderTracksLruCacheHitMissAndEvictionStats() {
+        val zipBytes = buildStoredZip(
+            entries = mapOf(
+                "a.txt" to "1234567890".encodeToByteArray(), // 10 bytes
+                "b.txt" to "abcdefghij".encodeToByteArray(), // 10 bytes
+            ),
+            asZip64 = false,
+        )
+        // Limite de cache de 12 bytes: cabe apenas 1 arquivo por vez
+        val zip = ZipResourceProvider.fromBytes(zipBytes, limits = ZipLimits(maxCacheBytes = 12))
+        try {
+            zip.read("a.txt") // miss -> cached (10B)
+            zip.read("a.txt") // hit
+            zip.read("b.txt") // miss -> evicts a.txt, caches b.txt (10B)
+
+            val stats = zip.cacheStats()
+            assertEquals(1L, stats.hits)
+            assertEquals(2L, stats.misses)
+            assertEquals(1L, stats.evictions)
+            assertEquals(1, stats.entryCount)
+            assertEquals(10L, stats.currentBytes)
+            assertEquals(12L, stats.maxBytes)
+            assertTrue(stats.hitRate in 0.3..0.4)
+        } finally {
+            zip.close()
+        }
     }
 }
 

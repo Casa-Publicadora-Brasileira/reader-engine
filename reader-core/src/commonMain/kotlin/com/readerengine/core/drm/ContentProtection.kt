@@ -1,6 +1,7 @@
 package com.readerengine.core.drm
 
 import com.readerengine.core.model.ResourceProvider
+import com.readerengine.core.observability.ZipCacheStats
 import com.readerengine.core.parser.XmlTokenizer
 import com.readerengine.core.provider.normalizeHref
 import kotlinx.serialization.Serializable
@@ -264,6 +265,8 @@ public class DecryptingResourceProvider(
         }
         return delegate.readRange(clean, offset, byteCount)
     }
+
+    override fun cacheStats(): ZipCacheStats? = delegate.cacheStats()
 
     override fun close() {
         delegate.close()

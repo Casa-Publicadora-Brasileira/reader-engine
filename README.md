@@ -40,6 +40,7 @@ Construir um leitor EPUB/HPUB corporativo em múltiplas plataformas costuma exig
 | **Busca Full-Text com Foco Visual & Índice em Disco** | `BookSearchEngine` realiza busca *case-insensitive* e insensível a diacríticos (`foldDiacritics` 1-para-1) com navegação e destaque visual automático no DOM (`NavigateToSearchResult` / `.reader-search-match`) e persistência do índice em disco (`saveSearchIndex` / `loadSearchIndex`). |
 | **Navegação Editorial, Backstack e Telemetria** | Histórico de navegação (`NavigateBack` / `NavigateForward`), `Publication.positions()`, `page-list` (paginação impressa), `landmarks`, notas de rodapé em popup (`noteref`), estatísticas (`ReadingStats`), preview de capítulos (`getPagePreview`) e extração de capa (`readCoverBytes`). |
 | **Destaques, Caderno de Estudos, Citações e Snapshot** | Persistência de *Highlights* (com notas), *Bookmarks*, formulários `<input>`/`<textarea>`/`<select>`, exportação do **Caderno de Estudos** (`exportStudyNotebookMarkdown`, `exportStudyNotebookHtml`), citações bibliográficas (`formatQuoteCitation`) e backup JSON único (`exportBookStateSnapshot`) com compressão `gz:<base64>`. |
+| **Observabilidade & Diagnóstico (`ReaderObserver`)** | SPI plugável em `commonMain` (Logs estruturados, Spans monotônicos `book.open` / `render_document` / `search.query`, Métricas de cache LRU `ZipCacheStats`, captura de erros JS da WebView `window.onerror` / `unhandledrejection` e `session.exportDiagnosticsJson()`), pronto para Android Logcat/Crashlytics, iOS OSLog/Sentry e JVM SLF4J/OpenTelemetry. |
 | **API Explícita e Ergonomia iOS** | Compilado com `explicitApi()` e equipado com `FlowSubscription` (`watchState`, `watchEvents`, `watchUiEffects`) para consumo direto em Swift sem gerenciar Coroutines. |
 
 ---
@@ -115,13 +116,13 @@ No `build.gradle.kts` do módulo consumidor:
 ```kotlin
 dependencies {
     // Em um projeto Kotlin Multiplatform (commonMain):
-    implementation("com.readerengine:reader-core:0.8.0")
+    implementation("com.readerengine:reader-core:0.9.0")
 
     // Ou diretamente em um projeto Android puro:
-    implementation("com.readerengine:reader-core-android:0.8.0")
+    implementation("com.readerengine:reader-core-android:0.9.0")
 
     // Ou em um projeto JVM puro (Desktop / Backend):
-    implementation("com.readerengine:reader-core-jvm:0.8.0")
+    implementation("com.readerengine:reader-core-jvm:0.9.0")
 }
 ```
 
@@ -162,7 +163,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.readerengine:reader-core-android:0.8.0")
+    implementation("com.readerengine:reader-core-android:0.9.0")
 }
 ```
 
@@ -175,7 +176,7 @@ O pipeline de release gera o binário universal **`ReaderCore.xcframework.zip`**
 #### Opção A: Via `Package.swift` (Swift Package Manager)
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Casa-Publicadora-Brasileira/reader-engine.git", from: "0.8.0")
+    .package(url: "https://github.com/Casa-Publicadora-Brasileira/reader-engine.git", from: "0.9.0")
 ]
 ```
 

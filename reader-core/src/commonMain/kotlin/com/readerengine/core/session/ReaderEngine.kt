@@ -2,6 +2,11 @@ package com.readerengine.core.session
 
 import com.readerengine.core.drm.ContentDecryptor
 import com.readerengine.core.model.InitialBookState
+import com.readerengine.core.observability.ReaderLogLevel
+import com.readerengine.core.observability.ReaderLogRecord
+import com.readerengine.core.observability.ReaderMetric
+import com.readerengine.core.observability.ReaderObservability
+import com.readerengine.core.observability.ReaderObserver
 import com.readerengine.core.parser.FormatParser
 import com.readerengine.core.parser.ParserRegistry
 import com.readerengine.core.parser.Source
@@ -15,13 +20,25 @@ import okio.Path
  *
  * Suporta abertura tanto a partir de `ByteArray` em memória quanto por streaming direto do disco
  * (`okio.Path` + `okio.FileSystem`) para arquivos grandes (> 100 MB), além de gancho extensível
- * de decriptografia/DRM ([ContentDecryptor]).
+ * de decriptografia/DRM ([ContentDecryptor]) e observabilidade plugável ([ReaderObserver]).
  */
 public class ReaderEngine(
     private val registry: ParserRegistry = ParserRegistry.default(),
     private val zipLimits: ZipLimits = ZipLimits(),
     private val customDecryptor: ContentDecryptor? = null,
+    private val observer: ReaderObserver = ReaderObserver.NoOp,
 ) {
+    public constructor(
+        registry: ParserRegistry,
+        zipLimits: ZipLimits,
+        customDecryptor: ContentDecryptor?,
+    ) : this(
+        registry = registry,
+        zipLimits = zipLimits,
+        customDecryptor = customDecryptor,
+        observer = ReaderObserver.NoOp,
+    )
+
     public fun registerParser(parser: FormatParser): ReaderEngine {
         registry.register(parser)
         return this
@@ -49,8 +66,7 @@ public class ReaderEngine(
             zipLimits = zipLimits,
             customDecryptor = customDecryptor,
         )
-        val publication = registry.open(source)
-        return ReaderSession(publication = publication, initialBookState = initialState)
+        return openSource(source = source, initialState = initialState, mode = "memory")
     }
 
     /**
@@ -80,7 +96,43 @@ public class ReaderEngine(
             zipLimits = zipLimits,
             customDecryptor = customDecryptor,
         )
-        val publication = registry.open(source)
-        return ReaderSession(publication = publication, initialBookState = initialState)
+        return openSource(source = source, initialState = initialState, mode = "disk")
+    }
+
+    private fun openSource(
+        source: Source,
+        initialState: InitialBookState,
+        mode: String,
+    ): ReaderSession {
+        val ext = source.extension().orEmpty()
+        val attrs = mapOf("name" to source.name, "extension" to ext, "mode" to mode)
+        val publication = ReaderObservability.measureSpan(
+            observer = observer,
+            name = "book.open",
+            attributes = attrs,
+        ) {
+            registry.open(source)
+        }
+        observer.onMetric(
+            ReaderMetric(
+                name = "book.spine_pages",
+                value = publication.spine.size.toDouble(),
+                unit = "pages",
+                attributes = mapOf("extension" to ext, "mode" to mode),
+            ),
+        )
+        observer.onLog(
+            ReaderLogRecord(
+                level = ReaderLogLevel.INFO,
+                tag = "ReaderEngine",
+                message = "Publicação aberta: '${publication.metadata.title.ifBlank { source.name }}' (${publication.spine.size} páginas)",
+                attributes = attrs + ("spineLen" to publication.spine.size.toString()),
+            ),
+        )
+        return ReaderSession(
+            publication = publication,
+            initialBookState = initialState,
+            observer = observer,
+        )
     }
 }

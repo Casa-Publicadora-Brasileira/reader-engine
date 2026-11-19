@@ -78,11 +78,11 @@
         {
           "name": "reader-core-kotlin-0.7.0-sources.jar",
           "url": "reader-core-0.7.0-sources.jar",
-          "size": 72767,
-          "sha512": "c723af73e540e0a642916d3d49bd3f28372aaaf7cb0b59d20652e51c8029e2af1d57f26bc8ed18ced8e890e53f55c051cfa7933dd3910b63049015d7cf0b96b4",
-          "sha256": "bd4d255f38c6353115525ababd94cb550bc87c0d40ffaca462f92ceaadcd06d4",
-          "sha1": "6ae6a0f0630601c259568520b2c3283598751285",
-          "md5": "0fe8987b75b474067f1402db913317c3"
+          "size": 72769,
+          "sha512": "2b06e00fd5bc3880a85f8f753de18a564a528c5e62bd800e02a19f1aad145177f4c6268bc6f0776c1c4a023fa49c40a27f210f5e2c26168370c50f01389b142f",
+          "sha256": "46347db6803c22735ec9d8dcd2234301e59ef793fabc55d9d328243c2e5d5d01",
+          "sha1": "36a4c07f55d49897dbe5d9c285e0e755745d18a7",
+          "md5": "62a56a5983f93ab8a0687a50f312cf25"
         }
       ]
     },

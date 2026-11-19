@@ -15,6 +15,7 @@ Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
   - Leitura dos registros **ZIP64 EOCD Locator** (`0x07064b50`), **ZIP64 EOCD Record** (`0x06064b50`) e **ZIP64 Extended Information Extra Field** (`0x0001`) para offsets, tamanhos e contagens de entrada 64-bit, mantendo compatibilidade com `read()`, `size()` e `readRange()`.
 
 ### Fixed
+- **`ReaderJsBridge` e `EpubParser`**: Removidas sobrecargas conflitantes (`goToSubPageCommand` e `parseNcxPageList`) remanescentes de conflito de merge no Git.
 - **`ParserRegistry.open(source)`**: preservados `encryptedResources`, `pageList`, `landmarks` e `mediaOverlays` ao preencher `identifier = source.sha256DocumentId()` para publicações sem identificador explícito.
 
 ## [0.6.0] - 2026-11-19

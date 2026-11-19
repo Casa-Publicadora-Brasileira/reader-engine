@@ -11,6 +11,8 @@ import com.readerengine.core.model.HighlightItem
 import com.readerengine.core.model.HighlightStyle
 import com.readerengine.core.model.InitialBookState
 import com.readerengine.core.model.Locator
+import com.readerengine.core.model.MediaOverlay
+import com.readerengine.core.model.MediaOverlayClip
 import com.readerengine.core.model.Metadata
 import com.readerengine.core.model.PageFormState
 import com.readerengine.core.model.PagePreview
@@ -23,7 +25,9 @@ import com.readerengine.core.model.ReadingStats
 import com.readerengine.core.model.SearchResult
 import com.readerengine.core.model.TocEntry
 import com.readerengine.core.model.TocItem
+import com.readerengine.core.model.TtsSentence
 import com.readerengine.core.parser.XmlEntities
+import com.readerengine.core.platform.defaultFileSystem
 import com.readerengine.core.provider.normalizeHref
 import com.readerengine.core.search.BookSearchEngine
 import com.readerengine.core.theme.ThemeTokens
@@ -40,6 +44,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import okio.FileSystem
+import okio.Path
 import kotlin.math.abs
 import kotlin.math.ceil
 
@@ -199,6 +205,12 @@ public sealed interface ReaderCommand {
     public data class ToggleBookmark(val label: String? = null, val timestampEpochMs: Long = 0L) : ReaderCommand
     public data class RemoveBookmark(val bookmarkId: String) : ReaderCommand
     public data class GoToBookmark(val bookmarkId: String) : ReaderCommand
+    public data class HighlightTtsSentence(
+        val sentenceIndex: Int,
+        val text: String? = null,
+        val elementId: String? = null,
+    ) : ReaderCommand
+    public data object ClearTtsHighlight : ReaderCommand
 }
 
 public class ReaderSession(
@@ -223,7 +235,13 @@ public class ReaderSession(
         val href = publication.spine[idx]
         val cleanText = runCatching {
             publication.cachedPlainText(href) { raw ->
-                raw.replace(Regex("""<[^>]+>"""), " ").replace(Regex("""\s+"""), " ").trim()
+                raw.replace(Regex("""<head\b[^>]*>[\s\S]*?</head>""", RegexOption.IGNORE_CASE), " ")
+                    .replace(Regex("""<script\b[^>]*>[\s\S]*?</script>""", RegexOption.IGNORE_CASE), " ")
+                    .replace(Regex("""<style\b[^>]*>[\s\S]*?</style>""", RegexOption.IGNORE_CASE), " ")
+                    .replace(Regex("""<[^>]+>"""), " ")
+                    .let { XmlEntities.decode(it) }
+                    .replace(Regex("""\s+"""), " ")
+                    .trim()
             }
         }.getOrDefault("")
         if (cleanText.isBlank()) 0 else cleanText.split(Regex("""\s+""")).count { it.isNotBlank() }
@@ -374,6 +392,91 @@ public class ReaderSession(
             strings = strings,
         )
 
+    /** Exporta o índice de busca textual de todos os capítulos como JSON serializado. */
+    public fun exportSearchIndexJson(): String =
+        BookSearchEngine.exportIndexJson(publication = publication, documentId = documentId)
+
+    /** Restaura o índice de busca textual a partir de um JSON previamente exportado. */
+    public fun importSearchIndexJson(rawJson: String): Boolean =
+        BookSearchEngine.importIndexJson(publication = publication, rawJson = rawJson)
+
+    /** Salva o índice de busca em disco (`Okio Path`) utilizando o `FileSystem` padrão da plataforma. */
+    public fun saveSearchIndex(path: Path) {
+        saveSearchIndex(path = path, fileSystem = defaultFileSystem)
+    }
+
+    /** Salva o índice de busca em disco usando o `FileSystem` especificado. */
+    public fun saveSearchIndex(path: Path, fileSystem: FileSystem) {
+        BookSearchEngine.saveIndexToDisk(
+            publication = publication,
+            documentId = documentId,
+            path = path,
+            fileSystem = fileSystem,
+        )
+    }
+
+    /** Carrega o índice de busca do disco (`Okio Path`) utilizando o `FileSystem` padrão da plataforma. */
+    public fun loadSearchIndex(path: Path): Boolean =
+        loadSearchIndex(path = path, fileSystem = defaultFileSystem)
+
+    /** Carrega o índice de busca do disco usando o `FileSystem` especificado. */
+    public fun loadSearchIndex(path: Path, fileSystem: FileSystem): Boolean =
+        BookSearchEngine.loadIndexFromDisk(
+            publication = publication,
+            path = path,
+            fileSystem = fileSystem,
+        )
+
+    /**
+     * Extrai as sentenças do capítulo atual para leitura em voz alta (TTS — Android `TextToSpeech`
+     * / iOS `AVSpeechSynthesizer`).
+     */
+    public fun currentChapterSentences(): List<TtsSentence> =
+        chapterSentences(pageIndex = _state.value.pageIndex)
+
+    /** Extrai as sentenças de um capítulo específico da spine para leitura em voz alta (TTS). */
+    public fun chapterSentences(pageIndex: Int): List<TtsSentence> =
+        BookSearchEngine.extractSentences(publication = publication, pageIndex = pageIndex)
+
+    /** Retorna todos os EPUB 3 Media Overlays (`.smil`) declarados na publicação. */
+    public fun mediaOverlays(): List<MediaOverlay> = publication.mediaOverlays
+
+    /** Retorna os clipes sincronizados `<par>` de áudio/texto associados ao capítulo atual. */
+    public fun currentChapterMediaOverlayClips(): List<MediaOverlayClip> =
+        mediaOverlayClips(pageIndex = _state.value.pageIndex)
+
+    /** Retorna os clipes sincronizados `<par>` de áudio/texto associados ao capítulo `pageIndex`. */
+    public fun mediaOverlayClips(pageIndex: Int): List<MediaOverlayClip> {
+        val href = publication.spine.getOrNull(pageIndex)?.let(::normalizeHref) ?: return emptyList()
+        return publication.mediaOverlays.flatMap { overlay ->
+            overlay.clips.filter { clip ->
+                val clipHref = normalizeHref(clip.textHref)
+                clipHref == href || href.endsWith("/$clipHref") || clipHref.endsWith("/$href")
+            }
+        }
+    }
+
+    /**
+     * Localiza o clipe de Media Overlay ativo para o arquivo `audioHref` e timestamp `positionSeconds`,
+     * permitindo destacar automaticamente o elemento correspondente no DOM durante a reprodução do áudio.
+     */
+    public fun findMediaOverlayClipAt(audioHref: String, positionSeconds: Double): MediaOverlayClip? {
+        val cleanAudio = normalizeHref(audioHref)
+        val pos = positionSeconds.coerceAtLeast(0.0)
+        return publication.mediaOverlays
+            .asSequence()
+            .flatMap { it.clips.asSequence() }
+            .firstOrNull { clip ->
+                val clipAudio = normalizeHref(clip.audioHref)
+                val audioMatches = clipAudio == cleanAudio ||
+                    clipAudio.endsWith("/$cleanAudio") ||
+                    cleanAudio.endsWith("/$clipAudio")
+                val inBounds = pos >= clip.clipBeginSeconds &&
+                    (clip.clipEndSeconds == null || pos < clip.clipEndSeconds)
+                audioMatches && inBounds
+            }
+    }
+
     /** Exporta a lista de marcadores (Bookmarks) como JSON. */
     public fun exportBookmarksJson(): String =
         json.encodeToString(ListSerializer(Bookmark.serializer()), bookmarks)
@@ -456,8 +559,7 @@ public class ReaderSession(
             }
 
             is ReaderCommand.TriggerAction -> {
-                _events.tryEmit(ReaderEvent.ActionTriggered(command.action, command.payload))
-                _uiEffects.tryEmit(ReaderUiEffect.CustomAction(command.action, command.payload))
+                handleActionInternal(command.action, command.payload)
             }
 
             is ReaderCommand.UpdateScroll -> {
@@ -629,6 +731,30 @@ public class ReaderSession(
                 if (target != null) {
                     navigateToPageInternal(target.pageIndex, scrollY = target.scrollY)
                 }
+            }
+
+            is ReaderCommand.HighlightTtsSentence -> {
+                val resolvedText = command.text
+                    ?: if (command.elementId.isNullOrBlank()) {
+                        currentChapterSentences().getOrNull(command.sentenceIndex)?.text
+                    } else {
+                        null
+                    }
+                _uiEffects.tryEmit(
+                    ReaderUiEffect.EvaluateJs(
+                        ReaderJsBridge.highlightTtsSentenceCommand(
+                            sentenceIndex = command.sentenceIndex,
+                            text = resolvedText,
+                            elementId = command.elementId,
+                        ),
+                    ),
+                )
+            }
+
+            ReaderCommand.ClearTtsHighlight -> {
+                _uiEffects.tryEmit(
+                    ReaderUiEffect.EvaluateJs(ReaderJsBridge.SCRIPT_CLEAR_TTS_HIGHLIGHT),
+                )
             }
         }
 
@@ -832,8 +958,7 @@ public class ReaderSession(
             }
 
             is InterceptedUrl.Action -> {
-                _events.tryEmit(ReaderEvent.ActionTriggered(intercepted.action, intercepted.payload))
-                _uiEffects.tryEmit(ReaderUiEffect.CustomAction(intercepted.action, intercepted.payload))
+                handleActionInternal(intercepted.action, intercepted.payload)
                 true
             }
 
@@ -913,6 +1038,7 @@ public class ReaderSession(
             layout = publication.metadata.layout,
             direction = publication.metadata.pageProgressionDirection,
             spread = publication.metadata.spread,
+            initialSubPage = if (current.readingMode == ReadingMode.PAGINATED) current.currentSubPage else 0,
         )
         return RenderedDocument(
             html = html,
@@ -944,7 +1070,8 @@ public class ReaderSession(
             ?: strings.formatPageLabel(pageIndex + 1)
         val plainText = runCatching {
             publication.cachedPlainText(href) { raw ->
-                raw.replace(Regex("""<script\b[^>]*>[\s\S]*?</script>""", RegexOption.IGNORE_CASE), " ")
+                raw.replace(Regex("""<head\b[^>]*>[\s\S]*?</head>""", RegexOption.IGNORE_CASE), " ")
+                    .replace(Regex("""<script\b[^>]*>[\s\S]*?</script>""", RegexOption.IGNORE_CASE), " ")
                     .replace(Regex("""<style\b[^>]*>[\s\S]*?</style>""", RegexOption.IGNORE_CASE), " ")
                     .replace(Regex("""<[^>]+>"""), " ")
                     .let { XmlEntities.decode(it) }
@@ -952,11 +1079,19 @@ public class ReaderSession(
                     .trim()
             }
         }.getOrDefault("")
-        val limit = maxExcerptChars.coerceAtLeast(16)
-        val excerpt = if (plainText.length <= limit) {
-            plainText
+        val cleanBody = if (title.isNotBlank() &&
+            plainText.startsWith(title, ignoreCase = true) &&
+            plainText.length > title.length
+        ) {
+            plainText.substring(title.length).trim()
         } else {
-            plainText.substring(0, limit).trimEnd() + "…"
+            plainText
+        }
+        val limit = maxExcerptChars.coerceAtLeast(16)
+        val excerpt = if (cleanBody.length <= limit) {
+            cleanBody
+        } else {
+            cleanBody.substring(0, limit).trimEnd() + "…"
         }
         return PagePreview(
             pageIndex = pageIndex,
@@ -1255,6 +1390,39 @@ public class ReaderSession(
         _events.tryEmit(ReaderEvent.ProgressUpdated(newProgress))
         if (scrollY > 0) {
             _uiEffects.tryEmit(ReaderUiEffect.ScrollToY(scrollYPx = scrollY))
+        }
+    }
+
+    private fun handleActionInternal(action: String, payload: String?) {
+        val current = _state.value
+        val lastIndex = (current.spineLen - 1).coerceAtLeast(0)
+        when (action) {
+            ReaderJsBridge.ACTION_SUB_PAGE_CHANGED -> {
+                ReaderJsBridge.parseSubPageState(payload)?.let { (sub, total) ->
+                    onSubPageReported(currentSubPage = sub, totalSubPages = total)
+                }
+            }
+
+            ReaderJsBridge.ACTION_GESTURE_NEXT_PAGE -> {
+                val nextIdx = (current.pageIndex + 1).coerceAtMost(lastIndex)
+                if (nextIdx != current.pageIndex) {
+                    navigateToPageInternal(nextIdx, scrollY = 0, targetSubPage = 0)
+                }
+                _events.tryEmit(ReaderEvent.ActionTriggered(action, payload))
+            }
+
+            ReaderJsBridge.ACTION_GESTURE_PREV_PAGE -> {
+                val prevIdx = (current.pageIndex - 1).coerceAtLeast(0)
+                if (prevIdx != current.pageIndex) {
+                    navigateToPageInternal(prevIdx, scrollY = 0, targetSubPage = 0)
+                }
+                _events.tryEmit(ReaderEvent.ActionTriggered(action, payload))
+            }
+
+            else -> {
+                _events.tryEmit(ReaderEvent.ActionTriggered(action, payload))
+                _uiEffects.tryEmit(ReaderUiEffect.CustomAction(action, payload))
+            }
         }
     }
 

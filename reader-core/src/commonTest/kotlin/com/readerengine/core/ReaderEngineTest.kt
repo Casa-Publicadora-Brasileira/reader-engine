@@ -4,6 +4,7 @@ import com.readerengine.core.bridge.InterceptedUrl
 import com.readerengine.core.bridge.PayloadCodec
 import com.readerengine.core.bridge.ReaderJsBridge
 import com.readerengine.core.drm.ContentDecryptor
+import com.readerengine.core.drm.DecryptingResourceProvider
 import com.readerengine.core.drm.EncryptedResourceInfo
 import com.readerengine.core.drm.EpubEncryptionParser
 import com.readerengine.core.drm.StandardEpubFontDeobfuscator
@@ -22,9 +23,15 @@ import com.readerengine.core.model.RenditionLayout
 import com.readerengine.core.model.RenditionOrientation
 import com.readerengine.core.model.RenditionSpread
 import com.readerengine.core.model.Resource
+import com.readerengine.core.model.ResourceProvider
+import com.readerengine.core.parser.CbzParser
 import com.readerengine.core.parser.EpubParser
 import com.readerengine.core.parser.HpubParser
+import com.readerengine.core.parser.SmilParser
+import com.readerengine.core.parser.Source
 import com.readerengine.core.parser.XmlEntities
+import com.readerengine.core.parser.XmlToken
+import com.readerengine.core.parser.XmlTokenizer
 import com.readerengine.core.provider.MemoryResourceProvider
 import com.readerengine.core.provider.ZipLimits
 import com.readerengine.core.provider.ZipResourceProvider
@@ -41,6 +48,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import okio.Buffer
 import okio.FileSystem
 import okio.Path
 import okio.Path.Companion.toPath
@@ -911,6 +919,8 @@ class ReaderEngineTest {
             layout = RenditionLayout.REFLOWABLE,
             spread = RenditionSpread.LANDSCAPE,
         )
+        assertTrue(spreadCss.contains("html.reader-paginated{height:var(--reader-page-height,560px) !important;min-height:var(--reader-page-height,560px) !important;max-height:var(--reader-page-height,560px) !important;width:100% !important;overflow:hidden !important;"))
+        assertTrue(spreadCss.contains("html.reader-paginated body{height:var(--reader-page-height,560px) !important;min-height:var(--reader-page-height,560px) !important;max-height:var(--reader-page-height,560px) !important;width:100% !important;overflow:visible !important;"))
         assertTrue(spreadCss.contains("html.reader-paginated body{column-width:calc(100vw - 64px);column-gap:64px;column-fill:auto;padding:16px 32px !important;}"))
         assertTrue(spreadCss.contains("@media (orientation: landscape){html.reader-paginated body{column-count:2;column-width:auto;column-gap:64px;}}"))
 
@@ -922,6 +932,7 @@ class ReaderEngineTest {
             isNightMode = true,
         )
         assertTrue(injectedBareHtml.contains("<html class=\"nightMode\">"))
+        assertTrue(injectedBareHtml.contains("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"))
 
         // Inject into <html lang="pt"> tag preserving existing attributes
         val injectedWithAttr = ReaderJsBridge.injectThemeAndBridge(
@@ -972,7 +983,7 @@ class ReaderEngineTest {
         val chap1Words = (1..250).joinToString(" ") { "palavra$it" }
         val chap2Words = (1..200).joinToString(" ") { "termo$it" }
         val chap1Html = """
-            <html><body>
+            <html><head><title>3MensAngelicas</title></head><body>
               <p>$chap1Words <a href="#fn1" epub:type="noteref">1</a></p>
               <aside id="fn1" epub:type="footnote"><p>Nota explicativa sobre Zaqueu.</p></aside>
             </body></html>
@@ -1028,6 +1039,7 @@ class ReaderEngineTest {
         val preview0 = session.getPagePreview(0)
         assertNotNull(preview0)
         assertEquals("Cap 1", preview0.title)
+        assertFalse(preview0.excerpt.contains("3MensAngelicas"))
         assertTrue(preview0.excerpt.startsWith("palavra1"))
         val preview1 = session.pagePreview(1)
         assertNotNull(preview1)
@@ -1037,6 +1049,585 @@ class ReaderEngineTest {
 
         effectSub.cancel()
         session.close()
+    }
+
+    @Test
+    fun gestureDetectionScriptAndSessionGestureNavigationActions() = runTest {
+        val pub = Publication(
+            metadata = Metadata(title = "Gestos"),
+            spine = listOf("ch1.xhtml", "ch2.xhtml", "ch3.xhtml"),
+            resources = listOf(
+                Resource("ch1.xhtml", "application/xhtml+xml"),
+                Resource("ch2.xhtml", "application/xhtml+xml"),
+                Resource("ch3.xhtml", "application/xhtml+xml"),
+            ),
+            toc = emptyList(),
+            provider = MemoryResourceProvider(
+                mapOf(
+                    "ch1.xhtml" to "<html><body><p>Capítulo 1</p></body></html>".encodeToByteArray(),
+                    "ch2.xhtml" to "<html><body><p>Capítulo 2</p></body></html>".encodeToByteArray(),
+                    "ch3.xhtml" to "<html><body><p>Capítulo 3</p></body></html>".encodeToByteArray(),
+                ),
+            ),
+        )
+
+        val injectedPaginated = ReaderJsBridge.injectThemeAndBridge(
+            rawHtml = "<html><head></head><body><p>Olá</p></body></html>",
+            theme = ThemeTokens.material3(),
+            fontScale = 1.0f,
+            fontFamily = "Default",
+            fontSizeClass = "",
+            isNightMode = false,
+            readingMode = ReadingMode.PAGINATED,
+            layout = RenditionLayout.REFLOWABLE,
+            direction = PageProgressionDirection.DEFAULT,
+            spread = RenditionSpread.AUTO,
+            initialSubPage = 2,
+        )
+        assertTrue(injectedPaginated.contains("data-reader-subpage=\"2\""))
+        assertTrue(injectedPaginated.contains("handlePageTurnGesture"))
+        assertTrue(injectedPaginated.contains("__readerGestureHooked"))
+
+        val session = ReaderSession(
+            publication = pub,
+            initialBookState = InitialBookState(
+                readingMode = ReadingMode.PAGINATED,
+                initialPageIndex = 0,
+                initialSubPage = 1,
+            ),
+        )
+
+        val events = mutableListOf<ReaderEvent>()
+        val effects = mutableListOf<ReaderUiEffect>()
+        val eventSub = session.watchEvents { events.add(it) }
+        val effectSub = session.watchUiEffects { effects.add(it) }
+
+        assertTrue(session.currentHtml().contains("data-reader-subpage=\"1\""))
+
+        // Sync sub-page via action:// URL fallback
+        val subHandled = session.handleUrlNavigation(
+            "action://${ReaderJsBridge.ACTION_SUB_PAGE_CHANGED}?q=%7B%22subPage%22%3A2%2C%22totalSubPages%22%3A4%7D",
+        )
+        assertTrue(subHandled)
+        assertEquals(2, session.state.value.currentSubPage)
+        assertEquals(4, session.state.value.totalSubPages)
+
+        // Advance chapter via swipe gesture (URL action://)
+        assertTrue(session.handleUrlNavigation("action://${ReaderJsBridge.ACTION_GESTURE_NEXT_PAGE}"))
+        assertEquals(1, session.state.value.pageIndex)
+        assertEquals(0, session.state.value.currentSubPage)
+        assertEquals(ReaderJsBridge.ACTION_GESTURE_NEXT_PAGE, events.filterIsInstance<ReaderEvent.ActionTriggered>().last().action)
+
+        // Advance again via JS bridge TriggerAction command
+        session.dispatch(ReaderCommand.TriggerAction(ReaderJsBridge.ACTION_GESTURE_NEXT_PAGE, """{"source":"tap"}"""))
+        assertEquals(2, session.state.value.pageIndex)
+        assertEquals(0, session.state.value.currentSubPage)
+
+        // Go back chapter via prev gesture
+        assertTrue(session.handleUrlNavigation("action://${ReaderJsBridge.ACTION_GESTURE_PREV_PAGE}"))
+        assertEquals(1, session.state.value.pageIndex)
+        session.dispatch(ReaderCommand.TriggerAction(ReaderJsBridge.ACTION_GESTURE_PREV_PAGE, """{"source":"swipe"}"""))
+        assertEquals(0, session.state.value.pageIndex)
+
+        // Boundary check: prev at page 0 stays at page 0 without crashing
+        assertTrue(session.handleUrlNavigation("action://${ReaderJsBridge.ACTION_GESTURE_PREV_PAGE}"))
+        assertEquals(0, session.state.value.pageIndex)
+
+        // Center tap emits CustomAction effect for host toolbar toggle
+        val customEffectsBefore = effects.filterIsInstance<ReaderUiEffect.CustomAction>().size
+        assertTrue(session.handleUrlNavigation("action://${ReaderJsBridge.ACTION_GESTURE_TAP_CENTER}?q=%7B%22x%22%3A200%2C%22y%22%3A300%7D"))
+        val customEffects = effects.filterIsInstance<ReaderUiEffect.CustomAction>()
+        assertEquals(customEffectsBefore + 1, customEffects.size)
+        assertEquals(ReaderJsBridge.ACTION_GESTURE_TAP_CENTER, customEffects.last().action)
+
+        eventSub.cancel()
+        effectSub.cancel()
+        session.close()
+    }
+
+    @Test
+    fun ttsSentencesMediaOverlaysDrmRangeStreamingAndPersistentSearchIndex() = runTest {
+        // 1. SMIL 3.0 Media Overlays parser + clock value parsing
+        assertEquals(83.45, SmilParser.parseClockValue("0:01:23.450"))
+        assertEquals(83.5, SmilParser.parseClockValue("01:23.5"))
+        assertEquals(12.5, SmilParser.parseClockValue("12.5s"))
+        assertEquals(1.25, SmilParser.parseClockValue("1250ms"))
+        assertEquals(120.0, SmilParser.parseClockValue("2min"))
+        assertEquals(3600.0, SmilParser.parseClockValue("1h"))
+
+        val smilXml = """
+            <smil xmlns="http://www.w3.org/ns/SMIL" version="3.0">
+              <body>
+                <seq>
+                  <par id="par1">
+                    <text src="../text/ch1.xhtml#p1"/>
+                    <audio src="../audio/ch1.mp3" clipBegin="0:00:00.000" clipEnd="0:00:04.500"/>
+                  </par>
+                  <par id="par2">
+                    <text src="../text/ch1.xhtml#p2"/>
+                    <audio src="../audio/ch1.mp3" clipBegin="4.5s" clipEnd="9.25s"/>
+                  </par>
+                </seq>
+              </body>
+            </smil>
+        """.trimIndent()
+        val overlay = SmilParser.parse(smilXml, "OEBPS/smil/ch1.smil")
+        assertEquals("OEBPS/smil/ch1.smil", overlay.href)
+        assertEquals(2, overlay.clips.size)
+        assertEquals("OEBPS/text/ch1.xhtml", overlay.clips[0].textHref)
+        assertEquals("p1", overlay.clips[0].textFragmentId)
+        assertEquals("OEBPS/audio/ch1.mp3", overlay.clips[0].audioHref)
+        assertEquals(0.0, overlay.clips[0].clipBeginSeconds)
+        assertEquals(4.5, overlay.clips[0].clipEndSeconds)
+
+        // 2. TTS sentences + HighlightTtsSentence / ClearTtsHighlight + Media Overlays lookup in ReaderSession
+        val ch1Html = """
+            <html><head><title>Cap 1</title></head><body>
+              <p id="p1">No princípio era o Verbo. A luz brilha nas trevas!</p>
+              <p id="p2">Você compreende esta mensagem?</p>
+            </body></html>
+        """.trimIndent()
+        val ch2Html = "<html><body><p>Capítulo dois com palavra especial sabedoria.</p></body></html>"
+
+        val pub = Publication(
+            metadata = Metadata(title = "Áudio e TTS"),
+            spine = listOf("OEBPS/text/ch1.xhtml", "OEBPS/text/ch2.xhtml"),
+            resources = listOf(
+                Resource("OEBPS/text/ch1.xhtml", "application/xhtml+xml"),
+                Resource("OEBPS/text/ch2.xhtml", "application/xhtml+xml"),
+                Resource("OEBPS/smil/ch1.smil", "application/smil+xml"),
+            ),
+            toc = emptyList(),
+            provider = MemoryResourceProvider(
+                mapOf(
+                    "OEBPS/text/ch1.xhtml" to ch1Html.encodeToByteArray(),
+                    "OEBPS/text/ch2.xhtml" to ch2Html.encodeToByteArray(),
+                ),
+            ),
+            mediaOverlays = listOf(overlay),
+        )
+
+        val session = ReaderSession(pub)
+        val renderedHtml = session.currentHtml()
+        assertTrue(renderedHtml.contains(".reader-tts-active"))
+        assertTrue(renderedHtml.contains("highlightTtsSentence"))
+        assertTrue(renderedHtml.contains("clearTtsHighlight"))
+
+        val sentences = session.currentChapterSentences()
+        assertEquals(3, sentences.size)
+        assertEquals("No princípio era o Verbo.", sentences[0].text)
+        assertEquals("A luz brilha nas trevas!", sentences[1].text)
+        assertEquals("Você compreende esta mensagem?", sentences[2].text)
+
+        val chapterClips = session.currentChapterMediaOverlayClips()
+        assertEquals(2, chapterClips.size)
+        val activeClip = session.findMediaOverlayClipAt("OEBPS/audio/ch1.mp3", 5.2)
+        assertNotNull(activeClip)
+        assertEquals("p2", activeClip.textFragmentId)
+
+        val effects = mutableListOf<ReaderUiEffect>()
+        val effectSub = session.watchUiEffects { effects.add(it) }
+        session.dispatch(ReaderCommand.HighlightTtsSentence(sentenceIndex = 1))
+        val highlightEffect = effects.filterIsInstance<ReaderUiEffect.EvaluateJs>().last()
+        assertTrue(highlightEffect.script.contains("highlightTtsSentence(1,"))
+        assertTrue(highlightEffect.script.contains("A luz brilha nas trevas!"))
+
+        session.dispatch(ReaderCommand.HighlightTtsSentence(sentenceIndex = 0, elementId = "p2"))
+        val byIdEffect = effects.filterIsInstance<ReaderUiEffect.EvaluateJs>().last()
+        assertTrue(byIdEffect.script.contains("\"p2\""))
+
+        session.dispatch(ReaderCommand.ClearTtsHighlight)
+        val clearEffect = effects.filterIsInstance<ReaderUiEffect.EvaluateJs>().last()
+        assertTrue(clearEffect.script.contains("clearTtsHighlight"))
+
+        // 3. Persistent search index on disk (Okio FakeFileSystem)
+        val fakeFs = FakeFileSystem()
+        val indexPath = "/cache/search-index.json".toPath()
+        session.saveSearchIndex(indexPath, fakeFs)
+        assertTrue(fakeFs.exists(indexPath))
+
+        // Restore into a fresh Publication whose provider fails if read() is called (proves search uses disk index!)
+        val noReadProvider = object : ResourceProvider {
+            override fun read(href: String): ByteArray = error("Should not read raw HTML when search index is cached")
+        }
+        val restoredPub = Publication(
+            metadata = Metadata(title = "Áudio e TTS"),
+            spine = listOf("OEBPS/text/ch1.xhtml", "OEBPS/text/ch2.xhtml"),
+            resources = emptyList(),
+            toc = emptyList(),
+            provider = noReadProvider,
+        )
+        val restoredSession = ReaderSession(restoredPub)
+        assertTrue(restoredSession.loadSearchIndex(indexPath, fakeFs))
+        val searchHits = restoredSession.search("sabedoria")
+        assertEquals(1, searchHits.size)
+        assertEquals(1, searchHits[0].pageIndex)
+
+        // 4. Block/range decryption in DecryptingResourceProvider (GAP-02)
+        val pubId = "urn:uuid:12345678-1234-1234-1234-1234567890ab"
+        val originalBytes = ByteArray(2048) { (it % 251).toByte() }
+        val deobfuscator = StandardEpubFontDeobfuscator()
+        val idpfInfo = EncryptedResourceInfo(
+            uri = "OEBPS/fonts/sample.otf",
+            algorithm = StandardEpubFontDeobfuscator.ALGORITHM_IDPF_FONT,
+        )
+        val obfuscated = deobfuscator.decrypt("OEBPS/fonts/sample.otf", originalBytes, idpfInfo, pubId)
+
+        var fullReadCalls = 0
+        var rangeReadCalls = 0
+        val trackingProvider = object : ResourceProvider {
+            override fun read(href: String): ByteArray {
+                fullReadCalls++
+                return obfuscated
+            }
+
+            override fun size(href: String): Long = obfuscated.size.toLong()
+
+            override fun readRange(href: String, offset: Long, byteCount: Int): ByteArray {
+                rangeReadCalls++
+                val start = offset.toInt()
+                val end = (start + byteCount).coerceAtMost(obfuscated.size)
+                return obfuscated.copyOfRange(start, end)
+            }
+        }
+        val decryptingProvider = DecryptingResourceProvider(
+            delegate = trackingProvider,
+            encryptedResources = mapOf("OEBPS/fonts/sample.otf" to idpfInfo),
+            publicationIdentifier = pubId,
+            decryptor = deobfuscator,
+        )
+
+        // Slice crossing the 1040-byte IDPF boundary without full read()
+        val sliceCrossing = decryptingProvider.readRange("OEBPS/fonts/sample.otf", offset = 1000L, byteCount = 100)
+        assertContentEquals(originalBytes.copyOfRange(1000, 1100), sliceCrossing)
+        assertEquals(0, fullReadCalls)
+        assertEquals(1, rangeReadCalls)
+        assertEquals(2048L, decryptingProvider.size("OEBPS/fonts/sample.otf"))
+        assertEquals(0, fullReadCalls)
+
+        // Custom streaming DRM decryptRange (e.g. XOR-42 block stream)
+        val customEncryptedVideo = ByteArray(512) { ((it % 200) xor 42).toByte() }
+        val customInfo = EncryptedResourceInfo("OEBPS/video/clip.mp4", "custom:stream-xor42", originalLength = 512L)
+        var customFullReads = 0
+        val customRawProvider = object : ResourceProvider {
+            override fun read(href: String): ByteArray {
+                customFullReads++
+                return customEncryptedVideo
+            }
+
+            override fun readRange(href: String, offset: Long, byteCount: Int): ByteArray {
+                val start = offset.toInt()
+                val end = (start + byteCount).coerceAtMost(customEncryptedVideo.size)
+                return customEncryptedVideo.copyOfRange(start, end)
+            }
+        }
+        val streamingDecryptor = object : ContentDecryptor {
+            override fun decrypt(
+                href: String,
+                rawBytes: ByteArray,
+                encryptionInfo: EncryptedResourceInfo?,
+                publicationIdentifier: String?,
+            ): ByteArray = ByteArray(rawBytes.size) { i -> (rawBytes[i].toInt() xor 42).toByte() }
+
+            override fun decryptRange(
+                href: String,
+                offset: Long,
+                byteCount: Int,
+                rawRangeProvider: (rangeOffset: Long, rangeLength: Int) -> ByteArray,
+                encryptionInfo: EncryptedResourceInfo?,
+                publicationIdentifier: String?,
+            ): ByteArray {
+                val rawSlice = rawRangeProvider(offset, byteCount)
+                return ByteArray(rawSlice.size) { i -> (rawSlice[i].toInt() xor 42).toByte() }
+            }
+        }
+        val customDecryptingProvider = DecryptingResourceProvider(
+            delegate = customRawProvider,
+            encryptedResources = mapOf("OEBPS/video/clip.mp4" to customInfo),
+            publicationIdentifier = pubId,
+            decryptor = StandardEpubFontDeobfuscator(fallbackDecryptor = streamingDecryptor),
+        )
+        val videoChunk = customDecryptingProvider.readRange("OEBPS/video/clip.mp4", offset = 128L, byteCount = 64)
+        assertContentEquals(ByteArray(64) { ((128 + it) % 200).toByte() }, videoChunk)
+        assertEquals(0, customFullReads)
+
+        effectSub.cancel()
+        restoredSession.close()
+        session.close()
+    }
+
+    @Test
+    fun xmlTokenizerHandlesCommentsCdataMultilineAttributesAndReplacesRegexFragility() {
+        val complexOpf = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <!DOCTYPE package [
+              <!ENTITY nbsp "&#160;">
+            ]>
+            <!-- Comentário enganoso com tag falsa:
+              <dc:title>Título Falso</dc:title>
+              <meta property="rendition:layout">pre-paginated</meta>
+              <spine page-progression-direction="rtl">
+            -->
+            <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+              <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+                <dc:title><![CDATA[Livro <Ciên­cia> & Fé]]></dc:title>
+                <dc:creator
+                  id="c1"
+                  data-note="A > B">João Silva</dc:creator>
+                <dc:language>pt-BR</dc:language>
+                <dc:identifier id="uid">urn:isbn:9780000000001</dc:identifier>
+                <meta property="rendition:layout">reflowable</meta>
+                <meta property="rendition:spread">landscape</meta>
+              </metadata>
+              <spine page-progression-direction="ltr"/>
+            </package>
+        """.trimIndent()
+
+        val tokens = XmlTokenizer.tokenize(complexOpf)
+        assertTrue(tokens.any { it is XmlToken.CData && it.content == "Livro <Ciên­cia> & Fé" })
+        assertTrue(tokens.any { it is XmlToken.StartTag && it.localName == "creator" && it.attr("data-note") == "A > B" })
+
+        val parser = EpubParser()
+        val meta = parser.parseMetadata(complexOpf)
+        assertEquals("Livro <Ciên­cia> & Fé", meta.title)
+        assertEquals(listOf("João Silva"), meta.authors)
+        assertEquals("pt-BR", meta.language)
+        assertEquals("urn:isbn:9780000000001", meta.identifier)
+        assertEquals(RenditionLayout.REFLOWABLE, meta.layout)
+        assertEquals(RenditionSpread.LANDSCAPE, meta.spread)
+        assertEquals(PageProgressionDirection.LTR, meta.pageProgressionDirection)
+
+        val encryptionXml = """
+            <!-- <EncryptedData><EncryptionMethod Algorithm="fake"/><CipherReference URI="fake.bin"/></EncryptedData> -->
+            <encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container"
+                        xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+              <enc:EncryptedData>
+                <enc:EncryptionMethod
+                  Algorithm="http://www.idpf.org/2008/embedding"/>
+                <enc:CipherData>
+                  <enc:CipherReference URI="OEBPS/fonts/RealFont.otf"/>
+                </enc:CipherData>
+              </enc:EncryptedData>
+            </encryption>
+        """.trimIndent()
+        val encrypted = EpubEncryptionParser.parse(encryptionXml)
+        assertEquals(1, encrypted.size)
+        assertNotNull(encrypted["OEBPS/fonts/RealFont.otf"])
+
+        val smilXml = """
+            <!-- <par><text src="ignored.xhtml#x"/><audio src="ignored.mp3" clipBegin="0s"/></par> -->
+            <smil xmlns="http://www.w3.org/ns/SMIL" version="3.0">
+              <body><seq>
+                <par id="p1"><text src="ch1.xhtml#s1"/><audio src="ch1.mp3" clipBegin="0s" clipEnd="3.2s"/></par>
+              </seq></body>
+            </smil>
+        """.trimIndent()
+        val overlay = SmilParser.parse(smilXml, "OEBPS/ch1.smil")
+        assertEquals(1, overlay.clips.size)
+        assertEquals("OEBPS/ch1.xhtml", overlay.clips[0].textHref)
+    }
+
+    @Test
+    fun cbzParserOrdersPagesNaturallyReadsComicInfoAndServesImages() = runTest {
+        val page1Bytes = byteArrayOf(1, 2, 3, 4)
+        val page2Bytes = byteArrayOf(5, 6, 7, 8)
+        val page10Bytes = byteArrayOf(9, 10, 11, 12)
+        val comicInfoXml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <ComicInfo>
+              <Title>Aventura Espacial</Title>
+              <Writer>Ana Costa, Pedro Lima</Writer>
+              <LanguageISO>pt</LanguageISO>
+              <Manga>YesAndRightToLeft</Manga>
+            </ComicInfo>
+        """.trimIndent().encodeToByteArray()
+
+        val cbzBytes = buildStoredZip(
+            entries = linkedMapOf(
+                "__MACOSX/._page 1.jpg" to byteArrayOf(0, 0),
+                ".DS_Store" to byteArrayOf(0),
+                "Cap 1/page10.png" to page10Bytes,
+                "Cap 1/page2.jpg" to page2Bytes,
+                "Cap 1/page 1.jpg" to page1Bytes,
+                "ComicInfo.xml" to comicInfoXml,
+            ),
+            asZip64 = false,
+        )
+
+        assertTrue(CbzParser().canParse(Source.fromBytes("quadrinho.cbz", byteArrayOf())))
+        val session = engine.open(name = "quadrinho.cbz", bytes = cbzBytes)
+        val state = session.state.value
+        assertEquals("Aventura Espacial", state.metadata.title)
+        assertEquals(listOf("Ana Costa", "Pedro Lima"), state.metadata.authors)
+        assertEquals("pt", state.metadata.language)
+        assertEquals(RenditionLayout.PRE_PAGINATED, state.metadata.layout)
+        assertEquals(PageProgressionDirection.RTL, state.metadata.pageProgressionDirection)
+        assertEquals("Cap 1/page 1.jpg", state.metadata.coverHref)
+        assertEquals(3, state.spineLen)
+        assertContentEquals(page1Bytes, session.readCoverBytes())
+
+        // Page 0 -> "Cap 1/page 1.jpg" (natural sort places 1 < 2 < 10)
+        val page0Html = session.currentHtml()
+        assertTrue(page0Html.contains("Cap%201/page%201.jpg"))
+        assertContentEquals(page1Bytes, session.readResource("Cap%201/page%201.jpg"))
+
+        // Page 1 -> "Cap 1/page2.jpg"
+        session.dispatch(ReaderCommand.NextPage)
+        assertTrue(session.currentHtml().contains("Cap%201/page2.jpg"))
+        assertContentEquals(page2Bytes, session.readResource("Cap 1/page2.jpg"))
+
+        // Page 2 -> "Cap 1/page10.png"
+        session.dispatch(ReaderCommand.NextPage)
+        assertTrue(session.currentHtml().contains("Cap%201/page10.png"))
+        assertContentEquals(page10Bytes, session.readResource("Cap 1/page10.png"))
+
+        session.close()
+    }
+
+    @Test
+    fun zipResourceProviderSupportsZip64HeadersAndExtraFields() {
+        val entry1 = "OEBPS/hello.txt" to "Conteúdo em ZIP64 com sucesso!".encodeToByteArray()
+        val entry2 = "META-INF/container.xml" to "<container><rootfiles><rootfile full-path=\"content.opf\"/></rootfiles></container>".encodeToByteArray()
+        val zip64Bytes = buildStoredZip(
+            entries = linkedMapOf(entry1, entry2),
+            asZip64 = true,
+        )
+
+        assertTrue(ZipResourceProvider.hasZipEntry(zip64Bytes, "OEBPS/hello.txt"))
+        val provider = ZipResourceProvider.fromBytes(zip64Bytes)
+        assertEquals(entry1.second.size.toLong(), provider.size("OEBPS/hello.txt"))
+        assertContentEquals(entry1.second, provider.read("OEBPS/hello.txt"))
+        assertContentEquals(entry2.second, provider.read("META-INF/container.xml"))
+        assertEquals(
+            "ZIP64",
+            provider.readRange("OEBPS/hello.txt", offset = 13L, byteCount = 5).decodeToString(),
+        )
+        provider.close()
+
+        // Truncated/invalid ZIP64 EOCD sentinel without locator must fail deterministically
+        val truncatedZip = Buffer().apply {
+            write(ByteArray(32))
+            writeIntLe(0x06054b50)
+            writeShortLe(0)
+            writeShortLe(0)
+            writeShortLe(0xFFFF)
+            writeShortLe(0xFFFF)
+            writeIntLe(-1)
+            writeIntLe(-1)
+            writeShortLe(0)
+        }.readByteArray()
+        assertFailsWith<ReaderException.InvalidContent> {
+            ZipResourceProvider.fromBytes(truncatedZip)
+        }
+    }
+
+    private fun buildStoredZip(
+        entries: Map<String, ByteArray>,
+        asZip64: Boolean,
+    ): ByteArray {
+        val out = Buffer()
+        data class WrittenEntry(
+            val nameBytes: ByteArray,
+            val data: ByteArray,
+            val localOffset: Long,
+        )
+        val written = mutableListOf<WrittenEntry>()
+
+        for ((name, data) in entries) {
+            val nameBytes = name.encodeToByteArray()
+            val localOffset = out.size
+            out.writeIntLe(0x04034b50) // Local File Header signature
+            out.writeShortLe(if (asZip64) 45 else 20) // version needed
+            out.writeShortLe(0x0800) // UTF-8 filename flag
+            out.writeShortLe(0) // STORED
+            out.writeShortLe(0) // mod time
+            out.writeShortLe(0) // mod date
+            out.writeIntLe(0) // crc32 (unused by reader)
+            out.writeIntLe(data.size)
+            out.writeIntLe(data.size)
+            out.writeShortLe(nameBytes.size)
+            out.writeShortLe(0) // extra length
+            out.write(nameBytes)
+            out.write(data)
+            written.add(WrittenEntry(nameBytes, data, localOffset))
+        }
+
+        val cdOffset = out.size
+        for (item in written) {
+            val extra = if (asZip64) {
+                Buffer().apply {
+                    writeShortLe(0x0001) // ZIP64 Extended Information Extra Field
+                    writeShortLe(24) // 3 * 8 bytes
+                    writeLongLe(item.data.size.toLong())
+                    writeLongLe(item.data.size.toLong())
+                    writeLongLe(item.localOffset)
+                }.readByteArray()
+            } else {
+                ByteArray(0)
+            }
+
+            out.writeIntLe(0x02014b50) // Central Directory signature
+            out.writeShortLe(if (asZip64) 45 else 20)
+            out.writeShortLe(if (asZip64) 45 else 20)
+            out.writeShortLe(0x0800) // UTF-8
+            out.writeShortLe(0) // STORED
+            out.writeShortLe(0)
+            out.writeShortLe(0)
+            out.writeIntLe(0) // crc32
+            out.writeIntLe(if (asZip64) -1 else item.data.size) // 0xFFFFFFFF sentinel for ZIP64
+            out.writeIntLe(if (asZip64) -1 else item.data.size)
+            out.writeShortLe(item.nameBytes.size)
+            out.writeShortLe(extra.size)
+            out.writeShortLe(0) // comment len
+            out.writeShortLe(0) // disk start
+            out.writeShortLe(0) // internal attrs
+            out.writeIntLe(0) // external attrs
+            out.writeIntLe(if (asZip64) -1 else item.localOffset.toInt())
+            out.write(item.nameBytes)
+            if (extra.isNotEmpty()) out.write(extra)
+        }
+
+        val cdSize = out.size - cdOffset
+        if (asZip64) {
+            val zip64EocdOffset = out.size
+            out.writeIntLe(0x06064b50) // ZIP64 EOCD signature
+            out.writeLongLe(44L) // remaining bytes after offset +12
+            out.writeShortLe(45) // version made by
+            out.writeShortLe(45) // version needed
+            out.writeIntLe(0) // disk number
+            out.writeIntLe(0) // disk start
+            out.writeLongLe(written.size.toLong())
+            out.writeLongLe(written.size.toLong())
+            out.writeLongLe(cdSize)
+            out.writeLongLe(cdOffset)
+
+            // ZIP64 EOCD Locator (20 bytes)
+            out.writeIntLe(0x07064b50)
+            out.writeIntLe(0) // disk number
+            out.writeLongLe(zip64EocdOffset)
+            out.writeIntLe(1) // total disks
+
+            // Standard EOCD with sentinel fields
+            out.writeIntLe(0x06054b50)
+            out.writeShortLe(0)
+            out.writeShortLe(0)
+            out.writeShortLe(0xFFFF)
+            out.writeShortLe(0xFFFF)
+            out.writeIntLe(-1)
+            out.writeIntLe(-1)
+            out.writeShortLe(0)
+        } else {
+            out.writeIntLe(0x06054b50)
+            out.writeShortLe(0)
+            out.writeShortLe(0)
+            out.writeShortLe(written.size)
+            out.writeShortLe(written.size)
+            out.writeIntLe(cdSize.toInt())
+            out.writeIntLe(cdOffset.toInt())
+            out.writeShortLe(0)
+        }
+
+        return out.readByteArray()
     }
 }
 

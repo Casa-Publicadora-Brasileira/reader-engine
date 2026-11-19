@@ -155,6 +155,10 @@ public class ParserRegistry {
             resources = parsed.resources,
             toc = parsed.toc,
             provider = parsed.provider,
+            encryptedResources = parsed.encryptedResources,
+            pageList = parsed.pageList,
+            landmarks = parsed.landmarks,
+            mediaOverlays = parsed.mediaOverlays,
         )
     }
 
@@ -163,5 +167,6 @@ public class ParserRegistry {
             .register(JsonParser())
             .register(EpubParser())
             .register(HpubParser())
+            .register(CbzParser())
     }
 }

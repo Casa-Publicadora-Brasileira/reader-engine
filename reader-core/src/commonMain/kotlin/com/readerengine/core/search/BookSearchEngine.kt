@@ -1,11 +1,17 @@
 package com.readerengine.core.search
 
 import com.readerengine.core.model.Locator
+import com.readerengine.core.model.PersistedSearchIndex
 import com.readerengine.core.model.Publication
 import com.readerengine.core.model.ReaderStrings
 import com.readerengine.core.model.SearchResult
 import com.readerengine.core.model.TocItem
+import com.readerengine.core.model.TtsSentence
 import com.readerengine.core.parser.XmlEntities
+import com.readerengine.core.platform.defaultFileSystem
+import kotlinx.serialization.json.Json
+import okio.FileSystem
+import okio.Path
 
 /**
  * Motor de busca textual em todos os capítulos do `spine` da publicação.
@@ -14,9 +20,11 @@ import com.readerengine.core.parser.XmlEntities
  */
 public object BookSearchEngine {
 
-    private val scriptOrStyleRegex = Regex("""<(script|style)\b[^>]*>[\s\S]*?</\1>""", RegexOption.IGNORE_CASE)
+    private val json = Json { ignoreUnknownKeys = true }
+    private val scriptOrStyleRegex = Regex("""<(head|script|style)\b[^>]*>[\s\S]*?</\1>""", RegexOption.IGNORE_CASE)
     private val htmlTagRegex = Regex("""<[^>]+>""")
     private val whitespaceRegex = Regex("""\s+""")
+    private val sentenceSplitRegex = Regex("""[^.!?\n]+(?:[.!?]+["'”’)\]]*|\n|$)""")
 
     public fun search(
         publication: Publication,
@@ -83,6 +91,120 @@ public object BookSearchEngine {
         }
 
         return results
+    }
+
+    /**
+     * Constrói o índice de texto limpo para todos os capítulos do `spine` da publicação.
+     */
+    public fun buildIndex(publication: Publication, documentId: String): PersistedSearchIndex {
+        val chapters = LinkedHashMap<String, String>(publication.spine.size)
+        for (href in publication.spine) {
+            val plain = runCatching {
+                publication.cachedPlainText(href, ::htmlToPlainText)
+            }.getOrDefault("")
+            chapters[href] = plain
+        }
+        return PersistedSearchIndex(
+            version = 1,
+            documentId = documentId,
+            spine = publication.spine.toList(),
+            chapters = chapters,
+        )
+    }
+
+    /** Exporta o índice de busca da publicação como JSON serializado. */
+    public fun exportIndexJson(publication: Publication, documentId: String): String {
+        val index = buildIndex(publication, documentId)
+        return json.encodeToString(PersistedSearchIndex.serializer(), index)
+    }
+
+    /**
+     * Restaura o cache interno de texto limpo da publicação a partir de um JSON exportado previamente.
+     * Retorna `true` se o índice for compatível com o `spine` atual e populou o cache.
+     */
+    public fun importIndexJson(publication: Publication, rawJson: String): Boolean {
+        val parsed = runCatching {
+            json.decodeFromString(PersistedSearchIndex.serializer(), rawJson)
+        }.getOrNull() ?: return false
+        if (parsed.chapters.isEmpty()) return false
+        val spineSet = publication.spine.toSet()
+        val matching = parsed.chapters.filterKeys { it in spineSet }
+        if (matching.isEmpty()) return false
+        publication.restorePlainTextCache(matching)
+        return true
+    }
+
+    /** Persiste o índice de busca em disco usando `Okio FileSystem`. */
+    public fun saveIndexToDisk(
+        publication: Publication,
+        documentId: String,
+        path: Path,
+        fileSystem: FileSystem = defaultFileSystem,
+    ) {
+        path.parent?.let { parent ->
+            if (!fileSystem.exists(parent)) {
+                fileSystem.createDirectories(parent)
+            }
+        }
+        val payload = exportIndexJson(publication, documentId)
+        fileSystem.write(path) {
+            writeUtf8(payload)
+        }
+    }
+
+    /** Carrega o índice de busca do disco (`Okio FileSystem`) e popula o cache da publicação. */
+    public fun loadIndexFromDisk(
+        publication: Publication,
+        path: Path,
+        fileSystem: FileSystem = defaultFileSystem,
+    ): Boolean {
+        if (!fileSystem.exists(path)) return false
+        val raw = runCatching {
+            fileSystem.read(path) { readUtf8() }
+        }.getOrNull() ?: return false
+        return importIndexJson(publication, raw)
+    }
+
+    /**
+     * Extrai as sentenças do capítulo indicado para leitura em voz alta (TTS),
+     * retornando texto limpo, offsets de caracteres e `Locator`.
+     */
+    public fun extractSentences(publication: Publication, pageIndex: Int): List<TtsSentence> {
+        val href = publication.spine.getOrNull(pageIndex) ?: return emptyList()
+        val plainText = runCatching {
+            publication.cachedPlainText(href, ::htmlToPlainText)
+        }.getOrDefault("")
+        if (plainText.isBlank()) return emptyList()
+
+        val totalLen = plainText.length.coerceAtLeast(1)
+        val out = mutableListOf<TtsSentence>()
+        var idx = 0
+        for (match in sentenceSplitRegex.findAll(plainText)) {
+            val rawChunk = match.value
+            val trimmed = rawChunk.trim()
+            if (trimmed.isEmpty()) continue
+            val leadingTrim = rawChunk.indexOf(trimmed)
+            val charStart = (match.range.first + leadingTrim).coerceAtLeast(0)
+            val charEnd = (charStart + trimmed.length).coerceAtMost(plainText.length)
+            val progression = (charStart.toFloat() / totalLen.toFloat()).coerceIn(0f, 1f)
+            out.add(
+                TtsSentence(
+                    index = idx++,
+                    pageIndex = pageIndex,
+                    href = href,
+                    text = trimmed,
+                    charStart = charStart,
+                    charEnd = charEnd,
+                    locator = Locator(
+                        href = href,
+                        pageIndex = pageIndex,
+                        progression = progression,
+                        textQuote = trimmed.take(120),
+                    ),
+                ),
+            )
+        }
+        return out
     }
 
     internal fun htmlToPlainText(html: String): String {

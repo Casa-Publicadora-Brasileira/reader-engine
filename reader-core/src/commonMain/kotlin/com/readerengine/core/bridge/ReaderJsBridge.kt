@@ -30,6 +30,11 @@ public object ReaderJsBridge {
     private val json = Json { ignoreUnknownKeys = true }
     private val safeCssClassRegex = Regex("""[^a-zA-Z0-9_-]""")
 
+    public const val ACTION_SUB_PAGE_CHANGED: String = "reader_sub_page_changed"
+    public const val ACTION_GESTURE_NEXT_PAGE: String = "reader_gesture_next_page"
+    public const val ACTION_GESTURE_PREV_PAGE: String = "reader_gesture_prev_page"
+    public const val ACTION_GESTURE_TAP_CENTER: String = "reader_gesture_tap_center"
+
     public const val SCRIPT_SELECTION: String = "javascript:window.getSelection().toString()"
     public const val SCRIPT_GET_HIGHLIGHTS: String = "javascript:readerJS.getHighlights()"
     public const val SCRIPT_SUMMARY_HIGHLIGHTS: String = "javascript:readerJS.summaryHighlights()"
@@ -40,6 +45,22 @@ public object ReaderJsBridge {
     public const val SCRIPT_GET_CHANGES: String = "javascript:getChanges()"
     public const val SCRIPT_CLEAN_CHANGES: String = "javascript:cleanChanges()"
     public const val SCRIPT_GET_ALL_MODIFICATIONS: String = "javascript:getAllModifications()"
+    public const val SCRIPT_CLEAR_TTS_HIGHLIGHT: String =
+        "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.clearTtsHighlight){readerJS.clearTtsHighlight();}})();"
+
+    public fun highlightTtsSentenceCommand(
+        sentenceIndex: Int,
+        text: String? = null,
+        elementId: String? = null,
+    ): String {
+        val safeIdx = sentenceIndex.coerceAtLeast(0)
+        val textArg = if (text != null) jsStringLiteral(text) else "null"
+        val idArg = if (!elementId.isNullOrBlank()) jsStringLiteral(elementId) else "null"
+        return "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.highlightTtsSentence){return readerJS.highlightTtsSentence($safeIdx,$textArg,$idArg);}return false;})();"
+    }
+
+    public fun highlightElementByIdCommand(elementId: String): String =
+        highlightTtsSentenceCommand(sentenceIndex = 0, text = null, elementId = elementId)
 
     public fun highlightSelectionCommand(style: HighlightStyle): String =
         "javascript:if(typeof readerJS !== \"undefined\"){readerJS.highlightSelection('${style.jsColorArg}');}"
@@ -80,7 +101,7 @@ public object ReaderJsBridge {
 
     public fun setReadingModeCommand(mode: ReadingMode): String {
         val isPaginated = mode == ReadingMode.PAGINATED
-        return "javascript:(function(){var h=document.documentElement;if(h){if($isPaginated){h.classList.add('reader-paginated');if(typeof readerJS!=='undefined'&&readerJS.getSubPageState){return readerJS.getSubPageState();}}else{h.classList.remove('reader-paginated');if(typeof readerJS!=='undefined'&&readerJS.resetSubPage){readerJS.resetSubPage();}else if(document.body){document.body.style.transform='';document.body.style.transition='';}window.scrollTo(0,0);}}return '{\"subPage\":0,\"totalSubPages\":1}';})();"
+        return "javascript:(function(){var h=document.documentElement;if(h){if($isPaginated){h.classList.add('reader-paginated');if(typeof readerJS!=='undefined'&&readerJS.getSubPageState){var st=readerJS.getSubPageState();if(window.ReaderEngine&&window.ReaderEngine.postAction){window.ReaderEngine.postAction('$ACTION_SUB_PAGE_CHANGED',st,false);}return st;}}else{h.classList.remove('reader-paginated');if(typeof readerJS!=='undefined'&&readerJS.resetSubPage){readerJS.resetSubPage();}else if(document.body){document.body.style.transform='';document.body.style.transition='';}window.scrollTo(0,0);}}return '{\"subPage\":0,\"totalSubPages\":1}';})();"
     }
 
     public fun goToSubPageCommand(subPage: Int): String {
@@ -98,9 +119,7 @@ public object ReaderJsBridge {
     }
 
     /**
-     * Injeta o CSS do tema, classes opcionais de tamanho/modo noturno/paginação horizontal
-     * e o polyfill `readerJS` completo (suportando grifos no DOM, paginação por colunas CSS
-     * e preservação de viewport para EPUB 3 Fixed-Layout).
+     * Sobrecarga compatível com chamadas de até 10 parâmetros mantendo compatibilidade binária e Swift.
      */
     public fun injectThemeAndBridge(
         rawHtml: String,
@@ -113,6 +132,37 @@ public object ReaderJsBridge {
         layout: RenditionLayout = RenditionLayout.REFLOWABLE,
         direction: PageProgressionDirection = PageProgressionDirection.DEFAULT,
         spread: RenditionSpread = RenditionSpread.AUTO,
+    ): String = injectThemeAndBridge(
+        rawHtml = rawHtml,
+        theme = theme,
+        fontScale = fontScale,
+        fontFamily = fontFamily,
+        fontSizeClass = fontSizeClass,
+        isNightMode = isNightMode,
+        readingMode = readingMode,
+        layout = layout,
+        direction = direction,
+        spread = spread,
+        initialSubPage = 0,
+    )
+
+    /**
+     * Injeta o CSS do tema, classes opcionais de tamanho/modo noturno/paginação horizontal,
+     * `data-reader-subpage` opcional e o polyfill `readerJS` completo (suportando grifos no DOM,
+     * paginação por colunas CSS, detecção de gestos swipe/tap e preservação de viewport).
+     */
+    public fun injectThemeAndBridge(
+        rawHtml: String,
+        theme: ThemeTokens,
+        fontScale: Float,
+        fontFamily: String,
+        fontSizeClass: String,
+        isNightMode: Boolean,
+        readingMode: ReadingMode,
+        layout: RenditionLayout,
+        direction: PageProgressionDirection,
+        spread: RenditionSpread,
+        initialSubPage: Int,
     ): String {
         val css = theme.toContentCss(
             fontScale = fontScale,
@@ -142,11 +192,19 @@ public object ReaderJsBridge {
         val htmlOpenRegex = Regex("<html(\\b)", RegexOption.IGNORE_CASE)
         val isRtl = direction == PageProgressionDirection.RTL
         val hasDirAttr = Regex("""<html\b[^>]*\bdir\s*=""", RegexOption.IGNORE_CASE).containsMatchIn(rawHtml)
+        val clampedSubPage = initialSubPage.coerceAtLeast(0)
 
         var processedHtml = if (classes.isNotEmpty() && htmlOpenRegex.containsMatchIn(rawHtml)) {
             rawHtml.replaceFirst(htmlOpenRegex, Regex.escapeReplacement("<html class=\"$classes\""))
         } else {
             rawHtml
+        }
+
+        if (clampedSubPage > 0 && htmlOpenRegex.containsMatchIn(processedHtml)) {
+            processedHtml = processedHtml.replaceFirst(
+                htmlOpenRegex,
+                Regex.escapeReplacement("<html data-reader-subpage=\"$clampedSubPage\""),
+            )
         }
 
         if (isRtl && !hasDirAttr) {
@@ -158,7 +216,13 @@ public object ReaderJsBridge {
             }
         }
 
-        val headInjection = "<style id=\"reader-engine-theme\">$css</style><script>$FALLBACK_READER_JS</script>"
+        val hasViewportMeta = Regex("""<meta\b[^>]*\bname\s*=\s*["']viewport["']""", RegexOption.IGNORE_CASE).containsMatchIn(rawHtml)
+        val viewportInjection = if (!hasViewportMeta && layout == RenditionLayout.REFLOWABLE) {
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
+        } else {
+            ""
+        }
+        val headInjection = "$viewportInjection<style id=\"reader-engine-theme\">$css</style><script>$FALLBACK_READER_JS</script>"
         val headCloseRegex = Regex("</head>", RegexOption.IGNORE_CASE)
         val bodyOpenRegex = Regex("<body\\b", RegexOption.IGNORE_CASE)
 
@@ -170,7 +234,8 @@ public object ReaderJsBridge {
             else -> {
                 val classAttr = if (classes.isNotEmpty()) " class=\"$classes\"" else ""
                 val dirAttr = if (isRtl && !hasDirAttr) " dir=\"rtl\"" else ""
-                "<!doctype html><html$dirAttr$classAttr><head>$headInjection</head><body>$processedHtml</body></html>"
+                val subPageAttr = if (clampedSubPage > 0) " data-reader-subpage=\"$clampedSubPage\"" else ""
+                "<!doctype html><html$dirAttr$classAttr$subPageAttr><head>$headInjection</head><body>$processedHtml</body></html>"
             }
         }
     }
@@ -411,11 +476,19 @@ public object ReaderJsBridge {
 
     private const val FALLBACK_READER_JS = """
         (function(){
+            function _resolvePaginatedWidth() {
+                var cw = document.documentElement ? (document.documentElement.clientWidth || 0) : 0;
+                var iw = window.innerWidth || 0;
+                var w = cw > 0 ? cw : iw;
+                if (w >= 120) return w;
+                var sw = (window.screen && (window.screen.availWidth || window.screen.width)) ? (window.screen.availWidth || window.screen.width) : 360;
+                return Math.max(240, sw);
+            }
             if (typeof window.readerJS === 'undefined') {
                 var _serialized = '';
                 var _items = [];
                 var _nextId = 1;
-                var _subPage = 0;
+                var _subPage = parseInt((document.documentElement && document.documentElement.getAttribute('data-reader-subpage')) || '0', 10) || 0;
                 function _rebuildSerialized() {
                     if (!_items.length) { _serialized = ''; return; }
                     _serialized = 'type:textContent|' + _items.map(function(i){
@@ -460,17 +533,45 @@ public object ReaderJsBridge {
                         }
                     }
                 }
+                function _resolvePaginatedHeight() {
+                    var ih = window.innerHeight || 0;
+                    var ch = document.documentElement ? (document.documentElement.clientHeight || 0) : 0;
+                    var sh = (window.screen && (window.screen.availHeight || window.screen.height)) ? (window.screen.availHeight || window.screen.height) : 720;
+                    var maxReasonable = Math.max(400, Math.round(sh * 0.85));
+                    var minReasonable = Math.max(240, Math.round(sh * 0.40));
+                    var measured = ih >= ch ? ih : ch;
+                    if (measured >= minReasonable && measured <= maxReasonable) {
+                        return measured;
+                    }
+                    return Math.max(360, Math.round(sh * 0.68));
+                }
+                function _syncPaginatedMetrics() {
+                    var root = document.documentElement;
+                    if (!root || !root.classList.contains('reader-paginated')) return;
+                    var vh = _resolvePaginatedHeight();
+                    root.style.setProperty('--reader-page-height', vh + 'px');
+                    if (window.scrollY > 0 || root.scrollTop > 0) {
+                        window.scrollTo(0, 0);
+                        root.scrollTop = 0;
+                        if (document.body) document.body.scrollTop = 0;
+                    }
+                }
                 function _computeTotalSubPages() {
-                    var vw = Math.max(1, window.innerWidth || 1);
-                    var sw = Math.max(vw, document.body ? document.body.scrollWidth : vw);
+                    _syncPaginatedMetrics();
+                    var vw = _resolvePaginatedWidth();
+                    var bodySw = document.body ? (document.body.scrollWidth || 0) : 0;
+                    var docSw = document.documentElement ? (document.documentElement.scrollWidth || 0) : 0;
+                    var sw = Math.max(vw, bodySw, docSw);
                     return Math.max(1, Math.round(sw / vw));
                 }
                 function _applySubPageOffset() {
-                    var vw = Math.max(1, window.innerWidth || 1);
+                    _syncPaginatedMetrics();
+                    var vw = _resolvePaginatedWidth();
                     if (document.body) {
                         var isRtl = (document.documentElement && document.documentElement.dir === 'rtl') || (document.body && document.body.dir === 'rtl');
                         var sign = isRtl ? '' : '-';
-                        document.body.style.transform = 'translateX(' + sign + (_subPage * vw) + 'px)';
+                        var offsetPx = _subPage * vw;
+                        document.body.style.transform = 'translateX(' + (offsetPx === 0 ? '0px' : (sign + offsetPx + 'px')) + ')';
                         document.body.style.transition = 'transform 0.18s ease-out';
                     }
                 }
@@ -569,6 +670,8 @@ public object ReaderJsBridge {
                         var total = _computeTotalSubPages();
                         if (_subPage >= total) {
                             _subPage = Math.max(0, total - 1);
+                        }
+                        if (document.documentElement && document.documentElement.classList.contains('reader-paginated')) {
                             _applySubPageOffset();
                         }
                         return JSON.stringify({ subPage: _subPage, totalSubPages: total });
@@ -591,18 +694,120 @@ public object ReaderJsBridge {
             }
             if (typeof window.ReaderEngine === 'undefined') {
                 window.ReaderEngine = {
-                    postAction: function(name, payload) {
+                    postAction: function(name, payload, allowUrlFallback) {
                         var str = typeof payload === 'string' ? payload : (payload ? JSON.stringify(payload) : '');
+                        var useFallback = (allowUrlFallback === undefined) ? true : !!allowUrlFallback;
                         if (typeof window.AndroidActionBridge !== 'undefined' && window.AndroidActionBridge.postAction) {
                             window.AndroidActionBridge.postAction(name, str);
+                            return true;
                         } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ReaderActionBridge) {
                             window.webkit.messageHandlers.ReaderActionBridge.postMessage({ name: name, payload: str });
-                        } else {
+                            return true;
+                        } else if (useFallback) {
                             var q = str ? ('?q=' + encodeURIComponent(str)) : '';
                             window.location.href = 'action://' + encodeURIComponent(name) + q;
+                            return true;
                         }
+                        return false;
                     }
                 };
+            }
+            function _dispatchPageTurnGesture(direction, source) {
+                var dir = direction === 'prev' ? 'prev' : 'next';
+                var src = source || 'swipe';
+                var isPaginated = !!(document.documentElement && document.documentElement.classList.contains('reader-paginated'));
+                if (isPaginated && typeof window.readerJS !== 'undefined' &&
+                    typeof window.readerJS.nextSubPage === 'function' &&
+                    typeof window.readerJS.prevSubPage === 'function') {
+                    var resStr = (dir === 'next') ? window.readerJS.nextSubPage() : window.readerJS.prevSubPage();
+                    var res = null;
+                    try { res = JSON.parse(resStr); } catch (e) {}
+                    if (res && res.advanced) {
+                        if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                            window.ReaderEngine.postAction('reader_sub_page_changed', JSON.stringify({
+                                subPage: res.subPage,
+                                totalSubPages: res.totalSubPages,
+                                source: src
+                            }));
+                        }
+                        return true;
+                    }
+                }
+                if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                    var actionName = (dir === 'next') ? 'reader_gesture_next_page' : 'reader_gesture_prev_page';
+                    window.ReaderEngine.postAction(actionName, JSON.stringify({ source: src }));
+                }
+                return true;
+            }
+            if (typeof window.readerJS !== 'undefined' && typeof window.readerJS.handlePageTurnGesture !== 'function') {
+                window.readerJS.handlePageTurnGesture = _dispatchPageTurnGesture;
+            }
+            function _clearTtsHighlightDom() {
+                var activeEls = document.querySelectorAll('.reader-tts-active');
+                for (var i = 0; i < activeEls.length; i++) {
+                    var el = activeEls[i];
+                    if (el.getAttribute && el.getAttribute('data-reader-tts') === '1') {
+                        var parent = el.parentNode;
+                        if (parent) {
+                            while (el.firstChild) parent.insertBefore(el.firstChild, el);
+                            parent.removeChild(el);
+                            parent.normalize();
+                        }
+                    } else if (el.classList) {
+                        el.classList.remove('reader-tts-active');
+                    }
+                }
+            }
+            function _highlightTtsSentenceDom(index, text, elementId) {
+                _clearTtsHighlightDom();
+                if (elementId) {
+                    var targetEl = document.getElementById(elementId);
+                    if (targetEl) {
+                        if (targetEl.classList) targetEl.classList.add('reader-tts-active');
+                        try { targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { try { targetEl.scrollIntoView(); } catch (e2) {} }
+                        return true;
+                    }
+                }
+                if (text && document.body && document.createTreeWalker) {
+                    var needle = String(text).trim();
+                    if (needle) {
+                        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                        var node;
+                        var candidates = [needle];
+                        if (needle.length > 36) candidates.push(needle.substring(0, 36));
+                        for (var c = 0; c < candidates.length; c++) {
+                            var query = candidates[c];
+                            walker.currentNode = document.body;
+                            while ((node = walker.nextNode())) {
+                                var val = node.nodeValue || '';
+                                var pos = val.indexOf(query);
+                                if (pos >= 0) {
+                                    try {
+                                        var r = document.createRange();
+                                        r.setStart(node, pos);
+                                        r.setEnd(node, Math.min(val.length, pos + query.length));
+                                        var span = document.createElement('span');
+                                        span.className = 'reader-tts-active';
+                                        span.setAttribute('data-reader-tts', '1');
+                                        span.setAttribute('data-reader-tts-idx', String(index || 0));
+                                        r.surroundContents(span);
+                                        try { span.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { try { span.scrollIntoView(); } catch (e2) {} }
+                                        return true;
+                                    } catch (e) {}
+                                }
+                            }
+                        }
+                    }
+                }
+                return false;
+            }
+            if (typeof window.readerJS !== 'undefined') {
+                if (typeof window.readerJS.clearTtsHighlight !== 'function') {
+                    window.readerJS.clearTtsHighlight = _clearTtsHighlightDom;
+                }
+                if (typeof window.readerJS.highlightTtsSentence !== 'function') {
+                    window.readerJS.highlightTtsSentence = _highlightTtsSentenceDom;
+                }
             }
             if (typeof window.__readerScrollHooked === 'undefined') {
                 window.__readerScrollHooked = true;
@@ -654,6 +859,162 @@ public object ReaderJsBridge {
                         }
                     }
                 }, false);
+            }
+            if (typeof window.__readerGestureHooked === 'undefined') {
+                window.__readerGestureHooked = true;
+                var _touchActive = false;
+                var _multiTouch = false;
+                var _startedInteractive = false;
+                var _hadSelectionAtStart = false;
+                var _startX = 0;
+                var _startY = 0;
+                var _startTime = 0;
+                var _lastTouchTime = 0;
+                function _hasActiveTextSelection() {
+                    var sel = window.getSelection ? window.getSelection() : null;
+                    return !!(sel && sel.toString && sel.toString().trim().length > 0);
+                }
+                function _isInteractiveTarget(target) {
+                    var el = target;
+                    if (el && el.nodeType === 3) el = el.parentElement;
+                    while (el && el.nodeType === 1) {
+                        var tag = el.tagName ? el.tagName.toLowerCase() : '';
+                        if (tag === 'a' || tag === 'button' || tag === 'input' || tag === 'textarea' ||
+                            tag === 'select' || tag === 'option' || tag === 'label' ||
+                            tag === 'video' || tag === 'audio' || tag === 'summary' || tag === 'details') {
+                            return true;
+                        }
+                        if (el.getAttribute) {
+                            var role = (el.getAttribute('role') || '').toLowerCase();
+                            if (role === 'button' || role === 'link' || role === 'checkbox' ||
+                                role === 'radio' || role === 'slider' || role.indexOf('doc-noteref') >= 0) {
+                                return true;
+                            }
+                            var ce = el.getAttribute('contenteditable');
+                            if (ce !== null && ce !== 'false') {
+                                return true;
+                            }
+                            if (el.hasAttribute('onclick')) {
+                                return true;
+                            }
+                            var epubType = (el.getAttribute('epub:type') || '').toLowerCase();
+                            if (epubType.indexOf('noteref') >= 0) {
+                                return true;
+                            }
+                        }
+                        if (tag === 'body' || tag === 'html') break;
+                        el = el.parentElement;
+                    }
+                    return false;
+                }
+                function _isRtlDocument() {
+                    return !!((document.documentElement && document.documentElement.dir === 'rtl') ||
+                        (document.body && document.body.dir === 'rtl'));
+                }
+                function _handleTapAt(x, y) {
+                    var isPaginated = !!(document.documentElement && document.documentElement.classList.contains('reader-paginated'));
+                    var vw = _resolvePaginatedWidth();
+                    var ratio = vw > 0 ? (x / vw) : 0.5;
+                    var isRtl = _isRtlDocument();
+                    if (isPaginated) {
+                        if (ratio < 0.28) {
+                            _dispatchPageTurnGesture(isRtl ? 'next' : 'prev', 'tap');
+                            return;
+                        }
+                        if (ratio > 0.72) {
+                            _dispatchPageTurnGesture(isRtl ? 'prev' : 'next', 'tap');
+                            return;
+                        }
+                    }
+                    if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                        window.ReaderEngine.postAction('reader_gesture_tap_center', JSON.stringify({
+                            x: Math.round(x),
+                            y: Math.round(y)
+                        }));
+                    }
+                }
+                document.addEventListener('touchstart', function(e) {
+                    if (e.touches && e.touches.length > 1) {
+                        _multiTouch = true;
+                        _touchActive = false;
+                        return;
+                    }
+                    var touch = (e.touches && e.touches[0]) ? e.touches[0] : null;
+                    if (!touch) return;
+                    _multiTouch = false;
+                    _touchActive = true;
+                    _startX = touch.clientX;
+                    _startY = touch.clientY;
+                    _startTime = Date.now();
+                    _startedInteractive = _isInteractiveTarget(e.target);
+                    _hadSelectionAtStart = _hasActiveTextSelection();
+                }, { passive: true });
+                document.addEventListener('touchmove', function(e) {
+                    if (e.touches && e.touches.length > 1) {
+                        _multiTouch = true;
+                        _touchActive = false;
+                    }
+                }, { passive: true });
+                document.addEventListener('touchcancel', function() {
+                    _touchActive = false;
+                    _multiTouch = false;
+                }, { passive: true });
+                document.addEventListener('touchend', function(e) {
+                    if (_multiTouch) {
+                        if (!e.touches || e.touches.length === 0) _multiTouch = false;
+                        _touchActive = false;
+                        return;
+                    }
+                    if (!_touchActive) return;
+                    _touchActive = false;
+                    _lastTouchTime = Date.now();
+                    if (_startedInteractive || _hadSelectionAtStart || _hasActiveTextSelection()) {
+                        return;
+                    }
+                    var touch = (e.changedTouches && e.changedTouches[0]) ? e.changedTouches[0] : null;
+                    if (!touch) return;
+                    var dx = touch.clientX - _startX;
+                    var dy = touch.clientY - _startY;
+                    var dt = _lastTouchTime - _startTime;
+                    var absDx = Math.abs(dx);
+                    var absDy = Math.abs(dy);
+                    if (dt <= 800 && absDx >= 48 && absDx > absDy * 1.5) {
+                        var isRtl = _isRtlDocument();
+                        var dir = (isRtl ? (dx > 0) : (dx < 0)) ? 'next' : 'prev';
+                        _dispatchPageTurnGesture(dir, 'swipe');
+                        return;
+                    }
+                    if (dt < 320 && absDx < 14 && absDy < 14) {
+                        _handleTapAt(touch.clientX, touch.clientY);
+                    }
+                }, { passive: true });
+                document.addEventListener('click', function(e) {
+                    if (Date.now() - _lastTouchTime < 500) return;
+                    if (_isInteractiveTarget(e.target) || _hasActiveTextSelection()) return;
+                    _handleTapAt(e.clientX || 0, e.clientY || 0);
+                }, false);
+            }
+            if (typeof window.__readerPaginatedHooked === 'undefined') {
+                window.__readerPaginatedHooked = true;
+                var _lastReportedSubState = '';
+                var _onPaginatedReady = function() {
+                    if (document.documentElement && document.documentElement.classList.contains('reader-paginated')) {
+                        if (typeof window.readerJS !== 'undefined' && window.readerJS.getSubPageState) {
+                            var st = window.readerJS.getSubPageState();
+                            if (st && st !== _lastReportedSubState && window.ReaderEngine && window.ReaderEngine.postAction) {
+                                _lastReportedSubState = st;
+                                window.ReaderEngine.postAction('reader_sub_page_changed', st, false);
+                            }
+                        }
+                    }
+                };
+                if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                    setTimeout(_onPaginatedReady, 0);
+                } else {
+                    window.addEventListener('DOMContentLoaded', _onPaginatedReady);
+                }
+                window.addEventListener('load', _onPaginatedReady);
+                window.addEventListener('resize', _onPaginatedReady);
             }
         })();
     """

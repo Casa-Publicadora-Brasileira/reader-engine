@@ -150,8 +150,8 @@ public class ZipResourceProvider private constructor(
     private data class ZipEntryMeta(
         val name: String,
         val compressionMethod: Int,
-        val compressedSize: Int,
-        val uncompressedSize: Int,
+        val compressedSize: Long,
+        val uncompressedSize: Long,
         val localHeaderOffset: Long,
     )
 
@@ -190,7 +190,7 @@ public class ZipResourceProvider private constructor(
     override fun size(href: String): Long? {
         val clean = normalizeHref(href)
         val meta = directory[clean] ?: return null
-        return meta.uncompressedSize.toLong()
+        return meta.uncompressedSize
     }
 
     override fun readRange(href: String, offset: Long, byteCount: Int): ByteArray {
@@ -206,9 +206,9 @@ public class ZipResourceProvider private constructor(
             ?: throw ReaderException.ResourceNotFound(href)
 
         if (meta.compressionMethod == METHOD_STORED) {
-            if (offset < 0L || offset >= meta.uncompressedSize.toLong() || byteCount <= 0) return ByteArray(0)
+            if (offset < 0L || offset >= meta.uncompressedSize || byteCount <= 0) return ByteArray(0)
             val dataStartLong = resolveEntryDataStart(source, meta)
-            val clampedByteCount = minOf(byteCount.toLong(), meta.uncompressedSize.toLong() - offset).toInt()
+            val clampedByteCount = minOf(byteCount.toLong(), meta.uncompressedSize - offset).toInt()
             return source.readSlice(dataStartLong + offset, clampedByteCount)
         }
 
@@ -228,6 +228,9 @@ public class ZipResourceProvider private constructor(
 
     public companion object {
         private const val EOCD_SIGNATURE = 0x06054b50
+        private const val ZIP64_EOCD_SIGNATURE = 0x06064b50
+        private const val ZIP64_EOCD_LOCATOR_SIGNATURE = 0x07064b50
+        private const val ZIP64_EXTRA_FIELD_HEADER_ID = 0x0001
         private const val CEN_SIGNATURE = 0x02014b50
         private const val LOC_SIGNATURE = 0x04034b50
         private const val METHOD_STORED = 0
@@ -320,19 +323,28 @@ public class ZipResourceProvider private constructor(
 
             val eocdRelOffset = findEocdOffsetInWindow(tailBytes)
                 ?: throw ReaderException.InvalidContent("Assinatura EOCD do ZIP não encontrada")
+            val eocdAbsOffset = tailStartOffset + eocdRelOffset.toLong()
 
-            val totalEntries = readUInt16LE(tailBytes, eocdRelOffset + 10)
-            val centralDirSize = readUInt32LE(tailBytes, eocdRelOffset + 12)
-            val centralDirOffset = readUInt32LE(tailBytes, eocdRelOffset + 16)
+            var totalEntriesLong = readUInt16LE(tailBytes, eocdRelOffset + 10).toLong()
+            var centralDirSize = readUInt32LE(tailBytes, eocdRelOffset + 12)
+            var centralDirOffset = readUInt32LE(tailBytes, eocdRelOffset + 16)
 
-            if (totalEntries == ZIP64_MAGIC_16 || centralDirSize == ZIP64_MAGIC_32 || centralDirOffset == ZIP64_MAGIC_32) {
-                throw ReaderException.InvalidContent("Arquivos ZIP64 não são suportados")
+            if (totalEntriesLong == ZIP64_MAGIC_16.toLong() ||
+                centralDirSize == ZIP64_MAGIC_32 ||
+                centralDirOffset == ZIP64_MAGIC_32
+            ) {
+                val zip64Info = readZip64EocdInfo(access, eocdAbsOffset, totalSize)
+                if (totalEntriesLong == ZIP64_MAGIC_16.toLong()) totalEntriesLong = zip64Info.totalEntries
+                if (centralDirSize == ZIP64_MAGIC_32) centralDirSize = zip64Info.centralDirSize
+                if (centralDirOffset == ZIP64_MAGIC_32) centralDirOffset = zip64Info.centralDirOffset
             }
-            if (totalEntries > limits.maxEntries) {
+
+            if (totalEntriesLong < 0L || totalEntriesLong > limits.maxEntries.toLong()) {
                 throw ReaderException.InvalidContent(
-                    "Pacote ZIP excede o número máximo de entradas ($totalEntries > ${limits.maxEntries})",
+                    "Pacote ZIP excede o número máximo de entradas ($totalEntriesLong > ${limits.maxEntries})",
                 )
             }
+            val totalEntries = totalEntriesLong.toInt()
             if (centralDirOffset < 0L || centralDirSize < 0L ||
                 centralDirSize > Int.MAX_VALUE.toLong() ||
                 centralDirOffset + centralDirSize > totalSize
@@ -351,12 +363,12 @@ public class ZipResourceProvider private constructor(
                 }
 
                 val compressionMethod = readUInt16LE(centralDirBytes, pos + 10)
-                val compressedSizeLong = readUInt32LE(centralDirBytes, pos + 20)
-                val uncompressedSizeLong = readUInt32LE(centralDirBytes, pos + 24)
+                var compressedSizeLong = readUInt32LE(centralDirBytes, pos + 20)
+                var uncompressedSizeLong = readUInt32LE(centralDirBytes, pos + 24)
                 val fileNameLen = readUInt16LE(centralDirBytes, pos + 28)
                 val extraLen = readUInt16LE(centralDirBytes, pos + 30)
                 val commentLen = readUInt16LE(centralDirBytes, pos + 32)
-                val localHeaderOffsetLong = readUInt32LE(centralDirBytes, pos + 42)
+                var localHeaderOffsetLong = readUInt32LE(centralDirBytes, pos + 42)
 
                 val headerEnd = pos.toLong() + 46L + fileNameLen.toLong() + extraLen.toLong() + commentLen.toLong()
                 if (headerEnd > centralDirBytes.size.toLong() || pos + 46 + fileNameLen > centralDirBytes.size) {
@@ -364,12 +376,37 @@ public class ZipResourceProvider private constructor(
                 }
 
                 val fileName = centralDirBytes.decodeToString(pos + 46, pos + 46 + fileNameLen)
+                val extraStart = pos + 46 + fileNameLen
+                val extraEnd = extraStart + extraLen
                 pos = headerEnd.toInt()
 
                 if (fileName.endsWith("/")) continue
 
-                if (compressedSizeLong == ZIP64_MAGIC_32 || uncompressedSizeLong == ZIP64_MAGIC_32 || localHeaderOffsetLong == ZIP64_MAGIC_32) {
-                    throw ReaderException.InvalidContent("Entrada ZIP64 não suportada: '$fileName'")
+                if (compressedSizeLong == ZIP64_MAGIC_32 ||
+                    uncompressedSizeLong == ZIP64_MAGIC_32 ||
+                    localHeaderOffsetLong == ZIP64_MAGIC_32
+                ) {
+                    val zip64Entry = parseZip64ExtraField(
+                        bytes = centralDirBytes,
+                        extraStart = extraStart,
+                        extraEnd = extraEnd,
+                        needUncompressed = uncompressedSizeLong == ZIP64_MAGIC_32,
+                        needCompressed = compressedSizeLong == ZIP64_MAGIC_32,
+                        needLocalHeaderOffset = localHeaderOffsetLong == ZIP64_MAGIC_32,
+                    )
+                    zip64Entry?.uncompressedSize?.let { uncompressedSizeLong = it }
+                    zip64Entry?.compressedSize?.let { compressedSizeLong = it }
+                    zip64Entry?.localHeaderOffset?.let { localHeaderOffsetLong = it }
+                }
+
+                if (compressedSizeLong == ZIP64_MAGIC_32 ||
+                    uncompressedSizeLong == ZIP64_MAGIC_32 ||
+                    localHeaderOffsetLong == ZIP64_MAGIC_32 ||
+                    compressedSizeLong < 0L ||
+                    uncompressedSizeLong < 0L ||
+                    localHeaderOffsetLong < 0L
+                ) {
+                    throw ReaderException.InvalidContent("Entrada ZIP64 inválida ou incompleta: '$fileName'")
                 }
                 if (uncompressedSizeLong > limits.maxEntryUncompressedBytes.toLong() ||
                     compressedSizeLong > limits.maxEntryUncompressedBytes.toLong() * 2L
@@ -394,13 +431,86 @@ public class ZipResourceProvider private constructor(
                 result[normalizedName] = ZipEntryMeta(
                     name = normalizedName,
                     compressionMethod = compressionMethod,
-                    compressedSize = compressedSizeLong.toInt(),
-                    uncompressedSize = uncompressedSizeLong.toInt(),
+                    compressedSize = compressedSizeLong,
+                    uncompressedSize = uncompressedSizeLong,
                     localHeaderOffset = localHeaderOffsetLong,
                 )
             }
 
             return result
+        }
+
+        private data class Zip64EocdInfo(
+            val totalEntries: Long,
+            val centralDirSize: Long,
+            val centralDirOffset: Long,
+        )
+
+        private data class Zip64EntryExtra(
+            val uncompressedSize: Long?,
+            val compressedSize: Long?,
+            val localHeaderOffset: Long?,
+        )
+
+        private fun readZip64EocdInfo(
+            access: RandomAccessSource,
+            eocdAbsOffset: Long,
+            totalSize: Long,
+        ): Zip64EocdInfo {
+            val locatorOffset = eocdAbsOffset - 20L
+            if (locatorOffset < 0L) {
+                throw ReaderException.InvalidContent("ZIP64 EOCD Locator ausente")
+            }
+            val locator = access.readSlice(locatorOffset, 20)
+            if (readInt32LE(locator, 0) != ZIP64_EOCD_LOCATOR_SIGNATURE) {
+                throw ReaderException.InvalidContent("Assinatura ZIP64 EOCD Locator inválida")
+            }
+            val zip64EocdOffset = readInt64LE(locator, 8)
+            if (zip64EocdOffset < 0L || zip64EocdOffset + 56L > totalSize) {
+                throw ReaderException.InvalidContent("Offset ZIP64 EOCD fora dos limites")
+            }
+            val zip64Eocd = access.readSlice(zip64EocdOffset, 56)
+            if (readInt32LE(zip64Eocd, 0) != ZIP64_EOCD_SIGNATURE) {
+                throw ReaderException.InvalidContent("Assinatura ZIP64 EOCD inválida")
+            }
+            return Zip64EocdInfo(
+                totalEntries = readInt64LE(zip64Eocd, 32),
+                centralDirSize = readInt64LE(zip64Eocd, 40),
+                centralDirOffset = readInt64LE(zip64Eocd, 48),
+            )
+        }
+
+        private fun parseZip64ExtraField(
+            bytes: ByteArray,
+            extraStart: Int,
+            extraEnd: Int,
+            needUncompressed: Boolean,
+            needCompressed: Boolean,
+            needLocalHeaderOffset: Boolean,
+        ): Zip64EntryExtra? {
+            var p = extraStart
+            while (p + 4 <= extraEnd) {
+                val headerId = readUInt16LE(bytes, p)
+                val dataSize = readUInt16LE(bytes, p + 2)
+                val dataStart = p + 4
+                val dataEnd = dataStart + dataSize
+                if (dataEnd > extraEnd) break
+                if (headerId == ZIP64_EXTRA_FIELD_HEADER_ID) {
+                    var fp = dataStart
+                    val uncompressed = if (needUncompressed && fp + 8 <= dataEnd) {
+                        readInt64LE(bytes, fp).also { fp += 8 }
+                    } else null
+                    val compressed = if (needCompressed && fp + 8 <= dataEnd) {
+                        readInt64LE(bytes, fp).also { fp += 8 }
+                    } else null
+                    val localOffset = if (needLocalHeaderOffset && fp + 8 <= dataEnd) {
+                        readInt64LE(bytes, fp).also { fp += 8 }
+                    } else null
+                    return Zip64EntryExtra(uncompressed, compressed, localOffset)
+                }
+                p = dataEnd
+            }
+            return null
         }
 
         private fun resolveEntryDataStart(access: RandomAccessSource, meta: ZipEntryMeta): Long {
@@ -417,7 +527,7 @@ public class ZipResourceProvider private constructor(
             val localNameLen = readUInt16LE(localHeader, 26)
             val localExtraLen = readUInt16LE(localHeader, 28)
             val dataStartLong = localHeaderOffset + 30L + localNameLen.toLong() + localExtraLen.toLong()
-            val dataEndLong = dataStartLong + meta.compressedSize.toLong()
+            val dataEndLong = dataStartLong + meta.compressedSize
 
             if (dataStartLong < 0L || dataEndLong > access.size) {
                 throw ReaderException.InvalidContent("Dados da entrada '${meta.name}' fora dos limites do ZIP")
@@ -430,8 +540,11 @@ public class ZipResourceProvider private constructor(
             meta: ZipEntryMeta,
             limits: ZipLimits,
         ): ByteArray {
+            if (meta.compressedSize > Int.MAX_VALUE.toLong() || meta.compressedSize > limits.maxEntryUncompressedBytes.toLong() * 2L) {
+                throw ReaderException.InvalidContent("Entrada '${meta.name}' excede o limite de bytes")
+            }
             val dataStartLong = resolveEntryDataStart(access, meta)
-            val compressedSlice = access.readSlice(dataStartLong, meta.compressedSize)
+            val compressedSlice = access.readSlice(dataStartLong, meta.compressedSize.toInt())
 
             return when (meta.compressionMethod) {
                 METHOD_STORED -> {
@@ -442,7 +555,7 @@ public class ZipResourceProvider private constructor(
                 }
                 METHOD_DEFLATED -> inflateBounded(
                     compressedBytes = compressedSlice,
-                    uncompressedSize = meta.uncompressedSize,
+                    uncompressedSize = meta.uncompressedSize.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
                     maxBytes = limits.maxEntryUncompressedBytes,
                 )
                 else -> throw ReaderException.InvalidContent(
@@ -505,6 +618,14 @@ public class ZipResourceProvider private constructor(
 
         private fun readUInt32LE(bytes: ByteArray, offset: Int): Long {
             return readInt32LE(bytes, offset).toLong() and 0xFFFFFFFFL
+        }
+
+        private fun readInt64LE(bytes: ByteArray, offset: Int): Long {
+            var value = 0L
+            for (b in 0 until 8) {
+                value = value or ((bytes[offset + b].toLong() and 0xFFL) shl (b * 8))
+            }
+            return value
         }
     }
 }

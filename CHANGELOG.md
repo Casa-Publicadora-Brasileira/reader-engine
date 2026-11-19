@@ -2,6 +2,21 @@
 
 Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 
+## [0.7.0] - 2026-11-19
+
+### Added
+- **Tokenizer e Árvore XML Determinística em `commonMain` (`XmlTokenizer.kt` — Resolve GAP-03):**
+  - Novo scanner/parser XML/XHTML em passagem única (`XmlTokenizer`, `XmlToken`, `XmlElement`), suportando comentários (`<!-- ... -->`) com tags falsas, seções `<![CDATA[ ... ]]>`, processing instructions (`<?...?>`), declarações `<!DOCTYPE ...>` com subsets `[...]`, namespaces e atributos multilinhas contendo `>`.
+  - `EpubParser`, `EpubEncryptionParser` (`ContentProtection.kt`) e `SmilParser` migrados integralmente de expressões regulares frágeis para `XmlTokenizer.parseDocument(...)`.
+- **Suporte a Quadrinhos e Mangás (`CbzParser.kt`):**
+  - Novo formato `.cbz` registrado no `ParserRegistry.default()`, com detecção de imagens (`.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`, `.bmp`, `.avif`, `.svg`), filtragem de `__MACOSX/` e arquivos ocultos, e ordenação numérica natural (`naturalCompare`, ex.: `page2.jpg` antes de `page10.jpg`).
+  - Parse opcional de `ComicInfo.xml` via `XmlTokenizer` (`Title`, `Series`, `Number`, autores, idioma e `<Manga>Yes`/`YesAndRightToLeft` -> `PageProgressionDirection.RTL`), geração de páginas fixas XHTML (`RenditionLayout.PRE_PAGINATED`) e resolução transparente de caminhos percent-encoded no `CbzResourceProvider`.
+- **Suporte a ZIP64 no `ZipResourceProvider`:**
+  - Leitura dos registros **ZIP64 EOCD Locator** (`0x07064b50`), **ZIP64 EOCD Record** (`0x06064b50`) e **ZIP64 Extended Information Extra Field** (`0x0001`) para offsets, tamanhos e contagens de entrada 64-bit, mantendo compatibilidade com `read()`, `size()` e `readRange()`.
+
+### Fixed
+- **`ParserRegistry.open(source)`**: preservados `encryptedResources`, `pageList`, `landmarks` e `mediaOverlays` ao preencher `identifier = source.sha256DocumentId()` para publicações sem identificador explícito.
+
 ## [0.6.0] - 2026-11-19
 
 ### Added

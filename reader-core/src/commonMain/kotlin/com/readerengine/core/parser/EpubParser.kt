@@ -37,17 +37,19 @@ public class EpubParser : FormatParser {
             throw ReaderException.InvalidContent("EPUB sem META-INF/container.xml", e)
         }
 
-        val rootfileTag = findOpeningTags(containerXml, "rootfile").firstOrNull()
+        val containerDoc = XmlTokenizer.parseDocument(containerXml)
+        val rootfileTag = containerDoc.findFirst("rootfile")
             ?: throw ReaderException.InvalidContent("container.xml sem rootfile")
         val opfPath = normalizeHref(
-            extractAttribute(rootfileTag, "full-path")
+            rootfileTag.attr("full-path")
                 ?: throw ReaderException.InvalidContent("rootfile sem full-path"),
         )
         val baseDir = opfPath.substringBeforeLast('/', missingDelimiterValue = "")
             .let { if (it.isEmpty()) "" else "$it/" }
 
         val opfXml = zip.readString(opfPath)
-        val metadata = parseMetadata(opfXml)
+        val opfDoc = XmlTokenizer.parseDocument(opfXml)
+        val metadata = parseMetadata(opfDoc)
 
         val resources = mutableListOf<Resource>()
         val idToHref = LinkedHashMap<String, String>()
@@ -57,15 +59,16 @@ public class EpubParser : FormatParser {
         var ncxHref: String? = null
         var coverHref: String? = null
 
-        for (itemTag in findOpeningTags(opfXml, "item")) {
-            val id = extractAttribute(itemTag, "id") ?: continue
-            val href = extractAttribute(itemTag, "href") ?: continue
-            val mediaType = extractAttribute(itemTag, "media-type").orEmpty()
-            val properties = extractAttribute(itemTag, "properties").orEmpty()
-            val mediaOverlayAttr = extractAttribute(itemTag, "media-overlay")?.trim().orEmpty()
+        val manifestEl = opfDoc.findFirst("manifest") ?: opfDoc
+        for (itemEl in manifestEl.findAll("item")) {
+            val id = itemEl.attr("id") ?: continue
+            val href = itemEl.attr("href") ?: continue
+            val mediaType = itemEl.attr("media-type").orEmpty()
+            val properties = itemEl.attr("properties").orEmpty()
+            val mediaOverlayAttr = itemEl.attr("media-overlay")?.trim().orEmpty()
 
             val fullHref = normalizeHref("$baseDir$href")
-            val propsList = properties.split(Regex("\\s+"))
+            val propsList = properties.trim().split(whitespaceRegex)
             if (propsList.any { it == "nav" }) {
                 navHref = fullHref
             }
@@ -92,7 +95,7 @@ public class EpubParser : FormatParser {
         }
 
         if (coverHref == null) {
-            val metaCoverId = extractMetaNameContent(opfXml, "cover")
+            val metaCoverId = extractMetaNameContent(opfDoc, "cover")
             if (!metaCoverId.isNullOrBlank()) {
                 coverHref = idToHref[metaCoverId]
             }
@@ -108,39 +111,46 @@ public class EpubParser : FormatParser {
             }?.href
         }
 
-        val itemrefTags = findOpeningTags(opfXml, "itemref")
+        val spineEl = opfDoc.findFirst("spine")
+        val itemrefTags = (spineEl ?: opfDoc).findAll("itemref")
         val linearHrefs = itemrefTags
-            .filter { !extractAttribute(it, "linear").equals("no", ignoreCase = true) }
-            .mapNotNull { extractAttribute(it, "idref") }
+            .filter { !it.attr("linear").equals("no", ignoreCase = true) }
+            .mapNotNull { it.attr("idref") }
             .mapNotNull { idToHref[it] }
         val allHrefs = itemrefTags
-            .mapNotNull { extractAttribute(it, "idref") }
+            .mapNotNull { it.attr("idref") }
             .mapNotNull { idToHref[it] }
         val spine = linearHrefs.ifEmpty { allHrefs }
 
         val navXhtml = navHref?.let { runCatching { zip.readString(it) }.getOrNull() }
         val ncxXml = ncxHref?.let { runCatching { zip.readString(it) }.getOrNull() }
+        val navDoc = navXhtml?.let { runCatching { XmlTokenizer.parseDocument(it) }.getOrNull() }
+        val ncxDoc = ncxXml?.let { runCatching { XmlTokenizer.parseDocument(it) }.getOrNull() }
 
         val toc = when {
-            navXhtml != null && navHref != null -> runCatching { parseNavXhtml(navXhtml, navHref) }.getOrDefault(emptyList())
-            ncxXml != null && ncxHref != null -> runCatching { parseNcx(ncxXml, ncxHref) }.getOrDefault(emptyList())
+            navDoc != null && navHref != null -> runCatching {
+                parseNavByType(navDoc, navHref, "toc", fallbackToWholeDoc = true)
+            }.getOrDefault(emptyList())
+            ncxDoc != null && ncxHref != null -> runCatching {
+                parseNcxDoc(ncxDoc, ncxHref)
+            }.getOrDefault(emptyList())
             else -> emptyList()
         }
 
-        val navPageList = if (navXhtml != null && navHref != null) {
-            runCatching { parseNavByType(navXhtml, navHref, "page-list") }.getOrDefault(emptyList())
+        val navPageList = if (navDoc != null && navHref != null) {
+            runCatching { parseNavByType(navDoc, navHref, "page-list") }.getOrDefault(emptyList())
         } else {
             emptyList()
         }
         val pageList = if (navPageList.isNotEmpty()) {
             navPageList
-        } else if (ncxXml != null && ncxHref != null) {
-            runCatching { parseNcxPageList(ncxXml, ncxHref) }.getOrDefault(emptyList())
+        } else if (ncxDoc != null && ncxHref != null) {
+            runCatching { parseNcxPageListDoc(ncxDoc, ncxHref) }.getOrDefault(emptyList())
         } else {
             emptyList()
         }
-        val landmarks = if (navXhtml != null && navHref != null) {
-            runCatching { parseNavByType(navXhtml, navHref, "landmarks") }.getOrDefault(emptyList())
+        val landmarks = if (navDoc != null && navHref != null) {
+            runCatching { parseNavByType(navDoc, navHref, "landmarks") }.getOrDefault(emptyList())
         } else {
             emptyList()
         }
@@ -163,10 +173,6 @@ public class EpubParser : FormatParser {
             zip
         }
 
-        val spineTag = findOpeningTags(opfXml, "spine").firstOrNull()
-        val spineDirection = spineTag?.let { extractAttribute(it, "page-progression-direction") }
-        val pageProgressionDirection = PageProgressionDirection.fromRaw(spineDirection)
-
         val mediaOverlays: List<MediaOverlay> = smilHrefs.mapNotNull { smilHref ->
             runCatching {
                 val smilXml = effectiveProvider.read(smilHref).decodeToString()
@@ -176,7 +182,6 @@ public class EpubParser : FormatParser {
 
         val finalMetadata = metadata.copy(
             coverHref = coverHref,
-            pageProgressionDirection = pageProgressionDirection,
         )
 
         return Publication(
@@ -192,37 +197,48 @@ public class EpubParser : FormatParser {
         )
     }
 
-    internal fun parseMetadata(opfXml: String): Metadata {
-        val layoutRaw = extractMetaProperty(opfXml, "rendition:layout")?.lowercase()
-        val epub2Fixed = extractMetaNameContent(opfXml, "fixed-layout")?.lowercase()
+    internal fun parseMetadata(opfXml: String): Metadata =
+        parseMetadata(XmlTokenizer.parseDocument(opfXml))
+
+    private fun parseMetadata(opfDoc: XmlElement): Metadata {
+        val metaEl = opfDoc.findFirst("metadata") ?: opfDoc
+        val layoutRaw = extractMetaProperty(metaEl, "rendition:layout")?.lowercase()
+        val epub2Fixed = extractMetaNameContent(metaEl, "fixed-layout")?.lowercase()
         val layout = if (layoutRaw == "pre-paginated" || epub2Fixed == "true" || epub2Fixed == "yes") {
             RenditionLayout.PRE_PAGINATED
         } else {
             RenditionLayout.REFLOWABLE
         }
 
-        val orientation = when (extractMetaProperty(opfXml, "rendition:orientation")?.lowercase()) {
+        val orientation = when (extractMetaProperty(metaEl, "rendition:orientation")?.lowercase()) {
             "landscape" -> RenditionOrientation.LANDSCAPE
             "portrait" -> RenditionOrientation.PORTRAIT
             else -> RenditionOrientation.AUTO
         }
 
-        val spread = when (extractMetaProperty(opfXml, "rendition:spread")?.lowercase()) {
+        val spread = when (extractMetaProperty(metaEl, "rendition:spread")?.lowercase()) {
             "none" -> RenditionSpread.NONE
             "landscape" -> RenditionSpread.LANDSCAPE
             "both", "portrait" -> RenditionSpread.BOTH
             else -> RenditionSpread.AUTO
         }
 
-        val spineTag = findOpeningTags(opfXml, "spine").firstOrNull()
-        val spineDirection = spineTag?.let { extractAttribute(it, "page-progression-direction") }
+        val spineTag = opfDoc.findFirst("spine")
+        val spineDirection = spineTag?.attr("page-progression-direction")
         val pageProgressionDirection = PageProgressionDirection.fromRaw(spineDirection)
 
+        val title = metaEl.findFirst("title")?.collectText()?.trim().orEmpty()
+        val authors = metaEl.findAll("creator")
+            .map { it.collectText().trim() }
+            .filter { it.isNotEmpty() }
+        val language = metaEl.findFirst("language")?.collectText()?.trim()?.takeIf { it.isNotEmpty() }
+        val identifier = metaEl.findFirst("identifier")?.collectText()?.trim()?.takeIf { it.isNotEmpty() }
+
         return Metadata(
-            title = extractFirstTagText(opfXml, "title").orEmpty(),
-            authors = extractAllTagTexts(opfXml, "creator"),
-            language = extractFirstTagText(opfXml, "language"),
-            identifier = extractFirstTagText(opfXml, "identifier"),
+            title = title,
+            authors = authors,
+            language = language,
+            identifier = identifier,
             layout = layout,
             orientation = orientation,
             spread = spread,
@@ -230,24 +246,18 @@ public class EpubParser : FormatParser {
         )
     }
 
-    private fun extractMetaProperty(opfXml: String, propertyName: String): String? {
-        val escaped = Regex.escape(propertyName)
-        val regex = Regex(
-            """<meta\b[^>]*\bproperty\s*=\s*(?:"$escaped"|'$escaped')[^>]*>([\s\S]*?)</meta>""",
-            RegexOption.IGNORE_CASE,
-        )
-        val raw = regex.find(opfXml)?.groupValues?.get(1) ?: return null
-        return XmlEntities.decode(stripHtmlTags(raw)).trim().takeIf { it.isNotEmpty() }
+    private fun extractMetaProperty(scope: XmlElement, propertyName: String): String? {
+        val el = scope.findAll("meta").firstOrNull {
+            it.attr("property")?.trim().equals(propertyName, ignoreCase = true)
+        } ?: return null
+        return el.collectText().trim().takeIf { it.isNotEmpty() }
     }
 
-    private fun extractMetaNameContent(opfXml: String, metaName: String): String? {
-        for (attrs in findOpeningTags(opfXml, "meta")) {
-            val name = extractAttribute(attrs, "name") ?: continue
-            if (name.equals(metaName, ignoreCase = true)) {
-                return extractAttribute(attrs, "content")?.trim()
-            }
-        }
-        return null
+    private fun extractMetaNameContent(scope: XmlElement, metaName: String): String? {
+        val el = scope.findAll("meta").firstOrNull {
+            it.attr("name")?.trim().equals(metaName, ignoreCase = true)
+        } ?: return null
+        return el.attr("content")?.trim()
     }
 
     internal fun parseNavXhtml(xhtml: String, navPath: String): List<TocEntry> =
@@ -258,199 +268,135 @@ public class EpubParser : FormatParser {
         navPath: String,
         navType: String,
         fallbackToWholeDoc: Boolean = false,
+    ): List<TocEntry> = parseNavByType(
+        doc = XmlTokenizer.parseDocument(xhtml),
+        navPath = navPath,
+        navType = navType,
+        fallbackToWholeDoc = fallbackToWholeDoc,
+    )
+
+    private fun parseNavByType(
+        doc: XmlElement,
+        navPath: String,
+        navType: String,
+        fallbackToWholeDoc: Boolean = false,
     ): List<TocEntry> {
         val navDir = navPath.substringBeforeLast('/', missingDelimiterValue = "")
             .let { if (it.isEmpty()) "" else "$it/" }
 
-        val escapedType = Regex.escape(navType)
-        val navBlockRegex = Regex(
-            """<nav\b[^>]*?(?:epub:type|type)\s*=\s*(?:"[^"]*\b$escapedType\b[^"]*"|'[^']*\b$escapedType\b[^']*')[^>]*>([\s\S]*?)</nav>""",
-            RegexOption.IGNORE_CASE,
-        )
-        val navMatch = navBlockRegex.find(xhtml)
-        val navContent = navMatch?.groupValues?.get(1)
-            ?: if (fallbackToWholeDoc) xhtml else return emptyList()
+        val targetNav = doc.findAll("nav").firstOrNull { nav ->
+            val typeAttr = (nav.attr("epub:type") ?: nav.attr("type")).orEmpty()
+            typeAttr.trim().split(whitespaceRegex).any { it.equals(navType, ignoreCase = true) }
+        }
+        val scope = targetNav ?: if (fallbackToWholeDoc) doc else return emptyList()
 
-        val nested = parseNestedOlToc(navContent, navDir)
+        val rootLists = findTopLevelLists(scope)
+        val nested = rootLists.flatMap { parseOlEntries(it, navDir) }
         if (nested.isNotEmpty()) return nested
 
-        val anchorRegex = Regex("""<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
-        return anchorRegex.findAll(navContent).mapNotNull { match ->
-            val attrs = match.groupValues[1]
-            val href = extractAttribute(attrs, "href") ?: return@mapNotNull null
-            val title = XmlEntities.decode(stripHtmlTags(match.groupValues[2])).trim()
+        return scope.findAll("a").mapNotNull { anchor ->
+            val href = anchor.attr("href")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val title = anchor.collectText().trim()
+            if (title.isEmpty()) return@mapNotNull null
             TocEntry(
                 title = title,
                 href = resolveHrefWithAnchor(navDir, href),
             )
-        }.toList()
-    }
-
-    private fun parseNestedOlToc(html: String, navDir: String): List<TocEntry> {
-        val tokenRegex = Regex("""<(/?)(ol|li|a)\b([^>]*)>""", RegexOption.IGNORE_CASE)
-        val anchorFullRegex = Regex("""<a\b([^>]*)>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE)
-
-        class LiBuilder(
-            var title: String? = null,
-            var href: String? = null,
-            val children: MutableList<TocEntry> = mutableListOf(),
-        )
-
-        val rootEntries = mutableListOf<TocEntry>()
-        val liStack = ArrayDeque<LiBuilder>()
-        val matches = tokenRegex.findAll(html).toList()
-        var idx = 0
-
-        while (idx < matches.size) {
-            val m = matches[idx]
-            val isClosing = m.groupValues[1] == "/"
-            val tag = m.groupValues[2].lowercase()
-
-            when {
-                !isClosing && tag == "li" -> {
-                    liStack.addLast(LiBuilder())
-                }
-                !isClosing && tag == "a" && liStack.isNotEmpty() -> {
-                    val currentLi = liStack.last()
-                    if (currentLi.href == null) {
-                        val aMatch = anchorFullRegex.find(html, m.range.first)
-                        if (aMatch != null && aMatch.range.first == m.range.first) {
-                            val rawHref = extractAttribute(aMatch.groupValues[1], "href")
-                            val rawTitle = XmlEntities.decode(stripHtmlTags(aMatch.groupValues[2])).trim()
-                            if (rawHref != null) {
-                                currentLi.href = resolveHrefWithAnchor(navDir, rawHref)
-                                currentLi.title = rawTitle
-                            }
-                        }
-                    }
-                }
-                isClosing && tag == "li" && liStack.isNotEmpty() -> {
-                    val finished = liStack.removeLast()
-                    val href = finished.href
-                    val title = finished.title
-                    if (!href.isNullOrBlank() && !title.isNullOrBlank()) {
-                        val entry = TocEntry(
-                            title = title,
-                            href = href,
-                            children = finished.children.toList(),
-                        )
-                        if (liStack.isEmpty()) {
-                            rootEntries.add(entry)
-                        } else {
-                            liStack.last().children.add(entry)
-                        }
-                    } else if (finished.children.isNotEmpty()) {
-                        if (liStack.isEmpty()) {
-                            rootEntries.addAll(finished.children)
-                        } else {
-                            liStack.last().children.addAll(finished.children)
-                        }
-                    }
-                }
-            }
-            idx++
         }
-
-        return rootEntries
     }
 
-    internal fun parseNcx(ncxXml: String, ncxPath: String): List<TocEntry> {
-        val ncxDir = ncxPath.substringBeforeLast('/', missingDelimiterValue = "")
-            .let { if (it.isEmpty()) "" else "$it/" }
-        val tagRegex = Regex(
-            """<(/?)(?:[a-zA-Z0-9_-]+:)?(navPoint|text|content)\b([^>]*)/?>""",
-            RegexOption.IGNORE_CASE,
-        )
-
-        class NavPointBuilder(
-            var title: String? = null,
-            var src: String? = null,
-            val children: MutableList<TocEntry> = mutableListOf(),
-        )
-
-        val roots = mutableListOf<TocEntry>()
-        val stack = ArrayDeque<NavPointBuilder>()
-        val matches = tagRegex.findAll(ncxXml).toList()
-
-        for (i in matches.indices) {
-            val m = matches[i]
-            val isClosing = m.groupValues[1] == "/"
-            val name = m.groupValues[2].lowercase()
-            val attrs = m.groupValues[3]
-            val isSelfClosing = m.value.endsWith("/>")
-
-            when {
-                !isClosing && name == "navpoint" && !isSelfClosing -> {
-                    stack.addLast(NavPointBuilder())
-                }
-                !isClosing && name == "text" && stack.isNotEmpty() -> {
-                    val current = stack.last()
-                    if (current.title == null) {
-                        val closeIdx = ncxXml.indexOf('<', m.range.last + 1)
-                        if (closeIdx > m.range.last) {
-                            val rawText = ncxXml.substring(m.range.last + 1, closeIdx)
-                            current.title = XmlEntities.decode(rawText).trim()
-                        }
-                    }
-                }
-                !isClosing && name == "content" && stack.isNotEmpty() -> {
-                    val current = stack.last()
-                    if (current.src == null) {
-                        current.src = extractAttribute(attrs, "src")
-                    }
-                }
-                isClosing && name == "navpoint" && stack.isNotEmpty() -> {
-                    val finished = stack.removeLast()
-                    val src = finished.src
-                    val title = finished.title
-                    if (!src.isNullOrBlank() && !title.isNullOrBlank()) {
-                        val entry = TocEntry(
-                            title = title,
-                            href = resolveHrefWithAnchor(ncxDir, src),
-                            children = finished.children.toList(),
-                        )
-                        if (stack.isEmpty()) {
-                            roots.add(entry)
-                        } else {
-                            stack.last().children.add(entry)
-                        }
-                    }
-                }
+    private fun findTopLevelLists(element: XmlElement): List<XmlElement> {
+        val out = mutableListOf<XmlElement>()
+        for (child in element.children) {
+            if (child.localName.equals("ol", ignoreCase = true)) {
+                out.add(child)
+            } else {
+                out.addAll(findTopLevelLists(child))
             }
         }
-
-        return roots
+        return out
     }
 
-    internal fun parseNcxPageList(ncxXml: String, ncxPath: String): List<TocEntry> {
+    private fun parseOlEntries(olElement: XmlElement, navDir: String): List<TocEntry> {
+        val out = mutableListOf<TocEntry>()
+        for (li in olElement.childElements("li")) {
+            val anchor = findDirectAnchor(li)
+            val childEntries = li.childElements("ol").flatMap { parseOlEntries(it, navDir) }
+            val href = anchor?.attr("href")?.trim()
+            val title = anchor?.collectText()?.trim()
+            if (!href.isNullOrBlank() && !title.isNullOrBlank()) {
+                out.add(
+                    TocEntry(
+                        title = title,
+                        href = resolveHrefWithAnchor(navDir, href),
+                        children = childEntries,
+                    ),
+                )
+            } else if (childEntries.isNotEmpty()) {
+                out.addAll(childEntries)
+            }
+        }
+        return out
+    }
+
+    private fun findDirectAnchor(element: XmlElement): XmlElement? {
+        for (child in element.children) {
+            if (child.localName.equals("a", ignoreCase = true)) return child
+            if (!child.localName.equals("ol", ignoreCase = true) && !child.localName.equals("li", ignoreCase = true)) {
+                val nested = findDirectAnchor(child)
+                if (nested != null) return nested
+            }
+        }
+        return null
+    }
+
+    internal fun parseNcx(ncxXml: String, ncxPath: String): List<TocEntry> =
+        parseNcxDoc(XmlTokenizer.parseDocument(ncxXml), ncxPath)
+
+    private fun parseNcxDoc(ncxDoc: XmlElement, ncxPath: String): List<TocEntry> {
         val ncxDir = ncxPath.substringBeforeLast('/', missingDelimiterValue = "")
             .let { if (it.isEmpty()) "" else "$it/" }
-        val pageListRegex = Regex(
-            """<(?:[a-zA-Z0-9_-]+:)?pageList\b[^>]*>([\s\S]*?)</(?:[a-zA-Z0-9_-]+:)?pageList>""",
-            RegexOption.IGNORE_CASE,
+        val navMap = ncxDoc.findFirst("navMap") ?: ncxDoc
+        return navMap.childElements("navPoint").mapNotNull { parseNavPointElement(it, ncxDir) }
+    }
+
+    private fun parseNavPointElement(navPoint: XmlElement, ncxDir: String): TocEntry? {
+        val title = navPoint.childElements("navLabel").firstOrNull()
+            ?.childElements("text")?.firstOrNull()
+            ?.collectText()?.trim()
+            ?: navPoint.findFirst("text")?.collectText()?.trim()
+        val src = navPoint.childElements("content").firstOrNull()?.attr("src")?.trim()
+        val children = navPoint.childElements("navPoint").mapNotNull { parseNavPointElement(it, ncxDir) }
+        if (title.isNullOrBlank() || src.isNullOrBlank()) return null
+        return TocEntry(
+            title = title,
+            href = resolveHrefWithAnchor(ncxDir, src),
+            children = children,
         )
-        val pageListContent = pageListRegex.find(ncxXml)?.groupValues?.get(1) ?: return emptyList()
-        val pageTargetRegex = Regex(
-            """<(?:[a-zA-Z0-9_-]+:)?pageTarget\b([^>]*)>([\s\S]*?)</(?:[a-zA-Z0-9_-]+:)?pageTarget>""",
-            RegexOption.IGNORE_CASE,
-        )
-        val contentRegex = Regex(
-            """<(?:[a-zA-Z0-9_-]+:)?content\b([^>]*)/?>""",
-            RegexOption.IGNORE_CASE,
-        )
-        return pageTargetRegex.findAll(pageListContent).mapNotNull { match ->
-            val targetAttrs = match.groupValues[1]
-            val targetBody = match.groupValues[2]
-            val textTitle = extractFirstTagText(targetBody, "text")
-                ?: extractAttribute(targetAttrs, "value")?.trim()
+    }
+
+    internal fun parseNcxPageList(ncxXml: String, ncxPath: String): List<TocEntry> =
+        parseNcxPageListDoc(XmlTokenizer.parseDocument(ncxXml), ncxPath)
+
+    private fun parseNcxPageListDoc(ncxDoc: XmlElement, ncxPath: String): List<TocEntry> {
+        val ncxDir = ncxPath.substringBeforeLast('/', missingDelimiterValue = "")
+            .let { if (it.isEmpty()) "" else "$it/" }
+        val pageList = ncxDoc.findFirst("pageList") ?: return emptyList()
+        return pageList.findAll("pageTarget").mapNotNull { target ->
+            val title = target.childElements("navLabel").firstOrNull()
+                ?.childElements("text")?.firstOrNull()
+                ?.collectText()?.trim()?.takeIf { it.isNotEmpty() }
+                ?: target.findFirst("text")?.collectText()?.trim()?.takeIf { it.isNotEmpty() }
+                ?: target.attr("value")?.trim()?.takeIf { it.isNotEmpty() }
                 ?: return@mapNotNull null
-            val contentMatch = contentRegex.find(targetBody) ?: return@mapNotNull null
-            val src = extractAttribute(contentMatch.groupValues[1], "src") ?: return@mapNotNull null
+            val src = target.childElements("content").firstOrNull()?.attr("src")?.trim()
+                ?: target.findFirst("content")?.attr("src")?.trim()
+                ?: return@mapNotNull null
             TocEntry(
-                title = textTitle,
+                title = title,
                 href = resolveHrefWithAnchor(ncxDir, src),
             )
-        }.toList()
+        }
     }
 
     private fun resolveHrefWithAnchor(baseDir: String, rawHref: String): String {
@@ -459,36 +405,22 @@ public class EpubParser : FormatParser {
         return if (anchor.isEmpty()) pathPart else "$pathPart#$anchor"
     }
 
-    private fun findOpeningTags(xml: String, localName: String): List<String> {
-        val regex = Regex("""<(?:[a-zA-Z0-9_-]+:)?$localName\b([^>]*)/?>""", RegexOption.IGNORE_CASE)
-        return regex.findAll(xml).map { it.groupValues[1] }.toList()
-    }
-
-    private fun extractFirstTagText(xml: String, localName: String): String? {
-        return extractAllTagTexts(xml, localName).firstOrNull()
-    }
-
-    private fun extractAllTagTexts(xml: String, localName: String): List<String> {
-        val regex = Regex(
-            """<(?:[a-zA-Z0-9_-]+:)?$localName\b[^>]*>([\s\S]*?)</(?:[a-zA-Z0-9_-]+:)?$localName>""",
-            RegexOption.IGNORE_CASE,
-        )
-        return regex.findAll(xml)
-            .map { XmlEntities.decode(stripHtmlTags(it.groupValues[1])).trim() }
-            .filter { it.isNotEmpty() }
-            .toList()
-    }
-
     internal fun extractAttribute(tagAttributes: String, attrName: String): String? {
-        val regex = Regex(
-            """(?:^|\s|[a-zA-Z0-9_-]+:)$attrName\s*=\s*(?:"([^"]*)"|'([^']*)')""",
-            RegexOption.IGNORE_CASE,
-        )
-        val match = regex.find(tagAttributes) ?: return null
-        val raw = if (match.groups[1] != null) match.groupValues[1] else match.groupValues[2]
-        return XmlEntities.decode(raw)
+        val attrs = XmlTokenizer.parseAttributes(tagAttributes)
+        attrs[attrName]?.let { return it }
+        for ((k, v) in attrs) {
+            if (k.equals(attrName, ignoreCase = true)) return v
+        }
+        if (!attrName.contains(':')) {
+            for ((k, v) in attrs) {
+                val local = if (k.contains(':')) k.substringAfter(':') else k
+                if (local.equals(attrName, ignoreCase = true)) return v
+            }
+        }
+        return null
     }
 
-    private fun stripHtmlTags(input: String): String =
-        input.replace(Regex("""<[^>]+>"""), "")
+    private companion object {
+        private val whitespaceRegex = Regex("""\s+""")
+    }
 }

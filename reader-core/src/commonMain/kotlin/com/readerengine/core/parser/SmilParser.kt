@@ -12,34 +12,19 @@ import com.readerengine.core.provider.normalizeHref
  */
 public object SmilParser {
 
-    private val parBlockRegex = Regex(
-        """<(?:[a-zA-Z0-9_-]+:)?par\b([^>]*)>([\s\S]*?)</(?:[a-zA-Z0-9_-]+:)?par>""",
-        RegexOption.IGNORE_CASE,
-    )
-    private val textTagRegex = Regex(
-        """<(?:[a-zA-Z0-9_-]+:)?text\b([^>]*)/?>""",
-        RegexOption.IGNORE_CASE,
-    )
-    private val audioTagRegex = Regex(
-        """<(?:[a-zA-Z0-9_-]+:)?audio\b([^>]*)/?>""",
-        RegexOption.IGNORE_CASE,
-    )
-
     public fun parse(smilXml: String, smilHref: String): MediaOverlay {
         val normalizedSmilHref = normalizeHref(smilHref)
         val baseDir = normalizedSmilHref.substringBeforeLast('/', missingDelimiterValue = "")
             .let { if (it.isEmpty()) "" else "$it/" }
 
+        val doc = XmlTokenizer.parseDocument(smilXml)
         val clips = mutableListOf<MediaOverlayClip>()
-        for (match in parBlockRegex.findAll(smilXml)) {
-            val parAttrs = match.groupValues[1]
-            val inner = match.groupValues[2]
+        for (parEl in doc.findAll("par")) {
+            val textEl = parEl.findFirst("text") ?: continue
+            val audioEl = parEl.findFirst("audio") ?: continue
 
-            val textAttrs = textTagRegex.find(inner)?.groupValues?.get(1) ?: continue
-            val audioAttrs = audioTagRegex.find(inner)?.groupValues?.get(1) ?: continue
-
-            val rawTextSrc = extractAttr(textAttrs, "src")?.trim().orEmpty()
-            val rawAudioSrc = extractAttr(audioAttrs, "src")?.trim().orEmpty()
+            val rawTextSrc = textEl.attr("src")?.trim().orEmpty()
+            val rawAudioSrc = audioEl.attr("src")?.trim().orEmpty()
             if (rawTextSrc.isEmpty() || rawAudioSrc.isEmpty()) continue
 
             val rawTextPath = rawTextSrc.substringBefore('#')
@@ -48,9 +33,9 @@ public object SmilParser {
             val resolvedTextHref = normalizeHref("$baseDir$rawTextPath")
             val resolvedAudioHref = normalizeHref("$baseDir$rawAudioSrc")
 
-            val beginSec = extractAttr(audioAttrs, "clipBegin")?.let(::parseClockValue) ?: 0.0
-            val endSec = extractAttr(audioAttrs, "clipEnd")?.let(::parseClockValue)
-            val parId = extractAttr(parAttrs, "id")?.takeIf { it.isNotBlank() }
+            val beginSec = audioEl.attr("clipBegin")?.let(::parseClockValue) ?: 0.0
+            val endSec = audioEl.attr("clipEnd")?.let(::parseClockValue)
+            val parId = parEl.attr("id")?.takeIf { it.isNotBlank() }
 
             clips.add(
                 MediaOverlayClip(
@@ -105,12 +90,5 @@ public object SmilParser {
             s.endsWith("s") -> s.removeSuffix("s").trim().toDoubleOrNull()
             else -> s.toDoubleOrNull()
         }
-    }
-
-    private fun extractAttr(attrs: String, name: String): String? {
-        val regex = Regex("""(?:^|\s)$name\s*=\s*(?:"([^"]*)"|'([^']*)')""", RegexOption.IGNORE_CASE)
-        val m = regex.find(attrs) ?: return null
-        val raw = if (m.groups[1] != null) m.groupValues[1] else m.groupValues[2]
-        return XmlEntities.decode(raw)
     }
 }

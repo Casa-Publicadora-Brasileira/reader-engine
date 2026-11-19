@@ -1,7 +1,7 @@
 package com.readerengine.core.drm
 
 import com.readerengine.core.model.ResourceProvider
-import com.readerengine.core.parser.XmlEntities
+import com.readerengine.core.parser.XmlTokenizer
 import com.readerengine.core.provider.normalizeHref
 import kotlinx.serialization.Serializable
 import okio.ByteString.Companion.encodeUtf8
@@ -174,38 +174,21 @@ public class StandardEpubFontDeobfuscator(
  */
 public object EpubEncryptionParser {
 
-    private val encryptedDataRegex = Regex(
-        """<(?:[a-zA-Z0-9_-]+:)?EncryptedData\b[^>]*>([\s\S]*?)</(?:[a-zA-Z0-9_-]+:)?EncryptedData>""",
-        RegexOption.IGNORE_CASE,
-    )
-    private val methodRegex = Regex(
-        """<(?:[a-zA-Z0-9_-]+:)?EncryptionMethod\b([^>]*)/?>""",
-        RegexOption.IGNORE_CASE,
-    )
-    private val cipherRefRegex = Regex(
-        """<(?:[a-zA-Z0-9_-]+:)?CipherReference\b([^>]*)/?>""",
-        RegexOption.IGNORE_CASE,
-    )
-    private val compressionRegex = Regex(
-        """<(?:[a-zA-Z0-9_-]+:)?Compression\b([^>]*)/?>""",
-        RegexOption.IGNORE_CASE,
-    )
-
     public fun parse(encryptionXml: String): Map<String, EncryptedResourceInfo> {
+        val doc = XmlTokenizer.parseDocument(encryptionXml)
         val map = LinkedHashMap<String, EncryptedResourceInfo>()
-        for (block in encryptedDataRegex.findAll(encryptionXml)) {
-            val inner = block.groupValues[1]
-            val methodAttrs = methodRegex.find(inner)?.groupValues?.get(1) ?: continue
-            val cipherAttrs = cipherRefRegex.find(inner)?.groupValues?.get(1) ?: continue
+        for (block in doc.findAll("EncryptedData")) {
+            val methodEl = block.findFirst("EncryptionMethod") ?: continue
+            val cipherEl = block.findFirst("CipherReference") ?: continue
 
-            val algorithm = extractAttr(methodAttrs, "Algorithm") ?: continue
-            val rawUri = extractAttr(cipherAttrs, "URI") ?: continue
+            val algorithm = methodEl.attr("Algorithm")?.takeIf { it.isNotBlank() } ?: continue
+            val rawUri = cipherEl.attr("URI") ?: continue
             val normalizedUri = normalizeHref(rawUri)
             if (normalizedUri.isEmpty()) continue
 
-            val compressionAttrs = compressionRegex.find(inner)?.groupValues?.get(1)
-            val compMethod = compressionAttrs?.let { extractAttr(it, "Method") }
-            val origLen = compressionAttrs?.let { extractAttr(it, "OriginalLength")?.toLongOrNull() }
+            val compressionEl = block.findFirst("Compression")
+            val compMethod = compressionEl?.attr("Method")
+            val origLen = compressionEl?.attr("OriginalLength")?.toLongOrNull()
 
             map[normalizedUri] = EncryptedResourceInfo(
                 uri = normalizedUri,
@@ -215,13 +198,6 @@ public object EpubEncryptionParser {
             )
         }
         return map
-    }
-
-    private fun extractAttr(attrs: String, name: String): String? {
-        val regex = Regex("""(?:^|\s)$name\s*=\s*(?:"([^"]*)"|'([^']*)')""", RegexOption.IGNORE_CASE)
-        val m = regex.find(attrs) ?: return null
-        val raw = if (m.groups[1] != null) m.groupValues[1] else m.groupValues[2]
-        return XmlEntities.decode(raw)
     }
 }
 

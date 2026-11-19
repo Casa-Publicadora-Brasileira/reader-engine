@@ -399,6 +399,37 @@ public class EpubParser : FormatParser {
         }
     }
 
+    internal fun parseNcxPageList(ncxXml: String, ncxPath: String): List<TocEntry> {
+        val ncxDir = ncxPath.substringBeforeLast('/', missingDelimiterValue = "")
+            .let { if (it.isEmpty()) "" else "$it/" }
+        val pageListRegex = Regex(
+            """<(?:[a-zA-Z0-9_-]+:)?pageList\b[^>]*>([\s\S]*?)</(?:[a-zA-Z0-9_-]+:)?pageList>""",
+            RegexOption.IGNORE_CASE,
+        )
+        val pageListContent = pageListRegex.find(ncxXml)?.groupValues?.get(1) ?: return emptyList()
+        val pageTargetRegex = Regex(
+            """<(?:[a-zA-Z0-9_-]+:)?pageTarget\b([^>]*)>([\s\S]*?)</(?:[a-zA-Z0-9_-]+:)?pageTarget>""",
+            RegexOption.IGNORE_CASE,
+        )
+        val contentRegex = Regex(
+            """<(?:[a-zA-Z0-9_-]+:)?content\b([^>]*)/?>""",
+            RegexOption.IGNORE_CASE,
+        )
+        return pageTargetRegex.findAll(pageListContent).mapNotNull { match ->
+            val targetAttrs = match.groupValues[1]
+            val targetBody = match.groupValues[2]
+            val textTitle = extractFirstTagText(targetBody, "text")
+                ?: extractAttribute(targetAttrs, "value")?.trim()
+                ?: return@mapNotNull null
+            val contentMatch = contentRegex.find(targetBody) ?: return@mapNotNull null
+            val src = extractAttribute(contentMatch.groupValues[1], "src") ?: return@mapNotNull null
+            TocEntry(
+                title = textTitle,
+                href = resolveHrefWithAnchor(ncxDir, src),
+            )
+        }.toList()
+    }
+
     private fun resolveHrefWithAnchor(baseDir: String, rawHref: String): String {
         val anchor = rawHref.substringAfter('#', missingDelimiterValue = "")
         val pathPart = normalizeHref("$baseDir${rawHref.substringBefore('#')}")

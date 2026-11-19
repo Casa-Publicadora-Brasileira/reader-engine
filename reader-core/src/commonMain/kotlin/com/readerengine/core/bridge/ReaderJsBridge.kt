@@ -109,6 +109,11 @@ public object ReaderJsBridge {
         return "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.goToSubPage){return readerJS.goToSubPage($clamped);}return '{\"subPage\":0,\"totalSubPages\":1}';})();"
     }
 
+    public fun goToSubPageCommand(subPage: Int): String {
+        val clamped = subPage.coerceAtLeast(0)
+        return "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.goToSubPage){return readerJS.goToSubPage($clamped);}return '{\"subPage\":0,\"totalSubPages\":1}';})();"
+    }
+
     public fun scrollToYCommand(scrollYPx: Int, anchor: String? = null): String {
         val clamped = scrollYPx.coerceAtLeast(0)
         if (!anchor.isNullOrBlank()) {

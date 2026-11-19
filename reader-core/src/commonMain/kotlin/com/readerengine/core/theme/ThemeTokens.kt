@@ -50,6 +50,9 @@ public data class Typography(
     val lineHeight: Float,
     @SerialName("text_align")
     val textAlign: String = "justify",
+    val hyphens: Boolean = true,
+    val orphans: Int = 2,
+    val widows: Int = 2,
 ) {
     public constructor(
         fontFamily: String,
@@ -60,6 +63,24 @@ public data class Typography(
         baseSizePx = baseSizePx,
         lineHeight = lineHeight,
         textAlign = "justify",
+        hyphens = true,
+        orphans = 2,
+        widows = 2,
+    )
+
+    public constructor(
+        fontFamily: String,
+        baseSizePx: Float,
+        lineHeight: Float,
+        textAlign: String,
+    ) : this(
+        fontFamily = fontFamily,
+        baseSizePx = baseSizePx,
+        lineHeight = lineHeight,
+        textAlign = textAlign,
+        hyphens = true,
+        orphans = 2,
+        widows = 2,
     )
 }
 
@@ -152,12 +173,16 @@ public data class ThemeTokens(
                 }
             } else {
                 val safeTextAlign = sanitizeCssTextAlign(typography.textAlign) ?: "justify"
+                val hyphensRule = if (typography.hyphens) "auto" else "none"
+                val safeOrphans = typography.orphans.coerceIn(1, 5)
+                val safeWidows = typography.widows.coerceIn(1, 5)
                 val padH = shape.horizontalPaddingPx.coerceIn(0, 240)
                 val gap = padH * 2
                 append("html,body{background-color:$bg !important;color:$fg !important;font-family:$family !important;font-size:${fontSizePx}px;line-height:$lineHeight !important;}")
                 append("body{padding-left:${padH}px !important;padding-right:${padH}px !important;text-align:$safeTextAlign !important;box-sizing:border-box;}")
                 append("body *:not([class*=\"highlight_\"]){color:$fg !important;background-color:transparent !important;line-height:inherit;}")
                 append("body,body p,body div,body li,body blockquote{text-align:$safeTextAlign !important;}")
+                append("body,body p,body div,body li,body blockquote{hyphens:$hyphensRule;-webkit-hyphens:$hyphensRule;orphans:$safeOrphans;widows:$safeWidows;}")
                 append("html.reader-paginated{height:var(--reader-page-height,560px) !important;min-height:var(--reader-page-height,560px) !important;max-height:var(--reader-page-height,560px) !important;width:100% !important;overflow:hidden !important;margin:0 !important;padding:0 !important;box-sizing:border-box !important;}")
                 append("html.reader-paginated body{height:var(--reader-page-height,560px) !important;min-height:var(--reader-page-height,560px) !important;max-height:var(--reader-page-height,560px) !important;width:100% !important;overflow:visible !important;margin:0 !important;box-sizing:border-box !important;}")
                 append("html.reader-paginated body{column-width:calc(100vw - ${gap}px);column-gap:${gap}px;column-fill:auto;padding:16px ${padH}px !important;}")
@@ -183,6 +208,8 @@ public data class ThemeTokens(
             append(".highlight_annotation,.highlight_annotation *{background-color:#FFE082 !important;border-bottom:2px dotted #F57C00;color:#111 !important;}")
             val ttsBg = if (isNightMode) "rgba(106,183,255,0.32)" else "rgba(255,213,79,0.45)"
             append(".reader-tts-active,.reader-tts-active *{background-color:$ttsBg !important;border-radius:3px;transition:background-color 0.15s ease;}")
+            val searchBg = if (isNightMode) "#FFB300" else "#FFCA28"
+            append(".reader-search-match,.reader-search-match *{background-color:$searchBg !important;color:#111 !important;border-radius:3px;padding:0 2px;box-shadow:0 0 0 2px $searchBg;}")
         }
     }
 

@@ -34,6 +34,10 @@ public object ReaderJsBridge {
     public const val ACTION_GESTURE_NEXT_PAGE: String = "reader_gesture_next_page"
     public const val ACTION_GESTURE_PREV_PAGE: String = "reader_gesture_prev_page"
     public const val ACTION_GESTURE_TAP_CENTER: String = "reader_gesture_tap_center"
+    public const val ACTION_IMAGE_TAP: String = "reader_image_tap"
+
+    /** Valor sentinela para `initialSubPage` indicando abertura direta na última sub-página do capítulo. */
+    public const val INITIAL_SUB_PAGE_LAST: Int = -1
 
     public const val SCRIPT_SELECTION: String = "javascript:window.getSelection().toString()"
     public const val SCRIPT_GET_HIGHLIGHTS: String = "javascript:readerJS.getHighlights()"
@@ -41,12 +45,24 @@ public object ReaderJsBridge {
     public const val SCRIPT_UNHIGHLIGHT_SELECTION: String = "javascript:readerJS.unHighlightSelection()"
     public const val SCRIPT_NEXT_SUB_PAGE: String = "javascript:readerJS.nextSubPage()"
     public const val SCRIPT_PREV_SUB_PAGE: String = "javascript:readerJS.prevSubPage()"
+    public const val SCRIPT_GO_TO_LAST_SUB_PAGE: String =
+        "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.goToLastSubPage){return readerJS.goToLastSubPage();}return '{\"subPage\":0,\"totalSubPages\":1}';})();"
     public const val SCRIPT_GET_SUB_PAGE_STATE: String = "javascript:readerJS.getSubPageState()"
     public const val SCRIPT_GET_CHANGES: String = "javascript:getChanges()"
     public const val SCRIPT_CLEAN_CHANGES: String = "javascript:cleanChanges()"
     public const val SCRIPT_GET_ALL_MODIFICATIONS: String = "javascript:getAllModifications()"
     public const val SCRIPT_CLEAR_TTS_HIGHLIGHT: String =
         "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.clearTtsHighlight){readerJS.clearTtsHighlight();}})();"
+    public const val SCRIPT_CLEAR_SEARCH_HIGHLIGHT: String =
+        "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.clearSearchHighlight){readerJS.clearSearchHighlight();}})();"
+
+    public fun goToLastSubPageCommand(): String = SCRIPT_GO_TO_LAST_SUB_PAGE
+
+    public fun scrollToSearchMatchCommand(query: String, occurrenceInPage: Int = 0): String {
+        val literal = jsStringLiteral(query.trim())
+        val safeOcc = occurrenceInPage.coerceAtLeast(0)
+        return "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.scrollToSearchMatch){return readerJS.scrollToSearchMatch($literal,$safeOcc);}return false;})();"
+    }
 
     public fun highlightTtsSentenceCommand(
         sentenceIndex: Int,
@@ -147,9 +163,7 @@ public object ReaderJsBridge {
     )
 
     /**
-     * Injeta o CSS do tema, classes opcionais de tamanho/modo noturno/paginação horizontal,
-     * `data-reader-subpage` opcional e o polyfill `readerJS` completo (suportando grifos no DOM,
-     * paginação por colunas CSS, detecção de gestos swipe/tap e preservação de viewport).
+     * Sobrecarga compatível com chamadas de 11 parâmetros mantendo compatibilidade binária e Swift.
      */
     public fun injectThemeAndBridge(
         rawHtml: String,
@@ -163,6 +177,40 @@ public object ReaderJsBridge {
         direction: PageProgressionDirection,
         spread: RenditionSpread,
         initialSubPage: Int,
+    ): String = injectThemeAndBridge(
+        rawHtml = rawHtml,
+        theme = theme,
+        fontScale = fontScale,
+        fontFamily = fontFamily,
+        fontSizeClass = fontSizeClass,
+        isNightMode = isNightMode,
+        readingMode = readingMode,
+        layout = layout,
+        direction = direction,
+        spread = spread,
+        initialSubPage = initialSubPage,
+        language = null,
+    )
+
+    /**
+     * Injeta o CSS do tema, classes opcionais de tamanho/modo noturno/paginação horizontal,
+     * `data-reader-subpage` (incluindo `"last"` via [INITIAL_SUB_PAGE_LAST]), `lang` automático
+     * para hifenização correta e o polyfill `readerJS` completo (suportando grifos no DOM,
+     * paginação por colunas CSS, detecção de gestos swipe/tap, zoom de imagens, busca destacada e preservação de viewport).
+     */
+    public fun injectThemeAndBridge(
+        rawHtml: String,
+        theme: ThemeTokens,
+        fontScale: Float,
+        fontFamily: String,
+        fontSizeClass: String,
+        isNightMode: Boolean,
+        readingMode: ReadingMode,
+        layout: RenditionLayout,
+        direction: PageProgressionDirection,
+        spread: RenditionSpread,
+        initialSubPage: Int,
+        language: String?,
     ): String {
         val css = theme.toContentCss(
             fontScale = fontScale,
@@ -192,7 +240,13 @@ public object ReaderJsBridge {
         val htmlOpenRegex = Regex("<html(\\b)", RegexOption.IGNORE_CASE)
         val isRtl = direction == PageProgressionDirection.RTL
         val hasDirAttr = Regex("""<html\b[^>]*\bdir\s*=""", RegexOption.IGNORE_CASE).containsMatchIn(rawHtml)
-        val clampedSubPage = initialSubPage.coerceAtLeast(0)
+        val hasLangAttr = Regex("""<html\b[^>]*\blang\s*=""", RegexOption.IGNORE_CASE).containsMatchIn(rawHtml)
+        val safeLang = sanitizeLangTag(language)
+        val subPageValue = when {
+            initialSubPage == INITIAL_SUB_PAGE_LAST -> "last"
+            initialSubPage > 0 -> initialSubPage.toString()
+            else -> null
+        }
 
         var processedHtml = if (classes.isNotEmpty() && htmlOpenRegex.containsMatchIn(rawHtml)) {
             rawHtml.replaceFirst(htmlOpenRegex, Regex.escapeReplacement("<html class=\"$classes\""))
@@ -200,10 +254,17 @@ public object ReaderJsBridge {
             rawHtml
         }
 
-        if (clampedSubPage > 0 && htmlOpenRegex.containsMatchIn(processedHtml)) {
+        if (subPageValue != null && htmlOpenRegex.containsMatchIn(processedHtml)) {
             processedHtml = processedHtml.replaceFirst(
                 htmlOpenRegex,
-                Regex.escapeReplacement("<html data-reader-subpage=\"$clampedSubPage\""),
+                Regex.escapeReplacement("<html data-reader-subpage=\"$subPageValue\""),
+            )
+        }
+
+        if (safeLang != null && !hasLangAttr && htmlOpenRegex.containsMatchIn(processedHtml)) {
+            processedHtml = processedHtml.replaceFirst(
+                htmlOpenRegex,
+                Regex.escapeReplacement("<html lang=\"$safeLang\""),
             )
         }
 
@@ -234,8 +295,9 @@ public object ReaderJsBridge {
             else -> {
                 val classAttr = if (classes.isNotEmpty()) " class=\"$classes\"" else ""
                 val dirAttr = if (isRtl && !hasDirAttr) " dir=\"rtl\"" else ""
-                val subPageAttr = if (clampedSubPage > 0) " data-reader-subpage=\"$clampedSubPage\"" else ""
-                "<!doctype html><html$dirAttr$classAttr$subPageAttr><head>$headInjection</head><body>$processedHtml</body></html>"
+                val langAttr = if (safeLang != null && !hasLangAttr) " lang=\"$safeLang\"" else ""
+                val subPageAttr = if (subPageValue != null) " data-reader-subpage=\"$subPageValue\"" else ""
+                "<!doctype html><html$langAttr$dirAttr$classAttr$subPageAttr><head>$headInjection</head><body>$processedHtml</body></html>"
             }
         }
     }
@@ -431,6 +493,26 @@ public object ReaderJsBridge {
     internal fun sanitizeClassToken(raw: String): String =
         raw.trim().replace(safeCssClassRegex, "")
 
+    internal fun sanitizeLangTag(raw: String?): String? {
+        val cleaned = raw?.trim()?.replace(Regex("""[^a-zA-Z0-9_-]"""), "") ?: return null
+        return cleaned.takeIf { it.isNotEmpty() }
+    }
+
+    internal fun parseImageTapPayload(rawPayload: String?): Triple<String, String?, String?>? {
+        val unquoted = unquoteJsEvaluation(rawPayload).trim()
+        if (unquoted.isEmpty()) return null
+        return try {
+            val obj = json.parseToJsonElement(unquoted).jsonObject
+            val src = obj["src"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+                ?: return null
+            val alt = obj["alt"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+            val caption = obj["caption"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+            Triple(src, alt, caption)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /**
      * Serializa uma string para um literal JavaScript seguro entre aspas duplas,
      * escapando caracteres de controle, aspas, barras e fechamento de tag `</script>`.
@@ -488,7 +570,9 @@ public object ReaderJsBridge {
                 var _serialized = '';
                 var _items = [];
                 var _nextId = 1;
-                var _subPage = parseInt((document.documentElement && document.documentElement.getAttribute('data-reader-subpage')) || '0', 10) || 0;
+                var _rawSubAttr = (document.documentElement && document.documentElement.getAttribute('data-reader-subpage')) || '0';
+                var _pendingLastSubPage = (_rawSubAttr === 'last');
+                var _subPage = _pendingLastSubPage ? 0 : (parseInt(_rawSubAttr, 10) || 0);
                 function _rebuildSerialized() {
                     if (!_items.length) { _serialized = ''; return; }
                     _serialized = 'type:textContent|' + _items.map(function(i){
@@ -668,7 +752,10 @@ public object ReaderJsBridge {
                     },
                     getSubPageState: function() {
                         var total = _computeTotalSubPages();
-                        if (_subPage >= total) {
+                        if (_pendingLastSubPage) {
+                            _pendingLastSubPage = false;
+                            _subPage = Math.max(0, total - 1);
+                        } else if (_subPage >= total) {
                             _subPage = Math.max(0, total - 1);
                         }
                         if (document.documentElement && document.documentElement.classList.contains('reader-paginated')) {
@@ -678,7 +765,15 @@ public object ReaderJsBridge {
                     },
                     goToSubPage: function(index) {
                         var total = _computeTotalSubPages();
+                        _pendingLastSubPage = false;
                         _subPage = Math.max(0, Math.min(total - 1, parseInt(index, 10) || 0));
+                        _applySubPageOffset();
+                        return JSON.stringify({ subPage: _subPage, totalSubPages: total });
+                    },
+                    goToLastSubPage: function() {
+                        var total = _computeTotalSubPages();
+                        _pendingLastSubPage = false;
+                        _subPage = Math.max(0, total - 1);
                         _applySubPageOffset();
                         return JSON.stringify({ subPage: _subPage, totalSubPages: total });
                     },
@@ -809,6 +904,106 @@ public object ReaderJsBridge {
                     window.readerJS.highlightTtsSentence = _highlightTtsSentenceDom;
                 }
             }
+            function _foldSearchText(str) {
+                var s = String(str || '');
+                try {
+                    if (s.normalize) {
+                        s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                    }
+                } catch (e) {}
+                return s.toLowerCase();
+            }
+            function _clearSearchHighlightDom() {
+                var marks = document.querySelectorAll('mark[data-reader-search="1"]');
+                for (var i = 0; i < marks.length; i++) {
+                    var mk = marks[i];
+                    var parent = mk.parentNode;
+                    if (parent) {
+                        while (mk.firstChild) parent.insertBefore(mk.firstChild, mk);
+                        parent.removeChild(mk);
+                        parent.normalize();
+                    }
+                }
+            }
+            function _scrollToSearchMatchDom(query, occurrenceIndex) {
+                _clearSearchHighlightDom();
+                var rawQuery = String(query || '').trim();
+                if (!rawQuery || !document.body || !document.createTreeWalker) return false;
+                var foldedQuery = _foldSearchText(rawQuery);
+                var targetOcc = Math.max(0, parseInt(occurrenceIndex, 10) || 0);
+                var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                var node;
+                var seen = 0;
+                var matchedNode = null;
+                var matchedPos = -1;
+                var firstNode = null;
+                var firstPos = -1;
+                while ((node = walker.nextNode())) {
+                    var val = node.nodeValue || '';
+                    if (!val) continue;
+                    var foldedVal = _foldSearchText(val);
+                    var from = 0;
+                    while (from < foldedVal.length) {
+                        var idx = foldedVal.indexOf(foldedQuery, from);
+                        if (idx < 0) break;
+                        if (firstNode === null) {
+                            firstNode = node;
+                            firstPos = idx;
+                        }
+                        if (seen === targetOcc) {
+                            matchedNode = node;
+                            matchedPos = idx;
+                            break;
+                        }
+                        seen++;
+                        from = idx + Math.max(1, foldedQuery.length);
+                    }
+                    if (matchedNode !== null) break;
+                }
+                if (matchedNode === null) {
+                    matchedNode = firstNode;
+                    matchedPos = firstPos;
+                }
+                if (matchedNode === null || matchedPos < 0) return false;
+                try {
+                    var r = document.createRange();
+                    var valLen = (matchedNode.nodeValue || '').length;
+                    r.setStart(matchedNode, Math.min(matchedPos, valLen));
+                    r.setEnd(matchedNode, Math.min(valLen, matchedPos + rawQuery.length));
+                    var mark = document.createElement('mark');
+                    mark.className = 'reader-search-match';
+                    mark.setAttribute('data-reader-search', '1');
+                    r.surroundContents(mark);
+                    var isPaginated = !!(document.documentElement && document.documentElement.classList.contains('reader-paginated'));
+                    if (isPaginated && typeof window.readerJS !== 'undefined' && window.readerJS.goToSubPage) {
+                        var vw = _resolvePaginatedWidth();
+                        var st = null;
+                        try { st = JSON.parse(window.readerJS.getSubPageState()); } catch (e) {}
+                        var curSub = st && typeof st.subPage === 'number' ? st.subPage : 0;
+                        var rect = mark.getBoundingClientRect();
+                        var isRtl = !!((document.documentElement && document.documentElement.dir === 'rtl') || (document.body && document.body.dir === 'rtl'));
+                        var absX = isRtl ? ((curSub * vw) - rect.left) : ((curSub * vw) + rect.left);
+                        var targetSub = vw > 0 ? Math.max(0, Math.floor(absX / vw)) : 0;
+                        var nextSt = window.readerJS.goToSubPage(targetSub);
+                        if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                            window.ReaderEngine.postAction('reader_sub_page_changed', nextSt, false);
+                        }
+                    } else {
+                        try { mark.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { try { mark.scrollIntoView(); } catch (e2) {} }
+                    }
+                    return true;
+                } catch (e) {
+                    return false;
+                }
+            }
+            if (typeof window.readerJS !== 'undefined') {
+                if (typeof window.readerJS.clearSearchHighlight !== 'function') {
+                    window.readerJS.clearSearchHighlight = _clearSearchHighlightDom;
+                }
+                if (typeof window.readerJS.scrollToSearchMatch !== 'function') {
+                    window.readerJS.scrollToSearchMatch = _scrollToSearchMatchDom;
+                }
+            }
             if (typeof window.__readerScrollHooked === 'undefined') {
                 window.__readerScrollHooked = true;
                 var _scrollTimer = null;
@@ -911,7 +1106,39 @@ public object ReaderJsBridge {
                     return !!((document.documentElement && document.documentElement.dir === 'rtl') ||
                         (document.body && document.body.dir === 'rtl'));
                 }
-                function _handleTapAt(x, y) {
+                function _findImageTarget(target) {
+                    var el = target;
+                    if (el && el.nodeType === 3) el = el.parentElement;
+                    while (el && el.nodeType === 1) {
+                        var tag = el.tagName ? el.tagName.toLowerCase() : '';
+                        if (tag === 'img') {
+                            var src = (el.getAttribute && el.getAttribute('src')) || el.src || '';
+                            if (!src) return null;
+                            var alt = (el.getAttribute && el.getAttribute('alt')) || '';
+                            var caption = '';
+                            var fig = el.parentElement;
+                            while (fig && fig.nodeType === 1) {
+                                if (fig.tagName && fig.tagName.toLowerCase() === 'figure') {
+                                    var fc = fig.querySelector ? fig.querySelector('figcaption') : null;
+                                    if (fc && fc.textContent) caption = fc.textContent.trim();
+                                    break;
+                                }
+                                if (fig.tagName && (fig.tagName.toLowerCase() === 'body' || fig.tagName.toLowerCase() === 'html')) break;
+                                fig = fig.parentElement;
+                            }
+                            return { src: src, alt: alt, caption: caption };
+                        }
+                        if (tag === 'body' || tag === 'html') break;
+                        el = el.parentElement;
+                    }
+                    return null;
+                }
+                function _handleTapAt(x, y, target) {
+                    var imgInfo = _findImageTarget(target);
+                    if (imgInfo && window.ReaderEngine && window.ReaderEngine.postAction) {
+                        window.ReaderEngine.postAction('reader_image_tap', JSON.stringify(imgInfo));
+                        return;
+                    }
                     var isPaginated = !!(document.documentElement && document.documentElement.classList.contains('reader-paginated'));
                     var vw = _resolvePaginatedWidth();
                     var ratio = vw > 0 ? (x / vw) : 0.5;
@@ -985,13 +1212,13 @@ public object ReaderJsBridge {
                         return;
                     }
                     if (dt < 320 && absDx < 14 && absDy < 14) {
-                        _handleTapAt(touch.clientX, touch.clientY);
+                        _handleTapAt(touch.clientX, touch.clientY, e.target);
                     }
                 }, { passive: true });
                 document.addEventListener('click', function(e) {
                     if (Date.now() - _lastTouchTime < 500) return;
                     if (_isInteractiveTarget(e.target) || _hasActiveTextSelection()) return;
-                    _handleTapAt(e.clientX || 0, e.clientY || 0);
+                    _handleTapAt(e.clientX || 0, e.clientY || 0, e.target);
                 }, false);
             }
             if (typeof window.__readerPaginatedHooked === 'undefined') {

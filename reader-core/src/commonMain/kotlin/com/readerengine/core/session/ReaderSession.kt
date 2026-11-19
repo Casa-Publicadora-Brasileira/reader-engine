@@ -4,16 +4,19 @@ import com.readerengine.core.bridge.InterceptedUrl
 import com.readerengine.core.bridge.PayloadCodec
 import com.readerengine.core.bridge.ReaderJsBridge
 import com.readerengine.core.error.ReaderException
+import com.readerengine.core.export.StudyNotebookExporter
 import com.readerengine.core.model.Bookmark
 import com.readerengine.core.model.BookStateSnapshot
 import com.readerengine.core.model.FormEntry
 import com.readerengine.core.model.HighlightItem
 import com.readerengine.core.model.HighlightStyle
+import com.readerengine.core.model.ImageActivation
 import com.readerengine.core.model.InitialBookState
 import com.readerengine.core.model.Locator
 import com.readerengine.core.model.MediaOverlay
 import com.readerengine.core.model.MediaOverlayClip
 import com.readerengine.core.model.Metadata
+import com.readerengine.core.model.NavigationEntry
 import com.readerengine.core.model.PageFormState
 import com.readerengine.core.model.PagePreview
 import com.readerengine.core.model.PageProgressionDirection
@@ -87,6 +90,9 @@ public data class ReaderState(
     val landmarks: List<TocItem> = emptyList(),
     val positions: List<Locator> = emptyList(),
     val stats: ReadingStats = ReadingStats(),
+    val canNavigateBack: Boolean = false,
+    val canNavigateForward: Boolean = false,
+    val previousLocation: NavigationEntry? = null,
 )
 
 /**
@@ -175,15 +181,31 @@ public sealed interface ReaderUiEffect {
     public data class ShowMessage(
         val message: String,
     ) : ReaderUiEffect
+
+    /**
+     * Disparado quando o usuário toca em uma imagem (`<img>` / `<figure>`) no conteúdo,
+     * permitindo abrir um visualizador Lightbox nativo com pinch-to-zoom.
+     */
+    public data class ImageActivated(
+        val image: ImageActivation,
+    ) : ReaderUiEffect
 }
 
 /** Comandos despachados pela UI nativa para a sessão. */
 public sealed interface ReaderCommand {
     public data object NextPage : ReaderCommand
     public data object PrevPage : ReaderCommand
+    public data object NavigateBack : ReaderCommand
+    public data object NavigateForward : ReaderCommand
     public data class GoToPage(val pageIndex: Int, val scrollY: Int = 0) : ReaderCommand
     public data class GoToHref(val href: String) : ReaderCommand
     public data class GoToLocator(val locator: Locator) : ReaderCommand
+    public data class NavigateToSearchResult(
+        val query: String,
+        val pageIndex: Int,
+        val occurrenceInPage: Int = 0,
+    ) : ReaderCommand
+    public data object ClearSearchHighlight : ReaderCommand
     public data class TriggerAction(val action: String, val payload: String? = null) : ReaderCommand
     public data class UpdateScroll(
         val scrollY: Int,
@@ -274,6 +296,9 @@ public class ReaderSession(
     }
 
     private val bookmarks = initialBookState.savedBookmarks.toMutableList()
+    private val backStack = ArrayDeque<NavigationEntry>()
+    private val forwardStack = ArrayDeque<NavigationEntry>()
+    private var pendingOpenAtLastSubPage: Boolean = false
     private var nextBookmarkSeq: Int = bookmarks.size + 1
     private var lastEmittedProgressPage: Int = -1
     private var lastEmittedProgressScrollY: Int = -1000
@@ -536,7 +561,44 @@ public class ReaderSession(
                 } else {
                     val prevIdx = (current.pageIndex - 1).coerceAtLeast(0)
                     if (prevIdx != current.pageIndex || current.scrollY != 0) {
-                        navigateToPageInternal(prevIdx, scrollY = 0)
+                        val openAtLast = prevIdx != current.pageIndex && current.readingMode == ReadingMode.PAGINATED
+                        navigateToPageInternal(prevIdx, scrollY = 0, openAtLastSubPage = openAtLast)
+                    }
+                }
+            }
+
+            ReaderCommand.NavigateBack -> {
+                val previous = backStack.removeLastOrNull()
+                if (previous != null) {
+                    pushHistoryEntry(forwardStack, currentNavigationEntry(current))
+                    navigateToPageInternal(
+                        targetPageIndex = previous.pageIndex.coerceIn(0, lastIndex),
+                        scrollY = previous.scrollY,
+                        targetSubPage = previous.subPage,
+                        recordHistory = false,
+                    )
+                    if (current.readingMode == ReadingMode.PAGINATED && previous.pageIndex == current.pageIndex) {
+                        _uiEffects.tryEmit(
+                            ReaderUiEffect.EvaluateJs(ReaderJsBridge.goToSubPageCommand(previous.subPage)),
+                        )
+                    }
+                }
+            }
+
+            ReaderCommand.NavigateForward -> {
+                val next = forwardStack.removeLastOrNull()
+                if (next != null) {
+                    pushHistoryEntry(backStack, currentNavigationEntry(current))
+                    navigateToPageInternal(
+                        targetPageIndex = next.pageIndex.coerceIn(0, lastIndex),
+                        scrollY = next.scrollY,
+                        targetSubPage = next.subPage,
+                        recordHistory = false,
+                    )
+                    if (current.readingMode == ReadingMode.PAGINATED && next.pageIndex == current.pageIndex) {
+                        _uiEffects.tryEmit(
+                            ReaderUiEffect.EvaluateJs(ReaderJsBridge.goToSubPageCommand(next.subPage)),
+                        )
                     }
                 }
             }
@@ -544,7 +606,8 @@ public class ReaderSession(
             is ReaderCommand.GoToPage -> {
                 val targetIdx = command.pageIndex.coerceIn(0, lastIndex)
                 val targetScroll = command.scrollY.coerceAtLeast(0)
-                navigateToPageInternal(targetIdx, scrollY = targetScroll)
+                val isJump = targetIdx != current.pageIndex || abs(targetScroll - current.scrollY) > 100
+                navigateToPageInternal(targetIdx, scrollY = targetScroll, recordHistory = isJump)
             }
 
             is ReaderCommand.GoToHref -> {
@@ -555,7 +618,28 @@ public class ReaderSession(
                 val loc = command.locator
                 val idxByHref = resolveSpineIndex(loc.href, baseDir = "")
                 val targetIdx = if (idxByHref >= 0) idxByHref else loc.pageIndex.coerceIn(0, lastIndex)
-                navigateToPageInternal(targetIdx, scrollY = 0)
+                navigateToPageInternal(targetIdx, scrollY = 0, recordHistory = targetIdx != current.pageIndex)
+            }
+
+            is ReaderCommand.NavigateToSearchResult -> {
+                val targetIdx = command.pageIndex.coerceIn(0, lastIndex)
+                if (targetIdx != current.pageIndex) {
+                    navigateToPageInternal(targetIdx, scrollY = 0, recordHistory = true)
+                }
+                _uiEffects.tryEmit(
+                    ReaderUiEffect.EvaluateJs(
+                        ReaderJsBridge.scrollToSearchMatchCommand(
+                            query = command.query,
+                            occurrenceInPage = command.occurrenceInPage,
+                        ),
+                    ),
+                )
+            }
+
+            ReaderCommand.ClearSearchHighlight -> {
+                _uiEffects.tryEmit(
+                    ReaderUiEffect.EvaluateJs(ReaderJsBridge.SCRIPT_CLEAR_SEARCH_HIGHLIGHT),
+                )
             }
 
             is ReaderCommand.TriggerAction -> {
@@ -653,7 +737,7 @@ public class ReaderSession(
             is ReaderCommand.SelectHighlightItem -> {
                 val item = command.item
                 if (item.pageIndex != current.pageIndex) {
-                    navigateToPageInternal(item.pageIndex, scrollY = item.targetScrollY)
+                    navigateToPageInternal(item.pageIndex, scrollY = item.targetScrollY, recordHistory = true)
                 } else {
                     _uiEffects.tryEmit(ReaderUiEffect.ScrollToY(scrollYPx = item.targetScrollY))
                 }
@@ -729,7 +813,11 @@ public class ReaderSession(
             is ReaderCommand.GoToBookmark -> {
                 val target = bookmarks.firstOrNull { it.id == command.bookmarkId }
                 if (target != null) {
-                    navigateToPageInternal(target.pageIndex, scrollY = target.scrollY)
+                    navigateToPageInternal(
+                        target.pageIndex,
+                        scrollY = target.scrollY,
+                        recordHistory = target.pageIndex != current.pageIndex,
+                    )
                 }
             }
 
@@ -1003,7 +1091,11 @@ public class ReaderSession(
                 }
                 val spineIdx = resolveSpineIndex(intercepted.href, baseDir = currentChapterDir())
                 if (spineIdx >= 0) {
-                    navigateToPageInternal(spineIdx, scrollY = 0)
+                    navigateToPageInternal(
+                        spineIdx,
+                        scrollY = 0,
+                        recordHistory = spineIdx != _state.value.pageIndex,
+                    )
                     if (intercepted.anchor != null) {
                         _uiEffects.tryEmit(ReaderUiEffect.ScrollToY(scrollYPx = 0, anchor = intercepted.anchor))
                     }
@@ -1027,6 +1119,13 @@ public class ReaderSession(
         val href = publication.spine.getOrNull(current.pageIndex)
             ?: throw ReaderException.InvalidContent("Spine vazio ou índice inválido (${current.pageIndex})")
         val rawHtml = publication.readString(href)
+        val openAtLast = pendingOpenAtLastSubPage
+        pendingOpenAtLastSubPage = false
+        val targetInitialSubPage = when {
+            current.readingMode != ReadingMode.PAGINATED -> 0
+            openAtLast -> ReaderJsBridge.INITIAL_SUB_PAGE_LAST
+            else -> current.currentSubPage
+        }
         val html = ReaderJsBridge.injectThemeAndBridge(
             rawHtml = rawHtml,
             theme = current.theme,
@@ -1038,7 +1137,8 @@ public class ReaderSession(
             layout = publication.metadata.layout,
             direction = publication.metadata.pageProgressionDirection,
             spread = publication.metadata.spread,
-            initialSubPage = if (current.readingMode == ReadingMode.PAGINATED) current.currentSubPage else 0,
+            initialSubPage = targetInitialSubPage,
+            language = publication.metadata.language,
         )
         return RenderedDocument(
             html = html,
@@ -1363,8 +1463,82 @@ public class ReaderSession(
         return _state.value
     }
 
-    private fun navigateToPageInternal(targetPageIndex: Int, scrollY: Int, targetSubPage: Int = 0) {
+    /**
+     * Exporta todo o caderno de estudos (grifos, notas, marcadores e respostas de formulários)
+     * agrupado por capítulo em formato Markdown.
+     */
+    public fun exportStudyNotebookMarkdown(): String =
+        StudyNotebookExporter.exportMarkdown(
+            publication = publication,
+            toc = resolvedToc,
+            pageList = resolvedPageList,
+            highlightsByPage = pageHighlightSummaries,
+            bookmarks = bookmarks,
+            formsByPage = pageFormStates,
+            strings = strings,
+        )
+
+    /**
+     * Exporta todo o caderno de estudos em HTML autocontido com CSS de impressão (`@media print`).
+     */
+    public fun exportStudyNotebookHtml(): String =
+        StudyNotebookExporter.exportHtml(
+            publication = publication,
+            toc = resolvedToc,
+            pageList = resolvedPageList,
+            highlightsByPage = pageHighlightSummaries,
+            bookmarks = bookmarks,
+            formsByPage = pageFormStates,
+            strings = strings,
+        )
+
+    /**
+     * Formata uma citação a partir de um [HighlightItem] com referência bibliográfica automática
+     * (título, autores, capítulo e página impressa do `pageList`, se disponível).
+     */
+    public fun formatQuoteCitation(highlight: HighlightItem): String =
+        StudyNotebookExporter.formatQuoteCitation(
+            publication = publication,
+            toc = resolvedToc,
+            pageList = resolvedPageList,
+            highlight = highlight,
+            strings = strings,
+        )
+
+    private fun currentNavigationEntry(state: ReaderState): NavigationEntry {
+        val title = resolvedToc.firstOrNull { it.spineIndex == state.pageIndex }?.title
+            ?.takeIf { it.isNotBlank() }
+            ?: strings.formatChapterLabel(state.pageIndex + 1)
+        return NavigationEntry(
+            pageIndex = state.pageIndex,
+            subPage = state.currentSubPage,
+            scrollY = state.scrollY,
+            title = title,
+        )
+    }
+
+    private fun pushHistoryEntry(stack: ArrayDeque<NavigationEntry>, entry: NavigationEntry) {
+        val last = stack.lastOrNull()
+        if (last == entry) return
+        if (stack.size >= MAX_NAVIGATION_HISTORY) {
+            stack.removeFirst()
+        }
+        stack.addLast(entry)
+    }
+
+    private fun navigateToPageInternal(
+        targetPageIndex: Int,
+        scrollY: Int,
+        targetSubPage: Int = 0,
+        recordHistory: Boolean = false,
+        openAtLastSubPage: Boolean = false,
+    ) {
         val current = _state.value
+        if (recordHistory) {
+            pushHistoryEntry(backStack, currentNavigationEntry(current))
+            forwardStack.clear()
+        }
+        pendingOpenAtLastSubPage = openAtLastSubPage
         val newProgress = buildProgress(
             pageIndex = targetPageIndex,
             scrollY = scrollY,
@@ -1384,6 +1558,9 @@ public class ReaderSession(
             currentPageFormState = pageFormStates[targetPageIndex] ?: PageFormState(),
             hasBookmarkAtCurrentPage = bookmarks.any { it.pageIndex == targetPageIndex },
             stats = buildStats(targetPageIndex, newProgress.pageProgression),
+            canNavigateBack = backStack.isNotEmpty(),
+            canNavigateForward = forwardStack.isNotEmpty(),
+            previousLocation = backStack.lastOrNull(),
         )
         lastEmittedProgressPage = targetPageIndex
         lastEmittedProgressScrollY = scrollY
@@ -1414,9 +1591,31 @@ public class ReaderSession(
             ReaderJsBridge.ACTION_GESTURE_PREV_PAGE -> {
                 val prevIdx = (current.pageIndex - 1).coerceAtLeast(0)
                 if (prevIdx != current.pageIndex) {
-                    navigateToPageInternal(prevIdx, scrollY = 0, targetSubPage = 0)
+                    val openAtLast = current.readingMode == ReadingMode.PAGINATED
+                    navigateToPageInternal(prevIdx, scrollY = 0, targetSubPage = 0, openAtLastSubPage = openAtLast)
                 }
                 _events.tryEmit(ReaderEvent.ActionTriggered(action, payload))
+            }
+
+            ReaderJsBridge.ACTION_IMAGE_TAP -> {
+                val parsed = ReaderJsBridge.parseImageTapPayload(payload)
+                _events.tryEmit(ReaderEvent.ActionTriggered(action, payload))
+                if (parsed != null) {
+                    val (src, alt, caption) = parsed
+                    val resolvedHref = resolveResourceHref(src)
+                    _uiEffects.tryEmit(
+                        ReaderUiEffect.ImageActivated(
+                            ImageActivation(
+                                src = src,
+                                resolvedHref = resolvedHref,
+                                alt = alt,
+                                caption = caption,
+                            ),
+                        ),
+                    )
+                } else {
+                    _uiEffects.tryEmit(ReaderUiEffect.CustomAction(action, payload))
+                }
             }
 
             else -> {
@@ -1555,5 +1754,6 @@ public class ReaderSession(
 
     public companion object {
         public const val DEFAULT_BOOK_BASE_URL: String = "book://content/"
+        private const val MAX_NAVIGATION_HISTORY: Int = 50
     }
 }

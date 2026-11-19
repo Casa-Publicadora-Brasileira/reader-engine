@@ -2,7 +2,7 @@
 
 Motor de leitura digital multiplataforma (**Kotlin Multiplatform — KMP**), *headless* e de alta performance para **Android**, **iOS** e **JVM**.
 
-O SDK **`:reader-core`** (`com.readerengine.core`) concentra toda a engenharia de parsing, segurança, busca, criptografia/DRM, paginação e gerenciamento de estado para livros **EPUB 2**, **EPUB 3** (*reflowable* e *Fixed-Layout*), **HPUB (Baker Framework)**, **CBZ (Quadrinhos/Mangás)** e **JSON**, expondo uma máquina de estados reativa (`ReaderSession`) pronta para ser conectada a qualquer camada de UI nativa (**Jetpack Compose**, **Android Views**, **SwiftUI**, **UIKit** ou **Desktop/Backend JVM**).
+O SDK **`:reader-core`** (`com.readerengine.core`) concentra toda a engenharia de parsing, segurança, busca, criptografia/DRM, paginação e gerenciamento de estado para livros **EPUB 2**, **EPUB 3** (*reflowable* e *Fixed-Layout*), **HPUB (Baker Framework)**, **CBZ (Quadrinhos/Mangás)**, **FB2 (FictionBook 2)** e **JSON**, expondo uma máquina de estados reativa (`ReaderSession`) pronta para ser conectada a qualquer camada de UI nativa (**Jetpack Compose**, **Android Views**, **SwiftUI**, **UIKit** ou **Desktop/Backend JVM**).
 
 ---
 
@@ -30,16 +30,16 @@ Construir um leitor EPUB/HPUB corporativo em múltiplas plataformas costuma exig
 
 | Capacidade | Descrição Técnica |
 |------------|-------------------|
-| **Formatos Suportados** | **EPUB 2**, **EPUB 3** (*Reflowable* e *Fixed-Layout* `pre-paginated` via parser XML determinístico `XmlTokenizer`), **HPUB** (`book.json`), **CBZ** (quadrinhos/mangás com `ComicInfo.xml` e ordenação numérica natural) e **JSON** estruturado. |
+| **Formatos Suportados** | **EPUB 2**, **EPUB 3** (*Reflowable* e *Fixed-Layout* `pre-paginated` via parser XML determinístico `XmlTokenizer`), **HPUB** (`book.json`), **CBZ** (quadrinhos/mangás com `ComicInfo.xml` e ordenação numérica natural), **FB2** (`.fb2` e `.fb2.zip` com imagens Base64 e notas de rodapé) e **JSON** estruturado. |
 | **Streaming em Disco (`Okio FileHandle`) & ZIP64** | Abre livros de centenas de megabytes diretamente do disco (`okio.Path`) lendo apenas o *Central Directory* nos 65 KB finais do ZIP (com suporte a **ZIP64**), sem carregar o arquivo inteiro na RAM. |
 | **Cache LRU Thread-Safe & Anti-Zip Bomb** | Cache LRU em memória limitado a **16 MB** protegido por `Mutex` e proteção determinística contra *Zip Bombs* (`ZipLimits`: máx. 10.000 entradas, 50 MB/entrada, 1 GB total) e *Path Traversal*. |
 | **Streaming de Vídeo e Áudio (HTTP 206)** | Leitura parcial zero-copy (`readResourceRange`) para entradas `STORED`, permitindo *seek* instantâneo e *buffering* em tags `<video>` e `<audio>` embarcadas no EPUB 3. |
 | **DRM Plugável e Streaming por Blocos** | Processa `META-INF/encryption.xml`, desofusca fontes **IDPF** (SHA-1 1040B) e **Adobe** (UUID 1024B) nativamente e suporta `ContentDecryptor.decryptRange(...)` para streaming HTTP 206 de mídias criptografadas sem alocar o arquivo inteiro na RAM. |
-| **Rolagem Contínua, Paginação CSS e Gestos** | Alternância em tempo real entre `ReadingMode.SCROLL` e `ReadingMode.PAGINATED` (colunas horizontais CSS3 com spreads, RTL e sincronização de sub-páginas), detecção nativa de gestos (`swipe` horizontal e `touch/tap` nas bordas) e suporte a **MathML**. |
+| **Rolagem Contínua, Paginação CSS, Gestos e Tipografia** | Alternância em tempo real entre `ReadingMode.SCROLL` e `ReadingMode.PAGINATED` (colunas horizontais CSS3 com spreads, RTL, abertura automática na última sub-página ao voltar capítulo, hifenização `hyphens: auto` com `lang` injetado e controle de órfãs/viúvas), gestos nativos (`swipe`/`tap`), **Lightbox de imagens** (`ImageActivated`) e suporte a **MathML**. |
 | **Áudio Sincronizado (SMIL) e TTS** | Extração de sentenças para leitura em voz alta (`currentChapterSentences`, `HighlightTtsSentence`) com destaque `.reader-tts-active` no DOM e parser nativo **EPUB 3 Media Overlays (`.smil`)** (`SmilParser`, `findMediaOverlayClipAt`). |
-| **Busca Full-Text & Índice em Disco** | `BookSearchEngine` realiza busca *case-insensitive* e insensível a diacríticos (`foldDiacritics` 1-para-1) em todo o *spine*, com exportação/importação do índice em disco (`Okio Path`) via `saveSearchIndex` / `loadSearchIndex`. |
-| **Navegação Editorial e Telemetria** | Lista global determinística `Publication.positions()`, `page-list` (paginação impressa), `landmarks`, notas de rodapé em popup (`noteref`), estatísticas (`ReadingStats`), preview de capítulos (`getPagePreview`) e extração de capa (`readCoverBytes`). |
-| **Destaques, Notas, Favoritos e Snapshot** | Persistência automática de *Highlights* (com notas), *Bookmarks*, formulários `<input>`/`<textarea>`/`<select>` e backup completo em JSON único (`exportBookStateSnapshot` / `importBookStateSnapshot`) com compressão `gz:<base64>` (`PayloadCodec`). |
+| **Busca Full-Text com Foco Visual & Índice em Disco** | `BookSearchEngine` realiza busca *case-insensitive* e insensível a diacríticos (`foldDiacritics` 1-para-1) com navegação e destaque visual automático no DOM (`NavigateToSearchResult` / `.reader-search-match`) e persistência do índice em disco (`saveSearchIndex` / `loadSearchIndex`). |
+| **Navegação Editorial, Backstack e Telemetria** | Histórico de navegação (`NavigateBack` / `NavigateForward`), `Publication.positions()`, `page-list` (paginação impressa), `landmarks`, notas de rodapé em popup (`noteref`), estatísticas (`ReadingStats`), preview de capítulos (`getPagePreview`) e extração de capa (`readCoverBytes`). |
+| **Destaques, Caderno de Estudos, Citações e Snapshot** | Persistência de *Highlights* (com notas), *Bookmarks*, formulários `<input>`/`<textarea>`/`<select>`, exportação do **Caderno de Estudos** (`exportStudyNotebookMarkdown`, `exportStudyNotebookHtml`), citações bibliográficas (`formatQuoteCitation`) e backup JSON único (`exportBookStateSnapshot`) com compressão `gz:<base64>`. |
 | **API Explícita e Ergonomia iOS** | Compilado com `explicitApi()` e equipado com `FlowSubscription` (`watchState`, `watchEvents`, `watchUiEffects`) para consumo direto em Swift sem gerenciar Coroutines. |
 
 ---
@@ -115,13 +115,13 @@ No `build.gradle.kts` do módulo consumidor:
 ```kotlin
 dependencies {
     // Em um projeto Kotlin Multiplatform (commonMain):
-    implementation("com.readerengine:reader-core:0.7.0")
+    implementation("com.readerengine:reader-core:0.8.0")
 
     // Ou diretamente em um projeto Android puro:
-    implementation("com.readerengine:reader-core-android:0.7.0")
+    implementation("com.readerengine:reader-core-android:0.8.0")
 
     // Ou em um projeto JVM puro (Desktop / Backend):
-    implementation("com.readerengine:reader-core-jvm:0.7.0")
+    implementation("com.readerengine:reader-core-jvm:0.8.0")
 }
 ```
 
@@ -162,7 +162,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.readerengine:reader-core-android:0.7.0")
+    implementation("com.readerengine:reader-core-android:0.8.0")
 }
 ```
 
@@ -175,7 +175,7 @@ O pipeline de release gera o binário universal **`ReaderCore.xcframework.zip`**
 #### Opção A: Via `Package.swift` (Swift Package Manager)
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Casa-Publicadora-Brasileira/reader-engine.git", from: "0.7.0")
+    .package(url: "https://github.com/Casa-Publicadora-Brasileira/reader-engine.git", from: "0.8.0")
 ]
 ```
 

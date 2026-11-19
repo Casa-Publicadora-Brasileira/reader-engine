@@ -2,6 +2,26 @@
 
 Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 
+## [0.8.0] - 2026-11-19
+
+### Added
+- **Navegação Reversa Inteligente (`LastSubPage`) e Histórico de Navegação (`NavigationBackstack`):**
+  - No modo `PAGINATED`, retroceder capítulo (`PrevPage` ou gesto `reader_gesture_prev_page`) abre automaticamente o capítulo anterior na **última sub-página** (`data-reader-subpage="last"`, `ReaderJsBridge.INITIAL_SUB_PAGE_LAST` e `readerJS.goToLastSubPage()`).
+  - Novo modelo `NavigationEntry`, campos `canNavigateBack`, `canNavigateForward` e `previousLocation` em `ReaderState`, e comandos `ReaderCommand.NavigateBack` / `ReaderCommand.NavigateForward` para voltar à posição exata após saltos não-lineares (TOC, links internos, busca, slider ou bookmarks).
+- **Navegação e Destaque Visual para Resultados de Busca (`Search Match Highlight`):**
+  - Campo `SearchResult.occurrenceInPage` calculado em `BookSearchEngine.search(...)`.
+  - Novos comandos `ReaderCommand.NavigateToSearchResult(query, pageIndex, occurrenceInPage)` e `ReaderCommand.ClearSearchHighlight`, funções JS `readerJS.scrollToSearchMatch(...)` / `readerJS.clearSearchHighlight()` (com suporte a rolagem no modo `SCROLL` e troca automática de sub-página no modo `PAGINATED`) e estilo `.reader-search-match` em `ThemeTokens.toContentCss()`.
+- **Zoom / Lightbox Nativo de Imagens e Figuras (`Image Tap Inspection`):**
+  - Novo modelo `ImageActivation(src, resolvedHref, alt, caption)` e efeito `ReaderUiEffect.ImageActivated`.
+  - Interceptação de toques em `<img>` / `<figure>` em `ReaderJsBridge` (`ACTION_IMAGE_TAP = "reader_image_tap"`), preservando `alt` e `<figcaption>` sem disparar virada de página lateral.
+- **Exportador de Caderno de Estudos e Citações (`StudyNotebookExporter`):**
+  - Novos métodos em `ReaderSession`: `exportStudyNotebookMarkdown()`, `exportStudyNotebookHtml()` (com `@media print` pronto para impressão/PDF) e `formatQuoteCitation(highlight)` com referência bibliográfica automática (título, autores, capítulo e página impressa do `pageList`).
+- **Tipografia Editorial Avançada (`Hyphenation`, `lang` Automático, `Widows/Orphans`):**
+  - Novos parâmetros `hyphens: Boolean = true`, `orphans: Int = 2` e `widows: Int = 2` em `ThemeTokens.Typography`, gerando `hyphens: auto; -webkit-hyphens: auto; orphans; widows;` em `ThemeTokens.toContentCss()`.
+  - Injeção automática do atributo `lang` em `<html>` a partir de `Metadata.language` em `ReaderJsBridge.injectThemeAndBridge(...)` e `ReaderSession.currentDocument(...)`.
+- **Suporte Nativo a FictionBook 2 (`Fb2Parser`):**
+  - Novo parser `.fb2` e `.fb2.zip` registrado em `ParserRegistry.default()` reutilizando `XmlTokenizer`: extrai metadados (`<title-info>`), capa e imagens Base64 (`<binary>`), capítulos (`<section>`), sumário (`toc`) e notas de rodapé (`<body name="notes">`) integradas ao popup `epub:type="footnote"`.
+
 ## [0.7.0] - 2026-11-19
 
 ### Added

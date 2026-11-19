@@ -24,9 +24,11 @@ import com.readerengine.core.model.RenditionOrientation
 import com.readerengine.core.model.RenditionSpread
 import com.readerengine.core.model.Resource
 import com.readerengine.core.model.ResourceProvider
+import com.readerengine.core.model.TocEntry
 import com.readerengine.core.parser.CbzParser
 import com.readerengine.core.parser.EpubParser
 import com.readerengine.core.parser.HpubParser
+import com.readerengine.core.parser.ParserRegistry
 import com.readerengine.core.parser.SmilParser
 import com.readerengine.core.parser.Source
 import com.readerengine.core.parser.XmlEntities
@@ -1628,6 +1630,313 @@ class ReaderEngineTest {
         }
 
         return out.readByteArray()
+    }
+
+    // --- FASE 5 (v0.8.0) ---
+
+    @Test
+    fun paginatedPrevChapterOpensAtLastSubPageAndNavigationHistoryWorks() {
+        val pub = Publication(
+            metadata = Metadata(title = "Livro Histórico", language = "pt-BR"),
+            spine = listOf("ch1.xhtml", "ch2.xhtml", "ch3.xhtml"),
+            resources = listOf(
+                Resource("ch1.xhtml", "application/xhtml+xml"),
+                Resource("ch2.xhtml", "application/xhtml+xml"),
+                Resource("ch3.xhtml", "application/xhtml+xml"),
+            ),
+            toc = listOf(
+                TocEntry("Capítulo 1", href = "ch1.xhtml"),
+                TocEntry("Capítulo 2", href = "ch2.xhtml"),
+                TocEntry("Capítulo 3", href = "ch3.xhtml"),
+            ),
+            provider = MemoryResourceProvider(
+                mapOf(
+                    "ch1.xhtml" to "<html><body><h1>Cap 1</h1><p>Texto um.</p></body></html>".encodeToByteArray(),
+                    "ch2.xhtml" to "<html><body><h1>Cap 2</h1><p>Texto dois.</p></body></html>".encodeToByteArray(),
+                    "ch3.xhtml" to "<html><body><h1>Cap 3</h1><p>Texto três.</p></body></html>".encodeToByteArray(),
+                ),
+            ),
+        )
+        val session = ReaderSession(
+            publication = pub,
+            initialBookState = InitialBookState(
+                initialPageIndex = 1,
+                readingMode = ReadingMode.PAGINATED,
+            ),
+        )
+
+        // Retroceder capítulo no modo PAGINATED deve marcar data-reader-subpage="last"
+        session.dispatch(ReaderCommand.PrevPage)
+        assertEquals(0, session.state.value.pageIndex)
+        val prevHtml = session.currentHtml()
+        assertTrue(prevHtml.contains("data-reader-subpage=\"last\""))
+        assertTrue(prevHtml.contains("lang=\"pt-BR\""))
+        assertTrue(prevHtml.contains("goToLastSubPage"))
+
+        // Próxima leitura do mesmo capítulo já não deve reabrir na última sub-página
+        val secondReadHtml = session.currentHtml()
+        assertFalse(secondReadHtml.contains("data-reader-subpage=\"last\""))
+
+        // Histórico de navegação em saltos não-lineares (GoToPage)
+        assertFalse(session.state.value.canNavigateBack)
+        session.dispatch(ReaderCommand.GoToPage(pageIndex = 2, scrollY = 120))
+        assertEquals(2, session.state.value.pageIndex)
+        assertTrue(session.state.value.canNavigateBack)
+        assertEquals(0, session.state.value.previousLocation?.pageIndex)
+        assertEquals("Capítulo 1", session.state.value.previousLocation?.title)
+
+        // Voltar no histórico restaura página 0 e habilita NavigateForward
+        session.dispatch(ReaderCommand.NavigateBack)
+        assertEquals(0, session.state.value.pageIndex)
+        assertFalse(session.state.value.canNavigateBack)
+        assertTrue(session.state.value.canNavigateForward)
+
+        // Avançar no histórico retorna para página 2 e scroll 120
+        session.dispatch(ReaderCommand.NavigateForward)
+        assertEquals(2, session.state.value.pageIndex)
+        assertEquals(120, session.state.value.scrollY)
+        assertTrue(session.state.value.canNavigateBack)
+        assertFalse(session.state.value.canNavigateForward)
+    }
+
+    @Test
+    fun searchOccurrenceInPageAndNavigateToSearchResultEmitScrollAndHighlightJs() {
+        val pub = Publication(
+            metadata = Metadata(title = "Busca Destacada"),
+            spine = listOf("ch1.xhtml", "ch2.xhtml"),
+            resources = listOf(
+                Resource("ch1.xhtml", "application/xhtml+xml"),
+                Resource("ch2.xhtml", "application/xhtml+xml"),
+            ),
+            toc = listOf(
+                TocEntry("Intro", href = "ch1.xhtml"),
+                TocEntry("Esperança", href = "ch2.xhtml"),
+            ),
+            provider = MemoryResourceProvider(
+                mapOf(
+                    "ch1.xhtml" to "<html><body><p>Primeira página simples.</p></body></html>".encodeToByteArray(),
+                    "ch2.xhtml" to "<html><body><p>A esperança renova. Nossa Esperança permanece viva.</p></body></html>".encodeToByteArray(),
+                ),
+            ),
+        )
+        val session = ReaderSession(pub)
+        val matches = session.search("esperanca")
+        assertEquals(2, matches.size)
+        assertEquals(0, matches[0].occurrenceInPage)
+        assertEquals(1, matches[1].occurrenceInPage)
+
+        val effects = mutableListOf<ReaderUiEffect>()
+        val sub = session.watchUiEffects { effects.add(it) }
+        try {
+            session.dispatch(
+                ReaderCommand.NavigateToSearchResult(
+                    query = "esperanca",
+                    pageIndex = matches[1].pageIndex,
+                    occurrenceInPage = matches[1].occurrenceInPage,
+                ),
+            )
+            assertEquals(1, session.state.value.pageIndex)
+            assertTrue(session.state.value.canNavigateBack)
+            val eval = effects.filterIsInstance<ReaderUiEffect.EvaluateJs>().lastOrNull()
+            assertNotNull(eval)
+            assertTrue(eval.script.contains("scrollToSearchMatch(\"esperanca\",1)"))
+
+            session.dispatch(ReaderCommand.ClearSearchHighlight)
+            val clearEval = effects.filterIsInstance<ReaderUiEffect.EvaluateJs>().lastOrNull()
+            assertNotNull(clearEval)
+            assertTrue(clearEval.script.contains("clearSearchHighlight"))
+        } finally {
+            sub.cancel()
+        }
+    }
+
+    @Test
+    fun imageTapActionResolvesRelativeHrefAndEmitsImageActivatedEffect() {
+        val imgBytes = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47)
+        val pub = Publication(
+            metadata = Metadata(title = "Atlas"),
+            spine = listOf("OEBPS/text/ch1.xhtml"),
+            resources = listOf(
+                Resource("OEBPS/text/ch1.xhtml", "application/xhtml+xml"),
+                Resource("OEBPS/images/mapa.png", "image/png"),
+            ),
+            toc = listOf(TocEntry("Mapa", href = "OEBPS/text/ch1.xhtml")),
+            provider = MemoryResourceProvider(
+                mapOf(
+                    "OEBPS/text/ch1.xhtml" to "<html><body><figure><img src=\"../images/mapa.png\" alt=\"Mapa antigo\"/><figcaption>Figura 1</figcaption></figure></body></html>".encodeToByteArray(),
+                    "OEBPS/images/mapa.png" to imgBytes,
+                ),
+            ),
+        )
+        val session = ReaderSession(pub)
+        val effects = mutableListOf<ReaderUiEffect>()
+        val sub = session.watchUiEffects { effects.add(it) }
+        try {
+            session.dispatch(
+                ReaderCommand.TriggerAction(
+                    action = ReaderJsBridge.ACTION_IMAGE_TAP,
+                    payload = """{"src":"../images/mapa.png","alt":"Mapa antigo","caption":"Figura 1"}""",
+                ),
+            )
+            val activated = effects.filterIsInstance<ReaderUiEffect.ImageActivated>().singleOrNull()
+            assertNotNull(activated)
+            assertEquals("../images/mapa.png", activated.image.src)
+            assertEquals("OEBPS/images/mapa.png", activated.image.resolvedHref)
+            assertEquals("Mapa antigo", activated.image.alt)
+            assertEquals("Figura 1", activated.image.caption)
+            assertContentEquals(imgBytes, session.readResource(activated.image.resolvedHref))
+        } finally {
+            sub.cancel()
+        }
+    }
+
+    @Test
+    fun studyNotebookExporterGeneratesMarkdownHtmlAndBibliographicCitation() {
+        val pub = Publication(
+            metadata = Metadata(
+                title = "Guia de Estudos",
+                authors = listOf("Maria Silva"),
+            ),
+            spine = listOf("ch1.xhtml"),
+            resources = listOf(Resource("ch1.xhtml", "application/xhtml+xml")),
+            toc = listOf(TocEntry("Lição 1", href = "ch1.xhtml")),
+            pageList = listOf(TocEntry("42", href = "ch1.xhtml")),
+            provider = MemoryResourceProvider(
+                mapOf("ch1.xhtml" to "<html><body><p>A prática constante traz clareza.</p></body></html>".encodeToByteArray()),
+            ),
+        )
+        val session = ReaderSession(pub)
+        session.onPageHighlightsReported(
+            rawSerializedHighlights = "type:textContent|1\$highlight_yellow\$A prática constante traz clareza.",
+            pageIndex = 0,
+        )
+        session.dispatch(ReaderCommand.UpdateHighlightNote(highlightId = 1, note = "Aplicar no estudo diário"))
+        session.onPageFormReported(
+            rawModificationsJson = """{"annotations":[{"content":"Revisar sexta","index":0}],"answers":[{"content":"Sim, diariamente","index":0}]}""",
+            pageIndex = 0,
+        )
+        session.dispatch(ReaderCommand.ToggleBookmark(label = "Ponto importante"))
+
+        val highlight = session.state.value.currentPageHighlights.single()
+        val citation = session.formatQuoteCitation(highlight)
+        assertTrue(citation.contains("«A prática constante traz clareza.»"))
+        assertTrue(citation.contains("Guia de Estudos"))
+        assertTrue(citation.contains("Maria Silva"))
+        assertTrue(citation.contains("Lição 1"))
+        assertTrue(citation.contains("p. 42"))
+        assertTrue(citation.contains("Aplicar no estudo diário"))
+
+        val markdown = session.exportStudyNotebookMarkdown()
+        assertTrue(markdown.contains("# Guia de Estudos"))
+        assertTrue(markdown.contains("## Lição 1 (p. 42)"))
+        assertTrue(markdown.contains("> A prática constante traz clareza."))
+        assertTrue(markdown.contains("**Nota:** Aplicar no estudo diário"))
+        assertTrue(markdown.contains("**Q1:** Sim, diariamente"))
+        assertTrue(markdown.contains("Revisar sexta"))
+        assertTrue(markdown.contains("Ponto importante"))
+
+        val html = session.exportStudyNotebookHtml()
+        assertTrue(html.contains("<!doctype html>"))
+        assertTrue(html.contains("@media print"))
+        assertTrue(html.contains("<blockquote>A prática constante traz clareza.</blockquote>"))
+        assertTrue(html.contains("Sim, diariamente"))
+    }
+
+    @Test
+    fun typographyHyphenationWidowsOrphansAndSearchMatchCssGenerated() {
+        val base = ThemeTokens.material3()
+        val cssDefault = base.toContentCss()
+        assertTrue(cssDefault.contains("hyphens:auto;-webkit-hyphens:auto;"))
+        assertTrue(cssDefault.contains("orphans:2;widows:2;"))
+        assertTrue(cssDefault.contains(".reader-search-match"))
+
+        val noHyphens = base.copy(
+            typography = base.typography.copy(hyphens = false, orphans = 3, widows = 3),
+        )
+        val cssDisabled = noHyphens.toContentCss()
+        assertTrue(cssDisabled.contains("hyphens:none;-webkit-hyphens:none;"))
+        assertTrue(cssDisabled.contains("orphans:3;widows:3;"))
+    }
+
+    @Test
+    fun fb2ParserParsesMetadataCoverChaptersAndFootnotesInPlainAndZippedFormats() {
+        // 1x1 PNG mínimo em Base64
+        val pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        val fb2Xml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+              <description>
+                <title-info>
+                  <author><first-name>Machado</first-name><last-name>de Assis</last-name></author>
+                  <book-title>Dom Casmurro</book-title>
+                  <lang>pt-BR</lang>
+                  <coverpage><image l:href="#cover.png"/></coverpage>
+                </title-info>
+                <document-info>
+                  <id>fb2-dom-casmurro-1</id>
+                </document-info>
+              </description>
+              <body>
+                <section>
+                  <title><p>Capítulo I</p></title>
+                  <p>Uma noite destas, vindo da <emphasis>cidade</emphasis> para o Engenho Novo<a l:href="#n1" type="note">[1]</a>.</p>
+                </section>
+                <section>
+                  <title><p>Capítulo II</p></title>
+                  <p>Agora que expliquei o <strong>título</strong>, passo a escrever o livro.</p>
+                </section>
+              </body>
+              <body name="notes">
+                <section id="n1">
+                  <p>Bairro do Rio de Janeiro.</p>
+                </section>
+              </body>
+              <binary id="cover.png" content-type="image/png">$pngBase64</binary>
+            </FictionBook>
+        """.trimIndent()
+
+        val registry = ParserRegistry.default()
+        val pub = registry.open(Source.fromBytes("dom-casmurro.fb2", fb2Xml.encodeToByteArray()))
+        assertEquals("Dom Casmurro", pub.metadata.title)
+        assertEquals(listOf("Machado de Assis"), pub.metadata.authors)
+        assertEquals("pt-BR", pub.metadata.language)
+        assertEquals("fb2-dom-casmurro-1", pub.metadata.identifier)
+        assertEquals("images/cover.png", pub.metadata.coverHref)
+        assertEquals(2, pub.spine.size)
+        assertEquals("Capítulo I", pub.toc[0].title)
+        assertEquals("Capítulo II", pub.toc[1].title)
+
+        val session = ReaderSession(pub)
+        val coverBytes = session.readCoverBytes()
+        assertNotNull(coverBytes)
+        assertTrue(coverBytes.size > 20)
+
+        val ch1Html = session.currentHtml()
+        assertTrue(ch1Html.contains("<em>cidade</em>"))
+        assertTrue(ch1Html.contains("epub:type=\"footnote\""))
+        assertTrue(ch1Html.contains("Bairro do Rio de Janeiro."))
+
+        // Footnote popup resolution funciona nativamente no FB2
+        val effects = mutableListOf<ReaderUiEffect>()
+        val sub = session.watchUiEffects { effects.add(it) }
+        try {
+            assertTrue(session.handleUrlNavigation("#n1"))
+            val noteEffect = effects.filterIsInstance<ReaderUiEffect.OpenCustomUri>().singleOrNull()
+            assertNotNull(noteEffect)
+            assertEquals("footnote", noteEffect.scheme)
+            assertTrue(noteEffect.content.orEmpty().contains("Bairro do Rio de Janeiro."))
+        } finally {
+            sub.cancel()
+        }
+
+        // Também suporta .fb2.zip
+        val zippedFb2 = buildStoredZip(
+            entries = mapOf("book.fb2" to fb2Xml.encodeToByteArray()),
+            asZip64 = false,
+        )
+        val pubFromZip = registry.open(Source.fromBytes("dom-casmurro.fb2.zip", zippedFb2))
+        assertEquals("Dom Casmurro", pubFromZip.metadata.title)
+        assertEquals(2, pubFromZip.spine.size)
     }
 }
 

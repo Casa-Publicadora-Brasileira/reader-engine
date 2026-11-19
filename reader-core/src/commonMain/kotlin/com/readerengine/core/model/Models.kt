@@ -416,7 +416,25 @@ public data class SearchResult(
     val matchIndex: Int,
     val progression: Float,
     val locator: Locator? = null,
-)
+    val occurrenceInPage: Int = 0,
+) {
+    public constructor(
+        pageIndex: Int,
+        chapterTitle: String,
+        snippet: String,
+        matchIndex: Int,
+        progression: Float,
+        locator: Locator?,
+    ) : this(
+        pageIndex = pageIndex,
+        chapterTitle = chapterTitle,
+        snippet = snippet,
+        matchIndex = matchIndex,
+        progression = progression,
+        locator = locator,
+        occurrenceInPage = 0,
+    )
+}
 
 /** Item individual de resposta ou anotação em páginas interativas / apostilas / lições. */
 @Serializable
@@ -554,4 +572,28 @@ public data class PersistedSearchIndex(
     val documentId: String,
     val spine: List<String>,
     val chapters: Map<String, String>,
+)
+
+/**
+ * Entrada no histórico de navegação do leitor (`backStack` / `forwardStack`),
+ * permitindo voltar à posição exata após saltos via TOC, links internos, busca ou bookmarks.
+ */
+@Serializable
+public data class NavigationEntry(
+    val pageIndex: Int,
+    val subPage: Int = 0,
+    val scrollY: Int = 0,
+    val title: String = "",
+)
+
+/**
+ * Metadados de uma imagem ativada por toque no documento HTML (`reader_image_tap`),
+ * permitindo ao app host abrir um visualizador Lightbox nativo com zoom.
+ */
+@Serializable
+public data class ImageActivation(
+    val src: String,
+    val resolvedHref: String,
+    val alt: String? = null,
+    val caption: String? = null,
 )

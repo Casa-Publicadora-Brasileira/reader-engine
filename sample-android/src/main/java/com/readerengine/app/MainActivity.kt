@@ -557,6 +557,9 @@ private fun ReaderScreen(
                 is ReaderUiEffect.ShowMessage -> {
                     lastEventSummary = "ShowMessage(${effect.message})"
                 }
+                is ReaderUiEffect.ImageActivated -> {
+                    lastEventSummary = "ImageActivated(${effect.image.resolvedHref})"
+                }
             }
         }
     }

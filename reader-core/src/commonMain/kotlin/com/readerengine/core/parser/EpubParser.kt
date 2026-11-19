@@ -4,6 +4,7 @@ import com.readerengine.core.drm.DecryptingResourceProvider
 import com.readerengine.core.drm.EpubEncryptionParser
 import com.readerengine.core.drm.StandardEpubFontDeobfuscator
 import com.readerengine.core.error.ReaderException
+import com.readerengine.core.model.MediaOverlay
 import com.readerengine.core.model.Metadata
 import com.readerengine.core.model.PageProgressionDirection
 import com.readerengine.core.model.Publication
@@ -50,6 +51,8 @@ public class EpubParser : FormatParser {
 
         val resources = mutableListOf<Resource>()
         val idToHref = LinkedHashMap<String, String>()
+        val mediaOverlayItemIds = LinkedHashSet<String>()
+        val smilHrefs = LinkedHashSet<String>()
         var navHref: String? = null
         var ncxHref: String? = null
         var coverHref: String? = null
@@ -59,6 +62,7 @@ public class EpubParser : FormatParser {
             val href = extractAttribute(itemTag, "href") ?: continue
             val mediaType = extractAttribute(itemTag, "media-type").orEmpty()
             val properties = extractAttribute(itemTag, "properties").orEmpty()
+            val mediaOverlayAttr = extractAttribute(itemTag, "media-overlay")?.trim().orEmpty()
 
             val fullHref = normalizeHref("$baseDir$href")
             val propsList = properties.split(Regex("\\s+"))
@@ -71,9 +75,20 @@ public class EpubParser : FormatParser {
             if (mediaType == "application/x-dtbncx+xml" || fullHref.endsWith(".ncx", ignoreCase = true)) {
                 ncxHref = fullHref
             }
+            if (mediaType.equals("application/smil+xml", ignoreCase = true) ||
+                fullHref.endsWith(".smil", ignoreCase = true)
+            ) {
+                smilHrefs.add(fullHref)
+            }
+            if (mediaOverlayAttr.isNotEmpty()) {
+                mediaOverlayItemIds.add(mediaOverlayAttr)
+            }
 
             idToHref[id] = fullHref
             resources.add(Resource(href = fullHref, mediaType = mediaType))
+        }
+        for (overlayId in mediaOverlayItemIds) {
+            idToHref[overlayId]?.let { smilHrefs.add(it) }
         }
 
         if (coverHref == null) {
@@ -152,6 +167,13 @@ public class EpubParser : FormatParser {
         val spineDirection = spineTag?.let { extractAttribute(it, "page-progression-direction") }
         val pageProgressionDirection = PageProgressionDirection.fromRaw(spineDirection)
 
+        val mediaOverlays: List<MediaOverlay> = smilHrefs.mapNotNull { smilHref ->
+            runCatching {
+                val smilXml = effectiveProvider.read(smilHref).decodeToString()
+                SmilParser.parse(smilXml, smilHref)
+            }.getOrNull()?.takeIf { it.clips.isNotEmpty() }
+        }
+
         val finalMetadata = metadata.copy(
             coverHref = coverHref,
             pageProgressionDirection = pageProgressionDirection,
@@ -166,6 +188,7 @@ public class EpubParser : FormatParser {
             encryptedResources = encryptedResources,
             pageList = pageList,
             landmarks = landmarks,
+            mediaOverlays = mediaOverlays,
         )
     }
 

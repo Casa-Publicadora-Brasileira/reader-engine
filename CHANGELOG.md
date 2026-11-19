@@ -2,6 +2,53 @@
 
 Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 
+## [0.6.0] - 2026-11-19
+
+### Added
+- **Contrato Multiplataforma de Leitura em Voz Alta (TTS):**
+  - Modelo `TtsSentence` e métodos `ReaderSession.currentChapterSentences()` / `chapterSentences(pageIndex)` com extração limpa de sentenças, offsets e `Locator`.
+  - Novos comandos `ReaderCommand.HighlightTtsSentence(sentenceIndex, text, elementId)` e `ReaderCommand.ClearTtsHighlight`, ponte JS `readerJS.highlightTtsSentence(...)` / `readerJS.clearTtsHighlight()` e classe CSS `.reader-tts-active` em `ThemeTokens.toContentCss()` (com contraste adaptado para modo claro e escuro).
+- **EPUB 3 Media Overlays (Parser `.smil`):**
+  - Novo `SmilParser` (SMIL 3.0) extraindo clipes sincronizados `<par>` (`<text src="...#id"/>` + `<audio src="..." clipBegin="..." clipEnd="..."/>`) com suporte completo a clock values (`hh:mm:ss.fff`, `mm:ss.fff`, `s`, `ms`, `min`, `h`).
+  - Descoberta automática de arquivos `.smil` (`media-overlay` e `application/smil+xml`) em `EpubParser`, expostos em `Publication.mediaOverlays`, `ReaderSession.currentChapterMediaOverlayClips()`, `mediaOverlayClips(pageIndex)` e `findMediaOverlayClipAt(audioHref, positionSeconds)`.
+- **Descriptografia por Blocos em `readRange` (Resolve GAP-02):**
+  - Método opcional `ContentDecryptor.decryptRange(...)` para streaming HTTP 206 de mídias criptografadas sem alocar o arquivo inteiro na RAM.
+  - Implementação nativa de `decryptRange` em `StandardEpubFontDeobfuscator` (IDPF e Adobe) e delegação automática em `DecryptingResourceProvider.readRange`.
+- **Índice de Busca Persistente em Disco (`Okio Path`):**
+  - Novo modelo `PersistedSearchIndex` e métodos `BookSearchEngine.buildIndex`, `exportIndexJson`, `importIndexJson`, `saveIndexToDisk` e `loadIndexFromDisk`.
+  - Atalhos ergonômicos em `ReaderSession`: `exportSearchIndexJson()`, `importSearchIndexJson(rawJson)`, `saveSearchIndex(path)` e `loadSearchIndex(path)` para busca instantânea na reabertura de livros grandes.
+
+## [0.5.1] - 2026-11-18
+
+### Added
+- **Detecção de Gestos (`Swipe` & `Touch/Tap`) para Passagem de Página:**
+  - Hook `__readerGestureHooked` e `window.readerJS.handlePageTurnGesture` em `ReaderJsBridge`, suportando arrasto horizontal (`swipe`) em `PAGINATED` e `SCROLL`, toques nas zonas laterais esquerda/direita em `PAGINATED` (respeitando `dir="rtl"`), toque central (`reader_gesture_tap_center`) e preservação de links, inputs, notas de rodapé e seleção de texto ativa.
+  - Tratamento automático em `ReaderSession` para `reader_sub_page_changed`, `reader_gesture_next_page` e `reader_gesture_prev_page` tanto via `ReaderCommand.TriggerAction` quanto via `handleUrlNavigation("action://...")`.
+  - Interceptação de custom schemes disparados via JS (`action://`, `footnote://`, `verse://`) no `WKWebView` em `sample-ios`.
+
+### Fixed
+- **Colapso de altura no modo paginado (`100vh = 0px` em WebViews `WRAP_CONTENT`):** substituído por `--reader-page-height` calculado dinamicamente com `overflow: visible` no `body`, injeção automática de `<meta name="viewport">` e remoção de tags `<head>` na extração de texto para `getPagePreview` e `positions()`.
+
+## [0.5.0] - 2026-11-18
+
+### Added
+- **Tema Dark, Tipografia e Layout em `ThemeTokens`:** regras `!important` preservando `.highlight_*`, `Typography.textAlign = "justify"` e `Shape.horizontalPaddingPx = 24`, além de suporte a `<html>` sem atributos no `ReaderJsBridge`.
+- **Lista Global de Posições (`Publication.positions()`):** divisão determinística em blocos de 1.024 caracteres estilo Readium Positions.
+- **Suporte a `page-list` e `landmarks`:** extração de `<nav epub:type="page-list">`, `<nav epub:type="landmarks">` (EPUB 3) e `<pageList>` (NCX EPUB 2).
+- **Notas de Rodapé em Popup:** interceptação automática de links `epub:type="noteref"` / `role="doc-noteref"` emitindo `ReaderUiEffect.OpenCustomUri(scheme = "footnote", ...)`.
+- **Spreads de Página Dupla (`RenditionSpread.LANDSCAPE` / `BOTH`)** em CSS multi-coluna.
+- **Telemetria de Leitura (`ReadingStats`)** e **Helper de Preview de Capítulo (`ReaderSession.getPagePreview` / `pagePreview`)**.
+
+## [0.4.0] - 2026-11-17
+
+### Added
+- **Persistência de Sub-página (Resolve GAP-01):** `InitialBookState.initialSubPage`, `ReadingProgress.subPage` e `ReaderJsBridge.goToSubPageCommand(index)`.
+- **Descoberta e Extração de Capa:** `Metadata.coverHref` em `EpubParser`/`HpubParser` e `ReaderSession.readCoverBytes()`.
+- **Notas em Destaques:** `HighlightItem.note`, `InitialBookState.savedHighlightNotes` e `ReaderCommand.UpdateHighlightNote`.
+- **Suporte a Idiomas RTL (`PageProgressionDirection`):** extração de `page-progression-direction="rtl"`, injeção de `dir="rtl"` e ajuste de `translateX`.
+- **Snapshot Único de Estado (`BookStateSnapshot`):** `session.exportBookStateSnapshot()` e `session.importBookStateSnapshot(payload)`.
+- **Limpeza de Dívidas Técnicas (Resolve GAP-04 e GAP-05):** `PayloadCodec` unificado em `commonMain` com Okio e modularização do `sample-android`.
+
 ## [0.3.1] - 2026-11-08
 
 ### Added

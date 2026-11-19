@@ -11,6 +11,8 @@ import com.readerengine.core.model.HighlightItem
 import com.readerengine.core.model.HighlightStyle
 import com.readerengine.core.model.InitialBookState
 import com.readerengine.core.model.Locator
+import com.readerengine.core.model.MediaOverlay
+import com.readerengine.core.model.MediaOverlayClip
 import com.readerengine.core.model.Metadata
 import com.readerengine.core.model.PageFormState
 import com.readerengine.core.model.PagePreview
@@ -23,7 +25,9 @@ import com.readerengine.core.model.ReadingStats
 import com.readerengine.core.model.SearchResult
 import com.readerengine.core.model.TocEntry
 import com.readerengine.core.model.TocItem
+import com.readerengine.core.model.TtsSentence
 import com.readerengine.core.parser.XmlEntities
+import com.readerengine.core.platform.defaultFileSystem
 import com.readerengine.core.provider.normalizeHref
 import com.readerengine.core.search.BookSearchEngine
 import com.readerengine.core.theme.ThemeTokens
@@ -40,6 +44,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import okio.FileSystem
+import okio.Path
 import kotlin.math.abs
 import kotlin.math.ceil
 
@@ -199,6 +205,12 @@ public sealed interface ReaderCommand {
     public data class ToggleBookmark(val label: String? = null, val timestampEpochMs: Long = 0L) : ReaderCommand
     public data class RemoveBookmark(val bookmarkId: String) : ReaderCommand
     public data class GoToBookmark(val bookmarkId: String) : ReaderCommand
+    public data class HighlightTtsSentence(
+        val sentenceIndex: Int,
+        val text: String? = null,
+        val elementId: String? = null,
+    ) : ReaderCommand
+    public data object ClearTtsHighlight : ReaderCommand
 }
 
 public class ReaderSession(
@@ -379,6 +391,91 @@ public class ReaderSession(
             maxResults = maxResults,
             strings = strings,
         )
+
+    /** Exporta o índice de busca textual de todos os capítulos como JSON serializado. */
+    public fun exportSearchIndexJson(): String =
+        BookSearchEngine.exportIndexJson(publication = publication, documentId = documentId)
+
+    /** Restaura o índice de busca textual a partir de um JSON previamente exportado. */
+    public fun importSearchIndexJson(rawJson: String): Boolean =
+        BookSearchEngine.importIndexJson(publication = publication, rawJson = rawJson)
+
+    /** Salva o índice de busca em disco (`Okio Path`) utilizando o `FileSystem` padrão da plataforma. */
+    public fun saveSearchIndex(path: Path) {
+        saveSearchIndex(path = path, fileSystem = defaultFileSystem)
+    }
+
+    /** Salva o índice de busca em disco usando o `FileSystem` especificado. */
+    public fun saveSearchIndex(path: Path, fileSystem: FileSystem) {
+        BookSearchEngine.saveIndexToDisk(
+            publication = publication,
+            documentId = documentId,
+            path = path,
+            fileSystem = fileSystem,
+        )
+    }
+
+    /** Carrega o índice de busca do disco (`Okio Path`) utilizando o `FileSystem` padrão da plataforma. */
+    public fun loadSearchIndex(path: Path): Boolean =
+        loadSearchIndex(path = path, fileSystem = defaultFileSystem)
+
+    /** Carrega o índice de busca do disco usando o `FileSystem` especificado. */
+    public fun loadSearchIndex(path: Path, fileSystem: FileSystem): Boolean =
+        BookSearchEngine.loadIndexFromDisk(
+            publication = publication,
+            path = path,
+            fileSystem = fileSystem,
+        )
+
+    /**
+     * Extrai as sentenças do capítulo atual para leitura em voz alta (TTS — Android `TextToSpeech`
+     * / iOS `AVSpeechSynthesizer`).
+     */
+    public fun currentChapterSentences(): List<TtsSentence> =
+        chapterSentences(pageIndex = _state.value.pageIndex)
+
+    /** Extrai as sentenças de um capítulo específico da spine para leitura em voz alta (TTS). */
+    public fun chapterSentences(pageIndex: Int): List<TtsSentence> =
+        BookSearchEngine.extractSentences(publication = publication, pageIndex = pageIndex)
+
+    /** Retorna todos os EPUB 3 Media Overlays (`.smil`) declarados na publicação. */
+    public fun mediaOverlays(): List<MediaOverlay> = publication.mediaOverlays
+
+    /** Retorna os clipes sincronizados `<par>` de áudio/texto associados ao capítulo atual. */
+    public fun currentChapterMediaOverlayClips(): List<MediaOverlayClip> =
+        mediaOverlayClips(pageIndex = _state.value.pageIndex)
+
+    /** Retorna os clipes sincronizados `<par>` de áudio/texto associados ao capítulo `pageIndex`. */
+    public fun mediaOverlayClips(pageIndex: Int): List<MediaOverlayClip> {
+        val href = publication.spine.getOrNull(pageIndex)?.let(::normalizeHref) ?: return emptyList()
+        return publication.mediaOverlays.flatMap { overlay ->
+            overlay.clips.filter { clip ->
+                val clipHref = normalizeHref(clip.textHref)
+                clipHref == href || href.endsWith("/$clipHref") || clipHref.endsWith("/$href")
+            }
+        }
+    }
+
+    /**
+     * Localiza o clipe de Media Overlay ativo para o arquivo `audioHref` e timestamp `positionSeconds`,
+     * permitindo destacar automaticamente o elemento correspondente no DOM durante a reprodução do áudio.
+     */
+    public fun findMediaOverlayClipAt(audioHref: String, positionSeconds: Double): MediaOverlayClip? {
+        val cleanAudio = normalizeHref(audioHref)
+        val pos = positionSeconds.coerceAtLeast(0.0)
+        return publication.mediaOverlays
+            .asSequence()
+            .flatMap { it.clips.asSequence() }
+            .firstOrNull { clip ->
+                val clipAudio = normalizeHref(clip.audioHref)
+                val audioMatches = clipAudio == cleanAudio ||
+                    clipAudio.endsWith("/$cleanAudio") ||
+                    cleanAudio.endsWith("/$clipAudio")
+                val inBounds = pos >= clip.clipBeginSeconds &&
+                    (clip.clipEndSeconds == null || pos < clip.clipEndSeconds)
+                audioMatches && inBounds
+            }
+    }
 
     /** Exporta a lista de marcadores (Bookmarks) como JSON. */
     public fun exportBookmarksJson(): String =
@@ -634,6 +731,30 @@ public class ReaderSession(
                 if (target != null) {
                     navigateToPageInternal(target.pageIndex, scrollY = target.scrollY)
                 }
+            }
+
+            is ReaderCommand.HighlightTtsSentence -> {
+                val resolvedText = command.text
+                    ?: if (command.elementId.isNullOrBlank()) {
+                        currentChapterSentences().getOrNull(command.sentenceIndex)?.text
+                    } else {
+                        null
+                    }
+                _uiEffects.tryEmit(
+                    ReaderUiEffect.EvaluateJs(
+                        ReaderJsBridge.highlightTtsSentenceCommand(
+                            sentenceIndex = command.sentenceIndex,
+                            text = resolvedText,
+                            elementId = command.elementId,
+                        ),
+                    ),
+                )
+            }
+
+            ReaderCommand.ClearTtsHighlight -> {
+                _uiEffects.tryEmit(
+                    ReaderUiEffect.EvaluateJs(ReaderJsBridge.SCRIPT_CLEAR_TTS_HIGHLIGHT),
+                )
             }
         }
 

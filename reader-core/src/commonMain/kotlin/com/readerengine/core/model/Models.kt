@@ -155,6 +155,7 @@ public class Publication(
     public val encryptedResources: Map<String, EncryptedResourceInfo> = emptyMap(),
     public val pageList: List<TocEntry> = emptyList(),
     public val landmarks: List<TocEntry> = emptyList(),
+    public val mediaOverlays: List<MediaOverlay> = emptyList(),
 ) {
     public constructor(
         metadata: Metadata,
@@ -172,6 +173,28 @@ public class Publication(
         encryptedResources = encryptedResources,
         pageList = emptyList(),
         landmarks = emptyList(),
+        mediaOverlays = emptyList(),
+    )
+
+    public constructor(
+        metadata: Metadata,
+        spine: List<String>,
+        resources: List<Resource>,
+        toc: List<TocEntry>,
+        provider: ResourceProvider,
+        encryptedResources: Map<String, EncryptedResourceInfo>,
+        pageList: List<TocEntry>,
+        landmarks: List<TocEntry>,
+    ) : this(
+        metadata = metadata,
+        spine = spine,
+        resources = resources,
+        toc = toc,
+        provider = provider,
+        encryptedResources = encryptedResources,
+        pageList = pageList,
+        landmarks = landmarks,
+        mediaOverlays = emptyList(),
     )
 
     @kotlin.concurrent.Volatile
@@ -199,6 +222,16 @@ public class Publication(
         updated[href] = computed
         plainTextCache = updated
         return computed
+    }
+
+    internal fun snapshotPlainTextCache(): Map<String, String> = LinkedHashMap(plainTextCache)
+
+    internal fun restorePlainTextCache(entries: Map<String, String>) {
+        if (entries.isEmpty()) return
+        val updated = LinkedHashMap<String, String>(plainTextCache.size + entries.size)
+        updated.putAll(plainTextCache)
+        updated.putAll(entries)
+        plainTextCache = updated
     }
 
     public fun findResource(href: String): Resource? {
@@ -470,4 +503,55 @@ public data class PagePreview(
     val href: String,
     val title: String,
     val excerpt: String,
+)
+
+/**
+ * Sentença extraída de um capítulo para leitura em voz alta (TTS — Android `TextToSpeech`
+ * / iOS `AVSpeechSynthesizer`) com posição de caracteres e `Locator`.
+ */
+@Serializable
+public data class TtsSentence(
+    val index: Int,
+    val pageIndex: Int,
+    val href: String,
+    val text: String,
+    val charStart: Int,
+    val charEnd: Int,
+    val elementId: String? = null,
+    val locator: Locator? = null,
+)
+
+/**
+ * Par sincronizado `<par>` de um EPUB 3 Media Overlay (`.smil`), vinculando um trecho/elemento
+ * de texto (`textHref#textFragmentId`) a um intervalo de tempo em um arquivo de áudio narrado.
+ */
+@Serializable
+public data class MediaOverlayClip(
+    val id: String? = null,
+    val textHref: String,
+    val textFragmentId: String? = null,
+    val audioHref: String,
+    val clipBeginSeconds: Double = 0.0,
+    val clipEndSeconds: Double? = null,
+)
+
+/**
+ * Representação estruturada de um arquivo EPUB 3 Media Overlay (`.smil`).
+ */
+@Serializable
+public data class MediaOverlay(
+    val href: String,
+    val clips: List<MediaOverlayClip>,
+)
+
+/**
+ * Índice serializável de texto limpo por capítulo para persistência em disco (`Okio Path`)
+ * e busca instantânea na reabertura de livros grandes.
+ */
+@Serializable
+public data class PersistedSearchIndex(
+    val version: Int = 1,
+    val documentId: String,
+    val spine: List<String>,
+    val chapters: Map<String, String>,
 )

@@ -181,6 +181,8 @@ public data class ThemeTokens(
             append(".highlight_dashed{text-decoration:line-through !important;}")
             append(".highlight_under{text-decoration:underline !important;}")
             append(".highlight_annotation,.highlight_annotation *{background-color:#FFE082 !important;border-bottom:2px dotted #F57C00;color:#111 !important;}")
+            val ttsBg = if (isNightMode) "rgba(106,183,255,0.32)" else "rgba(255,213,79,0.45)"
+            append(".reader-tts-active,.reader-tts-active *{background-color:$ttsBg !important;border-radius:3px;transition:background-color 0.15s ease;}")
         }
     }
 

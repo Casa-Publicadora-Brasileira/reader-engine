@@ -4,6 +4,7 @@ import com.readerengine.core.bridge.InterceptedUrl
 import com.readerengine.core.bridge.PayloadCodec
 import com.readerengine.core.bridge.ReaderJsBridge
 import com.readerengine.core.drm.ContentDecryptor
+import com.readerengine.core.drm.DecryptingResourceProvider
 import com.readerengine.core.drm.EncryptedResourceInfo
 import com.readerengine.core.drm.EpubEncryptionParser
 import com.readerengine.core.drm.StandardEpubFontDeobfuscator
@@ -22,8 +23,10 @@ import com.readerengine.core.model.RenditionLayout
 import com.readerengine.core.model.RenditionOrientation
 import com.readerengine.core.model.RenditionSpread
 import com.readerengine.core.model.Resource
+import com.readerengine.core.model.ResourceProvider
 import com.readerengine.core.parser.EpubParser
 import com.readerengine.core.parser.HpubParser
+import com.readerengine.core.parser.SmilParser
 import com.readerengine.core.parser.XmlEntities
 import com.readerengine.core.provider.MemoryResourceProvider
 import com.readerengine.core.provider.ZipLimits
@@ -1134,6 +1137,217 @@ class ReaderEngineTest {
 
         eventSub.cancel()
         effectSub.cancel()
+        session.close()
+    }
+
+    @Test
+    fun ttsSentencesMediaOverlaysDrmRangeStreamingAndPersistentSearchIndex() = runTest {
+        // 1. SMIL 3.0 Media Overlays parser + clock value parsing
+        assertEquals(83.45, SmilParser.parseClockValue("0:01:23.450"))
+        assertEquals(83.5, SmilParser.parseClockValue("01:23.5"))
+        assertEquals(12.5, SmilParser.parseClockValue("12.5s"))
+        assertEquals(1.25, SmilParser.parseClockValue("1250ms"))
+        assertEquals(120.0, SmilParser.parseClockValue("2min"))
+        assertEquals(3600.0, SmilParser.parseClockValue("1h"))
+
+        val smilXml = """
+            <smil xmlns="http://www.w3.org/ns/SMIL" version="3.0">
+              <body>
+                <seq>
+                  <par id="par1">
+                    <text src="../text/ch1.xhtml#p1"/>
+                    <audio src="../audio/ch1.mp3" clipBegin="0:00:00.000" clipEnd="0:00:04.500"/>
+                  </par>
+                  <par id="par2">
+                    <text src="../text/ch1.xhtml#p2"/>
+                    <audio src="../audio/ch1.mp3" clipBegin="4.5s" clipEnd="9.25s"/>
+                  </par>
+                </seq>
+              </body>
+            </smil>
+        """.trimIndent()
+        val overlay = SmilParser.parse(smilXml, "OEBPS/smil/ch1.smil")
+        assertEquals("OEBPS/smil/ch1.smil", overlay.href)
+        assertEquals(2, overlay.clips.size)
+        assertEquals("OEBPS/text/ch1.xhtml", overlay.clips[0].textHref)
+        assertEquals("p1", overlay.clips[0].textFragmentId)
+        assertEquals("OEBPS/audio/ch1.mp3", overlay.clips[0].audioHref)
+        assertEquals(0.0, overlay.clips[0].clipBeginSeconds)
+        assertEquals(4.5, overlay.clips[0].clipEndSeconds)
+
+        // 2. TTS sentences + HighlightTtsSentence / ClearTtsHighlight + Media Overlays lookup in ReaderSession
+        val ch1Html = """
+            <html><head><title>Cap 1</title></head><body>
+              <p id="p1">No princípio era o Verbo. A luz brilha nas trevas!</p>
+              <p id="p2">Você compreende esta mensagem?</p>
+            </body></html>
+        """.trimIndent()
+        val ch2Html = "<html><body><p>Capítulo dois com palavra especial sabedoria.</p></body></html>"
+
+        val pub = Publication(
+            metadata = Metadata(title = "Áudio e TTS"),
+            spine = listOf("OEBPS/text/ch1.xhtml", "OEBPS/text/ch2.xhtml"),
+            resources = listOf(
+                Resource("OEBPS/text/ch1.xhtml", "application/xhtml+xml"),
+                Resource("OEBPS/text/ch2.xhtml", "application/xhtml+xml"),
+                Resource("OEBPS/smil/ch1.smil", "application/smil+xml"),
+            ),
+            toc = emptyList(),
+            provider = MemoryResourceProvider(
+                mapOf(
+                    "OEBPS/text/ch1.xhtml" to ch1Html.encodeToByteArray(),
+                    "OEBPS/text/ch2.xhtml" to ch2Html.encodeToByteArray(),
+                ),
+            ),
+            mediaOverlays = listOf(overlay),
+        )
+
+        val session = ReaderSession(pub)
+        val renderedHtml = session.currentHtml()
+        assertTrue(renderedHtml.contains(".reader-tts-active"))
+        assertTrue(renderedHtml.contains("highlightTtsSentence"))
+        assertTrue(renderedHtml.contains("clearTtsHighlight"))
+
+        val sentences = session.currentChapterSentences()
+        assertEquals(3, sentences.size)
+        assertEquals("No princípio era o Verbo.", sentences[0].text)
+        assertEquals("A luz brilha nas trevas!", sentences[1].text)
+        assertEquals("Você compreende esta mensagem?", sentences[2].text)
+
+        val chapterClips = session.currentChapterMediaOverlayClips()
+        assertEquals(2, chapterClips.size)
+        val activeClip = session.findMediaOverlayClipAt("OEBPS/audio/ch1.mp3", 5.2)
+        assertNotNull(activeClip)
+        assertEquals("p2", activeClip.textFragmentId)
+
+        val effects = mutableListOf<ReaderUiEffect>()
+        val effectSub = session.watchUiEffects { effects.add(it) }
+        session.dispatch(ReaderCommand.HighlightTtsSentence(sentenceIndex = 1))
+        val highlightEffect = effects.filterIsInstance<ReaderUiEffect.EvaluateJs>().last()
+        assertTrue(highlightEffect.script.contains("highlightTtsSentence(1,"))
+        assertTrue(highlightEffect.script.contains("A luz brilha nas trevas!"))
+
+        session.dispatch(ReaderCommand.HighlightTtsSentence(sentenceIndex = 0, elementId = "p2"))
+        val byIdEffect = effects.filterIsInstance<ReaderUiEffect.EvaluateJs>().last()
+        assertTrue(byIdEffect.script.contains("\"p2\""))
+
+        session.dispatch(ReaderCommand.ClearTtsHighlight)
+        val clearEffect = effects.filterIsInstance<ReaderUiEffect.EvaluateJs>().last()
+        assertTrue(clearEffect.script.contains("clearTtsHighlight"))
+
+        // 3. Persistent search index on disk (Okio FakeFileSystem)
+        val fakeFs = FakeFileSystem()
+        val indexPath = "/cache/search-index.json".toPath()
+        session.saveSearchIndex(indexPath, fakeFs)
+        assertTrue(fakeFs.exists(indexPath))
+
+        // Restore into a fresh Publication whose provider fails if read() is called (proves search uses disk index!)
+        val noReadProvider = object : ResourceProvider {
+            override fun read(href: String): ByteArray = error("Should not read raw HTML when search index is cached")
+        }
+        val restoredPub = Publication(
+            metadata = Metadata(title = "Áudio e TTS"),
+            spine = listOf("OEBPS/text/ch1.xhtml", "OEBPS/text/ch2.xhtml"),
+            resources = emptyList(),
+            toc = emptyList(),
+            provider = noReadProvider,
+        )
+        val restoredSession = ReaderSession(restoredPub)
+        assertTrue(restoredSession.loadSearchIndex(indexPath, fakeFs))
+        val searchHits = restoredSession.search("sabedoria")
+        assertEquals(1, searchHits.size)
+        assertEquals(1, searchHits[0].pageIndex)
+
+        // 4. Block/range decryption in DecryptingResourceProvider (GAP-02)
+        val pubId = "urn:uuid:12345678-1234-1234-1234-1234567890ab"
+        val originalBytes = ByteArray(2048) { (it % 251).toByte() }
+        val deobfuscator = StandardEpubFontDeobfuscator()
+        val idpfInfo = EncryptedResourceInfo(
+            uri = "OEBPS/fonts/sample.otf",
+            algorithm = StandardEpubFontDeobfuscator.ALGORITHM_IDPF_FONT,
+        )
+        val obfuscated = deobfuscator.decrypt("OEBPS/fonts/sample.otf", originalBytes, idpfInfo, pubId)
+
+        var fullReadCalls = 0
+        var rangeReadCalls = 0
+        val trackingProvider = object : ResourceProvider {
+            override fun read(href: String): ByteArray {
+                fullReadCalls++
+                return obfuscated
+            }
+
+            override fun size(href: String): Long = obfuscated.size.toLong()
+
+            override fun readRange(href: String, offset: Long, byteCount: Int): ByteArray {
+                rangeReadCalls++
+                val start = offset.toInt()
+                val end = (start + byteCount).coerceAtMost(obfuscated.size)
+                return obfuscated.copyOfRange(start, end)
+            }
+        }
+        val decryptingProvider = DecryptingResourceProvider(
+            delegate = trackingProvider,
+            encryptedResources = mapOf("OEBPS/fonts/sample.otf" to idpfInfo),
+            publicationIdentifier = pubId,
+            decryptor = deobfuscator,
+        )
+
+        // Slice crossing the 1040-byte IDPF boundary without full read()
+        val sliceCrossing = decryptingProvider.readRange("OEBPS/fonts/sample.otf", offset = 1000L, byteCount = 100)
+        assertContentEquals(originalBytes.copyOfRange(1000, 1100), sliceCrossing)
+        assertEquals(0, fullReadCalls)
+        assertEquals(1, rangeReadCalls)
+        assertEquals(2048L, decryptingProvider.size("OEBPS/fonts/sample.otf"))
+        assertEquals(0, fullReadCalls)
+
+        // Custom streaming DRM decryptRange (e.g. XOR-42 block stream)
+        val customEncryptedVideo = ByteArray(512) { ((it % 200) xor 42).toByte() }
+        val customInfo = EncryptedResourceInfo("OEBPS/video/clip.mp4", "custom:stream-xor42", originalLength = 512L)
+        var customFullReads = 0
+        val customRawProvider = object : ResourceProvider {
+            override fun read(href: String): ByteArray {
+                customFullReads++
+                return customEncryptedVideo
+            }
+
+            override fun readRange(href: String, offset: Long, byteCount: Int): ByteArray {
+                val start = offset.toInt()
+                val end = (start + byteCount).coerceAtMost(customEncryptedVideo.size)
+                return customEncryptedVideo.copyOfRange(start, end)
+            }
+        }
+        val streamingDecryptor = object : ContentDecryptor {
+            override fun decrypt(
+                href: String,
+                rawBytes: ByteArray,
+                encryptionInfo: EncryptedResourceInfo?,
+                publicationIdentifier: String?,
+            ): ByteArray = ByteArray(rawBytes.size) { i -> (rawBytes[i].toInt() xor 42).toByte() }
+
+            override fun decryptRange(
+                href: String,
+                offset: Long,
+                byteCount: Int,
+                rawRangeProvider: (rangeOffset: Long, rangeLength: Int) -> ByteArray,
+                encryptionInfo: EncryptedResourceInfo?,
+                publicationIdentifier: String?,
+            ): ByteArray {
+                val rawSlice = rawRangeProvider(offset, byteCount)
+                return ByteArray(rawSlice.size) { i -> (rawSlice[i].toInt() xor 42).toByte() }
+            }
+        }
+        val customDecryptingProvider = DecryptingResourceProvider(
+            delegate = customRawProvider,
+            encryptedResources = mapOf("OEBPS/video/clip.mp4" to customInfo),
+            publicationIdentifier = pubId,
+            decryptor = StandardEpubFontDeobfuscator(fallbackDecryptor = streamingDecryptor),
+        )
+        val videoChunk = customDecryptingProvider.readRange("OEBPS/video/clip.mp4", offset = 128L, byteCount = 64)
+        assertContentEquals(ByteArray(64) { ((128 + it) % 200).toByte() }, videoChunk)
+        assertEquals(0, customFullReads)
+
+        effectSub.cancel()
+        restoredSession.close()
         session.close()
     }
 }

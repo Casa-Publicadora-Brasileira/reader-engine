@@ -34,10 +34,12 @@ Construir um leitor EPUB/HPUB corporativo em múltiplas plataformas costuma exig
 | **Streaming em Disco (`Okio FileHandle`)** | Abre livros de centenas de megabytes diretamente do disco (`okio.Path`) lendo apenas o *Central Directory* nos 65 KB finais do ZIP, sem carregar o arquivo inteiro na RAM. |
 | **Cache LRU Thread-Safe & Anti-Zip Bomb** | Cache LRU em memória limitado a **16 MB** protegido por `Mutex` e proteção determinística contra *Zip Bombs* (`ZipLimits`: máx. 10.000 entradas, 50 MB/entrada, 1 GB total) e *Path Traversal*. |
 | **Streaming de Vídeo e Áudio (HTTP 206)** | Leitura parcial zero-copy (`readResourceRange`) para entradas `STORED`, permitindo *seek* instantâneo e *buffering* em tags `<video>` e `<audio>` embarcadas no EPUB 3. |
-| **DRM Plugável e Desofuscação de Fontes** | Processa `META-INF/encryption.xml`, desofusca fontes **IDPF** (SHA-1 1040B) e **Adobe** (UUID 1024B) nativamente e aceita `ContentDecryptor` customizado (ex.: Readium LCP). |
-| **Rolagem Contínua e Paginação CSS** | Alternância em tempo real entre `ReadingMode.SCROLL` e `ReadingMode.PAGINATED` (colunas horizontais CSS3 com sincronização de sub-páginas), além de suporte a **MathML**. |
-| **Busca Full-Text sem Acentos** | `BookSearchEngine` realiza busca *case-insensitive* e insensível a diacríticos (`foldDiacritics` 1-para-1) em todo o *spine*, retornando *snippets* de contexto e `Locator`. |
-| **Destaques, Favoritos e Formulários** | Persistência automática de *Highlights* (4 cores + sublinhado), *Bookmarks*, anotações e campos `<input>`/`<textarea>`/`<select>` com compressão automática `gz:<base64>` (`PayloadCodec`). |
+| **DRM Plugável e Streaming por Blocos** | Processa `META-INF/encryption.xml`, desofusca fontes **IDPF** (SHA-1 1040B) e **Adobe** (UUID 1024B) nativamente e suporta `ContentDecryptor.decryptRange(...)` para streaming HTTP 206 de mídias criptografadas sem alocar o arquivo inteiro na RAM. |
+| **Rolagem Contínua, Paginação CSS e Gestos** | Alternância em tempo real entre `ReadingMode.SCROLL` e `ReadingMode.PAGINATED` (colunas horizontais CSS3 com spreads, RTL e sincronização de sub-páginas), detecção nativa de gestos (`swipe` horizontal e `touch/tap` nas bordas) e suporte a **MathML**. |
+| **Áudio Sincronizado (SMIL) e TTS** | Extração de sentenças para leitura em voz alta (`currentChapterSentences`, `HighlightTtsSentence`) com destaque `.reader-tts-active` no DOM e parser nativo **EPUB 3 Media Overlays (`.smil`)** (`SmilParser`, `findMediaOverlayClipAt`). |
+| **Busca Full-Text & Índice em Disco** | `BookSearchEngine` realiza busca *case-insensitive* e insensível a diacríticos (`foldDiacritics` 1-para-1) em todo o *spine*, com exportação/importação do índice em disco (`Okio Path`) via `saveSearchIndex` / `loadSearchIndex`. |
+| **Navegação Editorial e Telemetria** | Lista global determinística `Publication.positions()`, `page-list` (paginação impressa), `landmarks`, notas de rodapé em popup (`noteref`), estatísticas (`ReadingStats`), preview de capítulos (`getPagePreview`) e extração de capa (`readCoverBytes`). |
+| **Destaques, Notas, Favoritos e Snapshot** | Persistência automática de *Highlights* (com notas), *Bookmarks*, formulários `<input>`/`<textarea>`/`<select>` e backup completo em JSON único (`exportBookStateSnapshot` / `importBookStateSnapshot`) com compressão `gz:<base64>` (`PayloadCodec`). |
 | **API Explícita e Ergonomia iOS** | Compilado com `explicitApi()` e equipado com `FlowSubscription` (`watchState`, `watchEvents`, `watchUiEffects`) para consumo direto em Swift sem gerenciar Coroutines. |
 
 ---
@@ -113,13 +115,13 @@ No `build.gradle.kts` do módulo consumidor:
 ```kotlin
 dependencies {
     // Em um projeto Kotlin Multiplatform (commonMain):
-    implementation("com.readerengine:reader-core:0.3.2")
+    implementation("com.readerengine:reader-core:0.6.0")
 
     // Ou diretamente em um projeto Android puro:
-    implementation("com.readerengine:reader-core-android:0.3.2")
+    implementation("com.readerengine:reader-core-android:0.6.0")
 
     // Ou em um projeto JVM puro (Desktop / Backend):
-    implementation("com.readerengine:reader-core-jvm:0.3.2")
+    implementation("com.readerengine:reader-core-jvm:0.6.0")
 }
 ```
 
@@ -160,7 +162,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.readerengine:reader-core-android:0.3.2")
+    implementation("com.readerengine:reader-core-android:0.6.0")
 }
 ```
 
@@ -173,7 +175,7 @@ O pipeline de release gera o binário universal **`ReaderCore.xcframework.zip`**
 #### Opção A: Via `Package.swift` (Swift Package Manager)
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Casa-Publicadora-Brasileira/reader-engine.git", from: "0.3.2")
+    .package(url: "https://github.com/Casa-Publicadora-Brasileira/reader-engine.git", from: "0.6.0")
 ]
 ```
 
@@ -588,10 +590,13 @@ val engine = ReaderEngine(
 | `ReaderCommand.ApplyHighlightStyle(style)` | Aplica destaque (`YELLOW`, `GREEN`, `BLUE`, `PINK`, `UNDERLINE`) na seleção ativa da WebView. |
 | `ReaderCommand.RemoveSelectedHighlight` | Remove o destaque atualmente selecionado na WebView. |
 | `ReaderCommand.RemoveHighlightItem(highlightId)` | Remove um destaque específico pelo seu ID na página atual. |
+| `ReaderCommand.UpdateHighlightNote(highlightId, note)` | Adiciona, edita ou remove a nota textual vinculada a um destaque. |
 | `ReaderCommand.ToggleBookmark(label)` | Adiciona ou remove um marcador (`Bookmark`) na página atual. |
 | `ReaderCommand.GoToBookmark(bookmarkId)` | Navega para a página e `scrollY` salvos no marcador. |
 | `ReaderCommand.RemoveBookmark(bookmarkId)` | Exclui um marcador específico pelo ID. |
-| `ReaderCommand.TriggerAction(action, payload)` | Dispara uma ação customizada emitindo `ActionTriggered` e `CustomAction`. |
+| `ReaderCommand.HighlightTtsSentence(sentenceIndex, text, elementId)` | Destaca no DOM (`.reader-tts-active`) e centraliza a sentença ou elemento falado pelo TTS / Media Overlay. |
+| `ReaderCommand.ClearTtsHighlight` | Remove o destaque visual ativo do TTS / Media Overlay no DOM. |
+| `ReaderCommand.TriggerAction(action, payload)` | Dispara uma ação (tratando nativamente gestos `reader_gesture_*` / `reader_sub_page_changed` e emitindo `ActionTriggered` / `CustomAction`). |
 
 ---
 

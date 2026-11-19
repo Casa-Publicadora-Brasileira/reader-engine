@@ -28,6 +28,20 @@ public fun interface ContentDecryptor {
         encryptionInfo: EncryptedResourceInfo?,
         publicationIdentifier: String?,
     ): ByteArray
+
+    /**
+     * Descriptografa/desofusca apenas a fatia `[offset, offset + byteCount)` de um recurso,
+     * permitindo streaming HTTP 206 de mídias grandes criptografadas sem alocar o arquivo inteiro na RAM.
+     * Retorne `null` para utilizar o fallback padrão (descriptografia completa seguida de fatiamento).
+     */
+    public fun decryptRange(
+        href: String,
+        offset: Long,
+        byteCount: Int,
+        rawRangeProvider: (rangeOffset: Long, rangeLength: Int) -> ByteArray,
+        encryptionInfo: EncryptedResourceInfo?,
+        publicationIdentifier: String?,
+    ): ByteArray? = null
 }
 
 /**
@@ -71,12 +85,65 @@ public class StandardEpubFontDeobfuscator(
         }
     }
 
+    override fun decryptRange(
+        href: String,
+        offset: Long,
+        byteCount: Int,
+        rawRangeProvider: (rangeOffset: Long, rangeLength: Int) -> ByteArray,
+        encryptionInfo: EncryptedResourceInfo?,
+        publicationIdentifier: String?,
+    ): ByteArray? {
+        if (offset < 0L || byteCount <= 0) return ByteArray(0)
+        val algorithm = encryptionInfo?.algorithm?.trim().orEmpty()
+        val cleanId = publicationIdentifier?.replace(Regex("\\s+"), "").orEmpty()
+
+        return when {
+            algorithm == ALGORITHM_IDPF_FONT && cleanId.isNotEmpty() -> {
+                val rawSlice = rawRangeProvider(offset, byteCount)
+                val key = cleanId.encodeUtf8().sha1().toByteArray()
+                xorSlice(rawSlice, offset, key, maxBytes = IDPF_OBFUSCATION_LENGTH)
+            }
+            algorithm == ALGORITHM_ADOBE_FONT && cleanId.isNotEmpty() -> {
+                val rawSlice = rawRangeProvider(offset, byteCount)
+                val key = deriveAdobeKey(cleanId)
+                if (key.isNotEmpty()) {
+                    xorSlice(rawSlice, offset, key, maxBytes = ADOBE_OBFUSCATION_LENGTH)
+                } else {
+                    rawSlice
+                }
+            }
+            fallbackDecryptor != null -> {
+                fallbackDecryptor.decryptRange(
+                    href = href,
+                    offset = offset,
+                    byteCount = byteCount,
+                    rawRangeProvider = rawRangeProvider,
+                    encryptionInfo = encryptionInfo,
+                    publicationIdentifier = publicationIdentifier,
+                )
+            }
+            else -> null
+        }
+    }
+
     private fun xorPrefix(source: ByteArray, key: ByteArray, maxBytes: Int): ByteArray {
         if (key.isEmpty() || source.isEmpty()) return source
         val out = source.copyOf()
         val limit = minOf(out.size, maxBytes)
         for (i in 0 until limit) {
             out[i] = (out[i].toInt() xor key[i % key.size].toInt()).toByte()
+        }
+        return out
+    }
+
+    private fun xorSlice(source: ByteArray, offset: Long, key: ByteArray, maxBytes: Int): ByteArray {
+        if (key.isEmpty() || source.isEmpty() || offset >= maxBytes.toLong()) return source
+        val out = source.copyOf()
+        val maxOffset = maxBytes.toLong()
+        for (i in out.indices) {
+            val globalPos = offset + i.toLong()
+            if (globalPos >= maxOffset) break
+            out[i] = (out[i].toInt() xor key[(globalPos % key.size.toLong()).toInt()].toInt()).toByte()
         }
         return out
     }
@@ -183,9 +250,16 @@ public class DecryptingResourceProvider(
 
     override fun size(href: String): Long? {
         val clean = normalizeHref(href)
-        if (encryptedResources.containsKey(clean)) {
-            val originalLength = encryptedResources[clean]?.originalLength
+        val info = encryptedResources[clean]
+        if (info != null) {
+            val originalLength = info.originalLength
             if (originalLength != null && originalLength > 0L) return originalLength
+            val alg = info.algorithm.trim()
+            if (alg == StandardEpubFontDeobfuscator.ALGORITHM_IDPF_FONT ||
+                alg == StandardEpubFontDeobfuscator.ALGORITHM_ADOBE_FONT
+            ) {
+                delegate.size(clean)?.let { return it }
+            }
             return runCatching { read(clean).size.toLong() }.getOrNull()
         }
         return delegate.size(clean)
@@ -193,9 +267,21 @@ public class DecryptingResourceProvider(
 
     override fun readRange(href: String, offset: Long, byteCount: Int): ByteArray {
         val clean = normalizeHref(href)
-        if (encryptedResources.containsKey(clean)) {
+        if (offset < 0L || byteCount <= 0) return ByteArray(0)
+        val info = encryptedResources[clean]
+        if (info != null) {
+            val streamed = decryptor.decryptRange(
+                href = clean,
+                offset = offset,
+                byteCount = byteCount,
+                rawRangeProvider = { rawOffset, rawLen -> delegate.readRange(clean, rawOffset, rawLen) },
+                encryptionInfo = info,
+                publicationIdentifier = publicationIdentifier,
+            )
+            if (streamed != null) return streamed
+
             val decrypted = read(clean)
-            if (offset < 0L || offset >= decrypted.size.toLong() || byteCount <= 0) return ByteArray(0)
+            if (offset >= decrypted.size.toLong()) return ByteArray(0)
             val start = offset.toInt()
             val end = (start + byteCount).coerceAtMost(decrypted.size)
             return decrypted.copyOfRange(start, end)

@@ -45,6 +45,22 @@ public object ReaderJsBridge {
     public const val SCRIPT_GET_CHANGES: String = "javascript:getChanges()"
     public const val SCRIPT_CLEAN_CHANGES: String = "javascript:cleanChanges()"
     public const val SCRIPT_GET_ALL_MODIFICATIONS: String = "javascript:getAllModifications()"
+    public const val SCRIPT_CLEAR_TTS_HIGHLIGHT: String =
+        "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.clearTtsHighlight){readerJS.clearTtsHighlight();}})();"
+
+    public fun highlightTtsSentenceCommand(
+        sentenceIndex: Int,
+        text: String? = null,
+        elementId: String? = null,
+    ): String {
+        val safeIdx = sentenceIndex.coerceAtLeast(0)
+        val textArg = if (text != null) jsStringLiteral(text) else "null"
+        val idArg = if (!elementId.isNullOrBlank()) jsStringLiteral(elementId) else "null"
+        return "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.highlightTtsSentence){return readerJS.highlightTtsSentence($safeIdx,$textArg,$idArg);}return false;})();"
+    }
+
+    public fun highlightElementByIdCommand(elementId: String): String =
+        highlightTtsSentenceCommand(sentenceIndex = 0, text = null, elementId = elementId)
 
     public fun highlightSelectionCommand(style: HighlightStyle): String =
         "javascript:if(typeof readerJS !== \"undefined\"){readerJS.highlightSelection('${style.jsColorArg}');}"
@@ -725,6 +741,73 @@ public object ReaderJsBridge {
             }
             if (typeof window.readerJS !== 'undefined' && typeof window.readerJS.handlePageTurnGesture !== 'function') {
                 window.readerJS.handlePageTurnGesture = _dispatchPageTurnGesture;
+            }
+            function _clearTtsHighlightDom() {
+                var activeEls = document.querySelectorAll('.reader-tts-active');
+                for (var i = 0; i < activeEls.length; i++) {
+                    var el = activeEls[i];
+                    if (el.getAttribute && el.getAttribute('data-reader-tts') === '1') {
+                        var parent = el.parentNode;
+                        if (parent) {
+                            while (el.firstChild) parent.insertBefore(el.firstChild, el);
+                            parent.removeChild(el);
+                            parent.normalize();
+                        }
+                    } else if (el.classList) {
+                        el.classList.remove('reader-tts-active');
+                    }
+                }
+            }
+            function _highlightTtsSentenceDom(index, text, elementId) {
+                _clearTtsHighlightDom();
+                if (elementId) {
+                    var targetEl = document.getElementById(elementId);
+                    if (targetEl) {
+                        if (targetEl.classList) targetEl.classList.add('reader-tts-active');
+                        try { targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { try { targetEl.scrollIntoView(); } catch (e2) {} }
+                        return true;
+                    }
+                }
+                if (text && document.body && document.createTreeWalker) {
+                    var needle = String(text).trim();
+                    if (needle) {
+                        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                        var node;
+                        var candidates = [needle];
+                        if (needle.length > 36) candidates.push(needle.substring(0, 36));
+                        for (var c = 0; c < candidates.length; c++) {
+                            var query = candidates[c];
+                            walker.currentNode = document.body;
+                            while ((node = walker.nextNode())) {
+                                var val = node.nodeValue || '';
+                                var pos = val.indexOf(query);
+                                if (pos >= 0) {
+                                    try {
+                                        var r = document.createRange();
+                                        r.setStart(node, pos);
+                                        r.setEnd(node, Math.min(val.length, pos + query.length));
+                                        var span = document.createElement('span');
+                                        span.className = 'reader-tts-active';
+                                        span.setAttribute('data-reader-tts', '1');
+                                        span.setAttribute('data-reader-tts-idx', String(index || 0));
+                                        r.surroundContents(span);
+                                        try { span.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { try { span.scrollIntoView(); } catch (e2) {} }
+                                        return true;
+                                    } catch (e) {}
+                                }
+                            }
+                        }
+                    }
+                }
+                return false;
+            }
+            if (typeof window.readerJS !== 'undefined') {
+                if (typeof window.readerJS.clearTtsHighlight !== 'function') {
+                    window.readerJS.clearTtsHighlight = _clearTtsHighlightDom;
+                }
+                if (typeof window.readerJS.highlightTtsSentence !== 'function') {
+                    window.readerJS.highlightTtsSentence = _highlightTtsSentenceDom;
+                }
             }
             if (typeof window.__readerScrollHooked === 'undefined') {
                 window.__readerScrollHooked = true;

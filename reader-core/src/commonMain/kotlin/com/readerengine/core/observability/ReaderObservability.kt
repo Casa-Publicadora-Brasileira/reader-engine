@@ -185,7 +185,7 @@ public class InMemoryDiagnosticsBuffer(
 
 /** Utilitários de instrumentação monotônica e versão do SDK. */
 public object ReaderObservability {
-    public const val SDK_VERSION: String = "0.9.0"
+    public const val SDK_VERSION: String = "1.0.0"
 
     /**
      * Executa [block] medindo sua duração com [TimeSource.Monotonic] e reporta um [ReaderSpan]

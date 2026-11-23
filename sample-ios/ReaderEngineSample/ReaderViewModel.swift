@@ -1,8 +1,37 @@
 import Foundation
+import os
 import ReaderCore
 import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
+
+private final class OSLogReaderObserver: NSObject, ReaderObserver {
+    private let logger = Logger(subsystem: "com.readerengine.sample", category: "ReaderCore")
+
+    func onLog(record: ReaderLogRecord) {
+        let msg = "[\(record.tag)] \(record.message)"
+        switch record.level {
+        case .debug:
+            logger.debug("\(msg, privacy: .public)")
+        case .info:
+            logger.info("\(msg, privacy: .public)")
+        case .warn:
+            logger.warning("\(msg, privacy: .public)")
+        case .error:
+            logger.error("\(msg, privacy: .public)")
+        default:
+            logger.info("\(msg, privacy: .public)")
+        }
+    }
+
+    func onSpanFinished(span: ReaderSpan) {
+        logger.debug("Span \(span.name, privacy: .public) (\(span.durationMs, format: .fixed(precision: 2))ms, ok=\(span.success))")
+    }
+
+    func onMetric(metric: ReaderMetric) {
+        logger.debug("Metric \(metric.name, privacy: .public)=\(metric.value) \(metric.unit, privacy: .public)")
+    }
+}
 
 struct SampleBook: Identifiable, Equatable {
     let id: String
@@ -115,7 +144,8 @@ final class ReaderViewModel: ObservableObject {
         self.engine = ReaderEngine(
             registry: ParserRegistry.companion.default(),
             zipLimits: limits,
-            customDecryptor: nil
+            customDecryptor: nil,
+            observer: OSLogReaderObserver()
         )
 
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
@@ -359,6 +389,11 @@ final class ReaderViewModel: ObservableObject {
             }
         } else if let msgEffect = effect as? ReaderUiEffectShowMessage {
             lastEventSummary = "ShowMessage(\(msgEffect.message))"
+        } else if let imgEffect = effect as? ReaderUiEffectImageActivated {
+            lastEventSummary = "ImageActivated(\(imgEffect.image.resolvedHref))"
+        } else if let selEffect = effect as? ReaderUiEffectSelectionChanged {
+            let preview = selEffect.context?.selectedText.prefix(32) ?? "cleared"
+            lastEventSummary = "SelectionChanged(\(preview))"
         }
     }
 

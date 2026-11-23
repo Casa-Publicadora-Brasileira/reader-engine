@@ -2,6 +2,25 @@
 
 Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 
+## [1.0.0] - 2026-11-23
+
+### Added
+- **Acessibilidade Editorial Profunda & Presets de Tema (`ThemeTokens`):**
+  - Novos parâmetros `letterSpacingEm`, `wordSpacingEm` e `paragraphSpacingEm` em `ThemeTokens.Typography`, e `maxLineWidthPx` em `ThemeTokens.Shape` para leitura confortável em tablets/desktop e acessibilidade WCAG/DAISY.
+  - Novos presets prontos: `ThemeTokens.sepia()`, `ThemeTokens.amoledDark()` e `ThemeTokens.dyslexiaFriendly()`.
+- **Sincronização Multi-Dispositivo com Merge Inteligente (`mergeBookStateSnapshot`):**
+  - Novos tipos `ProgressMergePolicy` (`NEWEST_TIMESTAMP`, `FURTHEST_PROGRESS`, `KEEP_LOCAL`, `PREFER_REMOTE`) e `SnapshotMergeResult`.
+  - Método `ReaderSession.mergeBookStateSnapshot(remotePayload, progressPolicy)` realizando união determinística sem perda de dados de bookmarks, highlights, notas e formulários, resolvendo o progresso conforme a política escolhida.
+- **Seleção Contextual Enriquecida (`SelectionContext`):**
+  - Novos modelos `SelectionRect` e `SelectionContext(selectedText, contextSentence, pageIndex, rect, locator)`, ação `ReaderJsBridge.ACTION_SELECTION_CHANGED`, comando `SCRIPT_GET_SELECTION_CONTEXT` e efeito `ReaderUiEffect.SelectionChanged` para dicionários, tradução e menus flutuantes nativos.
+- **Pré-aquecimento de Capítulos Adjacentes (`prefetchAdjacentChapters`):**
+  - Novo método `ReaderSession.prefetchAdjacentChapters(radius = 1)` instrumentado via span `session.prefetch_adjacent` para viradas de capítulo sem latência.
+- **Paridade iOS (`sample-ios`):**
+  - `OSLogReaderObserver` (`os.Logger`) conectado ao `ReaderEngine` em `ReaderViewModel.swift` e tratamento nativo de `ReaderUiEffectImageActivated` e `ReaderUiEffectSelectionChanged`.
+- **CI Multiplataforma (Linux + macOS iOS) & Testes de Concorrência:**
+  - Job `ios` (`macos-15`) adicionado ao `.github/workflows/ci.yml` validando `:reader-core:assembleReaderCoreDebugXCFramework` e `xcodebuild` do `sample-ios` em todo Push/PR.
+  - Testes de concorrência multi-coroutine e entradas Unicode no `ZipResourceProvider`.
+
 ## [0.9.0] - 2026-11-19
 
 ### Added

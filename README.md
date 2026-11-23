@@ -35,11 +35,11 @@ Construir um leitor EPUB/HPUB corporativo em múltiplas plataformas costuma exig
 | **Cache LRU Thread-Safe & Anti-Zip Bomb** | Cache LRU em memória limitado a **16 MB** protegido por `Mutex` e proteção determinística contra *Zip Bombs* (`ZipLimits`: máx. 10.000 entradas, 50 MB/entrada, 1 GB total) e *Path Traversal*. |
 | **Streaming de Vídeo e Áudio (HTTP 206)** | Leitura parcial zero-copy (`readResourceRange`) para entradas `STORED`, permitindo *seek* instantâneo e *buffering* em tags `<video>` e `<audio>` embarcadas no EPUB 3. |
 | **DRM Plugável e Streaming por Blocos** | Processa `META-INF/encryption.xml`, desofusca fontes **IDPF** (SHA-1 1040B) e **Adobe** (UUID 1024B) nativamente e suporta `ContentDecryptor.decryptRange(...)` para streaming HTTP 206 de mídias criptografadas sem alocar o arquivo inteiro na RAM. |
-| **Rolagem Contínua, Paginação CSS, Gestos e Tipografia** | Alternância em tempo real entre `ReadingMode.SCROLL` e `ReadingMode.PAGINATED` (colunas horizontais CSS3 com spreads, RTL, abertura automática na última sub-página ao voltar capítulo, hifenização `hyphens: auto` com `lang` injetado e controle de órfãs/viúvas), gestos nativos (`swipe`/`tap`), **Lightbox de imagens** (`ImageActivated`) e suporte a **MathML**. |
+| **Rolagem Contínua, Paginação CSS, Gestos e Acessibilidade** | Alternância em tempo real entre `ReadingMode.SCROLL` e `ReadingMode.PAGINATED` (colunas horizontais CSS3 com spreads, RTL, abertura automática na última sub-página ao voltar capítulo, hifenização `hyphens: auto` com `lang` injetado, `letterSpacing`/`wordSpacing`/`paragraphSpacing`, `maxLineWidthPx`, presets `sepia()`/`amoledDark()`/`dyslexiaFriendly()`), gestos nativos (`swipe`/`tap`), **Lightbox de imagens** (`ImageActivated`), **Seleção Contextual** (`SelectionChanged`) e suporte a **MathML**. |
 | **Áudio Sincronizado (SMIL) e TTS** | Extração de sentenças para leitura em voz alta (`currentChapterSentences`, `HighlightTtsSentence`) com destaque `.reader-tts-active` no DOM e parser nativo **EPUB 3 Media Overlays (`.smil`)** (`SmilParser`, `findMediaOverlayClipAt`). |
 | **Busca Full-Text com Foco Visual & Índice em Disco** | `BookSearchEngine` realiza busca *case-insensitive* e insensível a diacríticos (`foldDiacritics` 1-para-1) com navegação e destaque visual automático no DOM (`NavigateToSearchResult` / `.reader-search-match`) e persistência do índice em disco (`saveSearchIndex` / `loadSearchIndex`). |
 | **Navegação Editorial, Backstack e Telemetria** | Histórico de navegação (`NavigateBack` / `NavigateForward`), `Publication.positions()`, `page-list` (paginação impressa), `landmarks`, notas de rodapé em popup (`noteref`), estatísticas (`ReadingStats`), preview de capítulos (`getPagePreview`) e extração de capa (`readCoverBytes`). |
-| **Destaques, Caderno de Estudos, Citações e Snapshot** | Persistência de *Highlights* (com notas), *Bookmarks*, formulários `<input>`/`<textarea>`/`<select>`, exportação do **Caderno de Estudos** (`exportStudyNotebookMarkdown`, `exportStudyNotebookHtml`), citações bibliográficas (`formatQuoteCitation`) e backup JSON único (`exportBookStateSnapshot`) com compressão `gz:<base64>`. |
+| **Destaques, Caderno de Estudos, Citações e Sync Multi-Dispositivo** | Persistência de *Highlights* (com notas), *Bookmarks*, formulários `<input>`/`<textarea>`/`<select>`, exportação do **Caderno de Estudos** (`exportStudyNotebookMarkdown`, `exportStudyNotebookHtml`), citações bibliográficas (`formatQuoteCitation`), backup JSON único (`exportBookStateSnapshot`) e **merge multi-dispositivo sem perda de dados** (`mergeBookStateSnapshot`) com compressão `gz:<base64>`. |
 | **Observabilidade & Diagnóstico (`ReaderObserver`)** | SPI plugável em `commonMain` (Logs estruturados, Spans monotônicos `book.open` / `render_document` / `search.query`, Métricas de cache LRU `ZipCacheStats`, captura de erros JS da WebView `window.onerror` / `unhandledrejection` e `session.exportDiagnosticsJson()`), pronto para Android Logcat/Crashlytics, iOS OSLog/Sentry e JVM SLF4J/OpenTelemetry. |
 | **API Explícita e Ergonomia iOS** | Compilado com `explicitApi()` e equipado com `FlowSubscription` (`watchState`, `watchEvents`, `watchUiEffects`) para consumo direto em Swift sem gerenciar Coroutines. |
 
@@ -116,13 +116,13 @@ No `build.gradle.kts` do módulo consumidor:
 ```kotlin
 dependencies {
     // Em um projeto Kotlin Multiplatform (commonMain):
-    implementation("com.readerengine:reader-core:0.9.0")
+    implementation("com.readerengine:reader-core:1.0.0")
 
     // Ou diretamente em um projeto Android puro:
-    implementation("com.readerengine:reader-core-android:0.9.0")
+    implementation("com.readerengine:reader-core-android:1.0.0")
 
     // Ou em um projeto JVM puro (Desktop / Backend):
-    implementation("com.readerengine:reader-core-jvm:0.9.0")
+    implementation("com.readerengine:reader-core-jvm:1.0.0")
 }
 ```
 
@@ -163,7 +163,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.readerengine:reader-core-android:0.9.0")
+    implementation("com.readerengine:reader-core-android:1.0.0")
 }
 ```
 
@@ -176,7 +176,7 @@ O pipeline de release gera o binário universal **`ReaderCore.xcframework.zip`**
 #### Opção A: Via `Package.swift` (Swift Package Manager)
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Casa-Publicadora-Brasileira/reader-engine.git", from: "0.9.0")
+    .package(url: "https://github.com/Casa-Publicadora-Brasileira/reader-engine.git", from: "1.0.0")
 ]
 ```
 

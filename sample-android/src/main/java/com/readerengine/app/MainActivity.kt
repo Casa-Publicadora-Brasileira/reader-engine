@@ -586,6 +586,10 @@ private fun ReaderScreen(
                 is ReaderUiEffect.ImageActivated -> {
                     lastEventSummary = "ImageActivated(${effect.image.resolvedHref})"
                 }
+                is ReaderUiEffect.SelectionChanged -> {
+                    val preview = effect.context?.selectedText?.take(32) ?: "cleared"
+                    lastEventSummary = "SelectionChanged($preview)"
+                }
             }
         }
     }

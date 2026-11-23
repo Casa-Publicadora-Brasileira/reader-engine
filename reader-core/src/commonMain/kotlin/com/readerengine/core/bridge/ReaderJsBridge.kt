@@ -3,11 +3,14 @@ package com.readerengine.core.bridge
 import com.readerengine.core.model.FormEntry
 import com.readerengine.core.model.HighlightItem
 import com.readerengine.core.model.HighlightStyle
+import com.readerengine.core.model.Locator
 import com.readerengine.core.model.PageFormState
 import com.readerengine.core.model.PageProgressionDirection
 import com.readerengine.core.model.ReadingMode
 import com.readerengine.core.model.RenditionLayout
 import com.readerengine.core.model.RenditionSpread
+import com.readerengine.core.model.SelectionContext
+import com.readerengine.core.model.SelectionRect
 import com.readerengine.core.theme.ThemeTokens
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -37,11 +40,14 @@ public object ReaderJsBridge {
     public const val ACTION_IMAGE_TAP: String = "reader_image_tap"
     public const val ACTION_JS_ERROR: String = "reader_js_error"
     public const val ACTION_JS_METRIC: String = "reader_js_metric"
+    public const val ACTION_SELECTION_CHANGED: String = "reader_selection_changed"
 
     /** Valor sentinela para `initialSubPage` indicando abertura direta na última sub-página do capítulo. */
     public const val INITIAL_SUB_PAGE_LAST: Int = -1
 
     public const val SCRIPT_SELECTION: String = "javascript:window.getSelection().toString()"
+    public const val SCRIPT_GET_SELECTION_CONTEXT: String =
+        "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.getSelectionContext){return readerJS.getSelectionContext();}return '';})();"
     public const val SCRIPT_GET_HIGHLIGHTS: String = "javascript:readerJS.getHighlights()"
     public const val SCRIPT_SUMMARY_HIGHLIGHTS: String = "javascript:readerJS.summaryHighlights()"
     public const val SCRIPT_UNHIGHLIGHT_SELECTION: String = "javascript:readerJS.unHighlightSelection()"
@@ -541,6 +547,46 @@ public object ReaderJsBridge {
             val value = obj["value"]?.jsonPrimitive?.doubleOrNull ?: return null
             val unit = obj["unit"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() } ?: "count"
             Triple(name, value, unit)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    internal fun parseSelectionContextPayload(
+        rawPayload: String?,
+        pageIndex: Int,
+        href: String,
+    ): SelectionContext? {
+        val unquoted = unquoteJsEvaluation(rawPayload).trim()
+        if (unquoted.isEmpty()) return null
+        return try {
+            val obj = json.parseToJsonElement(unquoted).jsonObject
+            val selectedText = obj["selectedText"]?.jsonPrimitive?.contentOrNull?.trim()
+                ?.takeIf { it.isNotEmpty() } ?: return null
+            val contextSentence = obj["contextSentence"]?.jsonPrimitive?.contentOrNull?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            val rectObj = obj["rect"] as? JsonObject
+            val rect = if (rectObj != null) {
+                SelectionRect(
+                    x = rectObj["x"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                    y = rectObj["y"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                    width = rectObj["width"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                    height = rectObj["height"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                )
+            } else {
+                null
+            }
+            SelectionContext(
+                selectedText = selectedText,
+                contextSentence = contextSentence,
+                pageIndex = pageIndex,
+                rect = rect,
+                locator = Locator(
+                    href = href,
+                    pageIndex = pageIndex,
+                    textQuote = selectedText,
+                ),
+            )
         } catch (_: Exception) {
             null
         }
@@ -1306,6 +1352,48 @@ public object ReaderJsBridge {
                             source: 'promise'
                         }), false);
                     }
+                });
+            }
+            function _getSelectionContextJson() {
+                var sel = window.getSelection ? window.getSelection() : null;
+                var txt = sel ? sel.toString().trim() : '';
+                if (!txt || !sel || sel.rangeCount === 0) return '';
+                var range = sel.getRangeAt(0);
+                var r = range.getBoundingClientRect ? range.getBoundingClientRect() : null;
+                var block = range.commonAncestorContainer;
+                if (block && block.nodeType === 3) block = block.parentElement;
+                while (block && block.nodeType === 1) {
+                    var tag = block.tagName ? block.tagName.toLowerCase() : '';
+                    if (tag === 'p' || tag === 'li' || tag === 'blockquote' || tag === 'div' || tag === 'td' || tag === 'section') break;
+                    if (tag === 'body' || tag === 'html') break;
+                    block = block.parentElement;
+                }
+                var sentence = (block && block.textContent) ? block.textContent.replace(/\s+/g, ' ').trim() : txt;
+                if (sentence.length > 400) sentence = sentence.substring(0, 400);
+                return JSON.stringify({
+                    selectedText: txt,
+                    contextSentence: sentence,
+                    rect: r ? { x: Math.round(r.left * 10) / 10, y: Math.round(r.top * 10) / 10, width: Math.round(r.width * 10) / 10, height: Math.round(r.height * 10) / 10 } : null
+                });
+            }
+            if (typeof window.readerJS !== 'undefined' && typeof window.readerJS.getSelectionContext !== 'function') {
+                window.readerJS.getSelectionContext = _getSelectionContextJson;
+            }
+            if (typeof window.__readerSelectionHooked === 'undefined') {
+                window.__readerSelectionHooked = true;
+                var _selTimer = null;
+                var _lastSelPayload = '';
+                document.addEventListener('selectionchange', function() {
+                    if (_selTimer) clearTimeout(_selTimer);
+                    _selTimer = setTimeout(function() {
+                        var payload = _getSelectionContextJson();
+                        if (payload !== _lastSelPayload) {
+                            _lastSelPayload = payload;
+                            if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                                window.ReaderEngine.postAction('reader_selection_changed', payload, false);
+                            }
+                        }
+                    }, 180);
                 });
             }
         })();

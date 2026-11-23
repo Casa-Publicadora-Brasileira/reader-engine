@@ -600,3 +600,55 @@ public data class ImageActivation(
     val alt: String? = null,
     val caption: String? = null,
 )
+
+/** Política de resolução de conflito para o progresso de leitura em [com.readerengine.core.session.ReaderSession.mergeBookStateSnapshot]. */
+@Serializable
+public enum class ProgressMergePolicy {
+    /** Adota o progresso remoto se `remote.updatedAtEpochMs > local.updatedAtEpochMs`. */
+    @SerialName("newest_timestamp")
+    NEWEST_TIMESTAMP,
+
+    /** Adota o progresso mais avançado no livro (`totalPercentage` / `pageIndex` / `subPage` / `scrollY`). */
+    @SerialName("furthest_progress")
+    FURTHEST_PROGRESS,
+
+    /** Mantém sempre a posição de leitura local, mesclando apenas grifos, notas, bookmarks e formulários. */
+    @SerialName("keep_local")
+    KEEP_LOCAL,
+
+    /** Adota sempre a posição de leitura remota. */
+    @SerialName("prefer_remote")
+    PREFER_REMOTE,
+}
+
+/** Resumo do resultado de um merge multi-dispositivo (`mergeBookStateSnapshot`). */
+@Serializable
+public data class SnapshotMergeResult(
+    val progressUpdated: Boolean = false,
+    val addedBookmarks: Int = 0,
+    val mergedHighlightPages: Int = 0,
+    val mergedHighlightNotes: Int = 0,
+    val mergedFormPages: Int = 0,
+)
+
+/** Retângulo delimitador em coordenadas da viewport da WebView para a seleção de texto ativa. */
+@Serializable
+public data class SelectionRect(
+    val x: Double,
+    val y: Double,
+    val width: Double,
+    val height: Double,
+)
+
+/**
+ * Contexto enriquecido da seleção de texto ativa na WebView (`reader_selection_changed`),
+ * ideal para menus flutuantes nativos, dicionário, tradução e compartilhamento de citações.
+ */
+@Serializable
+public data class SelectionContext(
+    val selectedText: String,
+    val contextSentence: String? = null,
+    val pageIndex: Int,
+    val rect: SelectionRect? = null,
+    val locator: Locator? = null,
+)

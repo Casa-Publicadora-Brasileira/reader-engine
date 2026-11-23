@@ -15,6 +15,7 @@ import com.readerengine.core.model.HighlightStyle
 import com.readerengine.core.model.InitialBookState
 import com.readerengine.core.model.Metadata
 import com.readerengine.core.model.PageProgressionDirection
+import com.readerengine.core.model.ProgressMergePolicy
 import com.readerengine.core.model.Publication
 import com.readerengine.core.model.ReaderStrings
 import com.readerengine.core.model.ReadingMode
@@ -2049,6 +2050,195 @@ class ReaderEngineTest {
             assertEquals(10L, stats.currentBytes)
             assertEquals(12L, stats.maxBytes)
             assertTrue(stats.hitRate in 0.3..0.4)
+        } finally {
+            zip.close()
+        }
+    }
+
+    // --- FASE 7 (v1.0.0) ---
+
+    @Test
+    fun accessibilityTypographyTokensAndPresetsGenerateValidCss() {
+        val dyslexia = ThemeTokens.dyslexiaFriendly()
+        val css = dyslexia.toContentCss()
+        assertTrue(css.contains("letter-spacing:0.08em !important;"))
+        assertTrue(css.contains("word-spacing:0.16em !important;"))
+        assertTrue(css.contains("body p{margin-bottom:1.25em;}"))
+        assertTrue(css.contains("max-width:680px"))
+        assertTrue(css.contains("hyphens:none;-webkit-hyphens:none;"))
+        assertTrue(css.contains("text-align:left !important;"))
+
+        val sepia = ThemeTokens.sepia()
+        assertTrue(sepia.toContentCss().contains("background-color:#F4ECD8 !important;"))
+        assertTrue(sepia.toContentCss().contains("max-width:720px"))
+
+        val amoled = ThemeTokens.amoledDark()
+        assertTrue(amoled.toContentCss(isNightMode = true).contains("background-color:#000000 !important;"))
+        assertTrue(amoled.toContentCss(isNightMode = true).contains("color:#FFFFFF !important;"))
+    }
+
+    @Test
+    fun mergeBookStateSnapshotCombinesMultiDeviceDataWithoutDataLoss() {
+        val pub = Publication(
+            metadata = Metadata(title = "Livro Sync"),
+            spine = listOf("ch1.xhtml", "ch2.xhtml", "ch3.xhtml"),
+            resources = listOf(
+                Resource("ch1.xhtml", "application/xhtml+xml"),
+                Resource("ch2.xhtml", "application/xhtml+xml"),
+                Resource("ch3.xhtml", "application/xhtml+xml"),
+            ),
+            toc = listOf(
+                TocEntry("Cap 1", href = "ch1.xhtml"),
+                TocEntry("Cap 2", href = "ch2.xhtml"),
+                TocEntry("Cap 3", href = "ch3.xhtml"),
+            ),
+            provider = MemoryResourceProvider(
+                mapOf(
+                    "ch1.xhtml" to "<html><body><p>Capítulo um com texto local e remoto.</p></body></html>".encodeToByteArray(),
+                    "ch2.xhtml" to "<html><body><p>Capítulo dois.</p></body></html>".encodeToByteArray(),
+                    "ch3.xhtml" to "<html><body><p>Capítulo três.</p></body></html>".encodeToByteArray(),
+                ),
+            ),
+        )
+
+        // Dispositivo A (local): página 1, highlight local, bookmark local, resposta Q1
+        val deviceA = ReaderSession(pub, InitialBookState(documentId = "sync-1", initialPageIndex = 0))
+        deviceA.onPageHighlightsReported("type:textContent|1\$highlight_yellow\$texto local", pageIndex = 0)
+        deviceA.dispatch(ReaderCommand.UpdateHighlightNote(1, "Nota local"))
+        deviceA.onPageFormReported("""{"annotations":[],"answers":[{"content":"Resposta 1","index":0}]}""", pageIndex = 0)
+        deviceA.dispatch(ReaderCommand.ToggleBookmark(label = "Bookmark A"))
+
+        // Dispositivo B (remoto): avançou para página 2, highlight remoto, bookmark remoto, resposta Q2
+        val deviceB = ReaderSession(pub, InitialBookState(documentId = "sync-1", initialPageIndex = 2))
+        deviceB.dispatch(ReaderCommand.UpdateScroll(scrollY = 200, timestampEpochMs = 5000L))
+        deviceB.onPageHighlightsReported("type:textContent|1\$highlight_green\$texto remoto", pageIndex = 0)
+        deviceB.dispatch(ReaderCommand.ToggleBookmark(label = "Bookmark B"))
+        deviceB.onPageFormReported("""{"annotations":[],"answers":[{"content":"Resposta 2","index":1}]}""", pageIndex = 0)
+        val remoteSnapshot = deviceB.exportBookStateSnapshot()
+
+        // Merge em A usando NEWEST_TIMESTAMP
+        val mergeResult = deviceA.mergeBookStateSnapshot(remoteSnapshot, ProgressMergePolicy.NEWEST_TIMESTAMP)
+        assertTrue(mergeResult.progressUpdated)
+        assertEquals(1, mergeResult.addedBookmarks)
+        assertEquals(1, mergeResult.mergedHighlightPages)
+        assertEquals(1, mergeResult.mergedFormPages)
+
+        assertEquals(2, deviceA.state.value.pageIndex)
+        assertEquals(2, deviceA.state.value.bookmarks.size)
+
+        // Voltar para pág 0 e verificar que ambos os grifos e ambas as respostas foram preservados
+        deviceA.dispatch(ReaderCommand.GoToPage(0))
+        val hls = deviceA.state.value.currentPageHighlights
+        assertEquals(2, hls.size)
+        assertTrue(hls.any { it.text == "texto local" && it.note == "Nota local" })
+        assertTrue(hls.any { it.text == "texto remoto" })
+
+        val answers = deviceA.state.value.currentPageFormState.answers
+        assertEquals(2, answers.size)
+        assertEquals("Resposta 1", answers[0].content)
+        assertEquals("Resposta 2", answers[1].content)
+    }
+
+    @Test
+    fun selectionContextActionEmitsStructuredSelectionAndClearEvent() {
+        val pub = Publication(
+            metadata = Metadata(title = "Dicionário"),
+            spine = listOf("ch1.xhtml"),
+            resources = listOf(Resource("ch1.xhtml", "application/xhtml+xml")),
+            toc = listOf(TocEntry("Cap 1", href = "ch1.xhtml")),
+            provider = MemoryResourceProvider(
+                mapOf("ch1.xhtml" to "<html><body><p>A resiliência fortalece o caráter.</p></body></html>".encodeToByteArray()),
+            ),
+        )
+        val session = ReaderSession(pub)
+        assertTrue(session.currentHtml().contains("__readerSelectionHooked"))
+
+        val effects = mutableListOf<ReaderUiEffect>()
+        val sub = session.watchUiEffects { effects.add(it) }
+        try {
+            session.dispatch(
+                ReaderCommand.TriggerAction(
+                    action = ReaderJsBridge.ACTION_SELECTION_CHANGED,
+                    payload = """{"selectedText":"resiliência","contextSentence":"A resiliência fortalece o caráter.","rect":{"x":42.5,"y":120.0,"width":88.0,"height":22.0}}""",
+                ),
+            )
+            val selEffect = effects.filterIsInstance<ReaderUiEffect.SelectionChanged>().lastOrNull()
+            assertNotNull(selEffect)
+            assertNotNull(selEffect.context)
+            assertEquals("resiliência", selEffect.context.selectedText)
+            assertEquals("A resiliência fortalece o caráter.", selEffect.context.contextSentence)
+            assertEquals(42.5, selEffect.context.rect?.x)
+            assertEquals("ch1.xhtml", selEffect.context.locator?.href)
+
+            // Seleção limpa emite context = null
+            session.dispatch(
+                ReaderCommand.TriggerAction(
+                    action = ReaderJsBridge.ACTION_SELECTION_CHANGED,
+                    payload = "",
+                ),
+            )
+            val cleared = effects.filterIsInstance<ReaderUiEffect.SelectionChanged>().lastOrNull()
+            assertNotNull(cleared)
+            assertEquals(null, cleared.context)
+        } finally {
+            sub.cancel()
+        }
+    }
+
+    @Test
+    fun prefetchAdjacentChaptersWarmsNeighboringChaptersAndEmitsSpan() {
+        val buffer = InMemoryDiagnosticsBuffer()
+        val pub = Publication(
+            metadata = Metadata(title = "Prefetch"),
+            spine = listOf("c0.xhtml", "c1.xhtml", "c2.xhtml", "c3.xhtml"),
+            resources = listOf(
+                Resource("c0.xhtml", "application/xhtml+xml"),
+                Resource("c1.xhtml", "application/xhtml+xml"),
+                Resource("c2.xhtml", "application/xhtml+xml"),
+                Resource("c3.xhtml", "application/xhtml+xml"),
+            ),
+            toc = emptyList(),
+            provider = MemoryResourceProvider(
+                mapOf(
+                    "c0.xhtml" to "<html><body><p>Zero</p></body></html>".encodeToByteArray(),
+                    "c1.xhtml" to "<html><body><p>Um</p></body></html>".encodeToByteArray(),
+                    "c2.xhtml" to "<html><body><p>Dois</p></body></html>".encodeToByteArray(),
+                    "c3.xhtml" to "<html><body><p>Três</p></body></html>".encodeToByteArray(),
+                ),
+            ),
+        )
+        val session = ReaderSession(
+            publication = pub,
+            initialBookState = InitialBookState(initialPageIndex = 1),
+            observer = buffer,
+        )
+        val warmed = session.prefetchAdjacentChapters(radius = 1)
+        assertEquals(2, warmed) // c0 e c2
+        assertTrue(buffer.recentSpans().any { it.name == "session.prefetch_adjacent" && it.success })
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun zipResourceProviderHandlesConcurrentCoroutineReadsAndUnicodeNames() = runTest {
+        val entries = mapOf(
+            "OEBPS/capítulo 1 (intro).xhtml" to "<p>Conteúdo acentuado número 1</p>".encodeToByteArray(),
+            "OEBPS/capítulo 2 (meio).xhtml" to "<p>Conteúdo acentuado número 2</p>".encodeToByteArray(),
+            "OEBPS/capítulo 3 (fim).xhtml" to "<p>Conteúdo acentuado número 3</p>".encodeToByteArray(),
+        )
+        val zipBytes = buildStoredZip(entries = entries, asZip64 = false)
+        val zip = ZipResourceProvider.fromBytes(zipBytes)
+        try {
+            val jobs = (0 until 12).map { idx ->
+                launch(UnconfinedTestDispatcher(testScheduler)) {
+                    val key = entries.keys.elementAt(idx % entries.size)
+                    val read = zip.read(key).decodeToString()
+                    assertEquals(entries.getValue(key).decodeToString(), read)
+                }
+            }
+            jobs.forEach { it.join() }
+            val stats = zip.cacheStats()
+            assertTrue(stats.hits >= 9L)
+            assertEquals(3, stats.entryCount)
         } finally {
             zip.close()
         }

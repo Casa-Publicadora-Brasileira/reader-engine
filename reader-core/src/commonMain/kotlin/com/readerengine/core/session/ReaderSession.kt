@@ -20,12 +20,15 @@ import com.readerengine.core.model.NavigationEntry
 import com.readerengine.core.model.PageFormState
 import com.readerengine.core.model.PagePreview
 import com.readerengine.core.model.PageProgressionDirection
+import com.readerengine.core.model.ProgressMergePolicy
 import com.readerengine.core.model.Publication
 import com.readerengine.core.model.ReaderStrings
 import com.readerengine.core.model.ReadingMode
 import com.readerengine.core.model.ReadingProgress
 import com.readerengine.core.model.ReadingStats
 import com.readerengine.core.model.SearchResult
+import com.readerengine.core.model.SelectionContext
+import com.readerengine.core.model.SnapshotMergeResult
 import com.readerengine.core.model.TocEntry
 import com.readerengine.core.model.TocItem
 import com.readerengine.core.model.TtsSentence
@@ -196,6 +199,14 @@ public sealed interface ReaderUiEffect {
      */
     public data class ImageActivated(
         val image: ImageActivation,
+    ) : ReaderUiEffect
+
+    /**
+     * Disparado quando a seleção de texto na WebView muda (`reader_selection_changed`),
+     * enviando texto selecionado, frase de contexto e coordenadas (`null` quando a seleção é limpa).
+     */
+    public data class SelectionChanged(
+        val context: SelectionContext?,
     ) : ReaderUiEffect
 }
 
@@ -1514,6 +1525,263 @@ public class ReaderSession(
         return _state.value
     }
 
+    /** Sobrecarga concisa para iOS/Swift de [mergeBookStateSnapshot] usando [ProgressMergePolicy.NEWEST_TIMESTAMP]. */
+    public fun mergeBookStateSnapshot(remotePayload: String): SnapshotMergeResult =
+        mergeBookStateSnapshot(remotePayload = remotePayload, progressPolicy = ProgressMergePolicy.NEWEST_TIMESTAMP)
+
+    /**
+     * Realiza merge determinístico sem perda de dados entre o estado local da sessão e um
+     * snapshot remoto (`BookStateSnapshot` em JSON puro ou comprimido `gz:`), unindo bookmarks,
+     * highlights, notas e formulários, e resolvendo o progresso conforme [progressPolicy].
+     */
+    public fun mergeBookStateSnapshot(
+        remotePayload: String,
+        progressPolicy: ProgressMergePolicy = ProgressMergePolicy.NEWEST_TIMESTAMP,
+    ): SnapshotMergeResult = ReaderObservability.measureSpan(
+        observer = effectiveObserver,
+        name = "snapshot.merge",
+        attributes = mapOf("policy" to progressPolicy.name),
+    ) {
+        val decodedPayload = PayloadCodec.decodeIfNeeded(remotePayload)
+        val remote = json.decodeFromString(BookStateSnapshot.serializer(), decodedPayload)
+        val cur = _state.value
+
+        // 1. Merge de notas de highlights (preserva locais, adiciona remotas ausentes ou mais detalhadas)
+        var mergedNotes = 0
+        remote.highlightNotes.forEach { (id, remoteNote) ->
+            val clean = remoteNote.trim()
+            if (clean.isNotEmpty() && highlightNotes[id] != clean) {
+                if (!highlightNotes.containsKey(id)) {
+                    highlightNotes[id] = clean
+                    mergedNotes++
+                }
+            }
+        }
+
+        // 2. Merge de highlights por página (união por texto/id)
+        var mergedHighlightPages = 0
+        remote.pageHighlights.forEach { (page, rawRemote) ->
+            val decodedRemote = PayloadCodec.decodeIfNeeded(rawRemote)
+            val remoteItems = parseHighlightsFromSerializedString(decodedRemote, page)
+            if (remoteItems.isEmpty()) return@forEach
+
+            val localItems = pageHighlightSummaries[page].orEmpty()
+            val merged = localItems.toMutableList()
+            val existingTexts = localItems.map { it.text.trim().lowercase() }.toMutableSet()
+            var nextId = (localItems.maxOfOrNull { it.id } ?: 0) + 1
+            var pageChanged = false
+
+            for (item in remoteItems) {
+                val key = item.text.trim().lowercase()
+                if (key.isNotEmpty() && key !in existingTexts) {
+                    val assignedId = if (merged.any { it.id == item.id }) nextId++ else item.id
+                    if (assignedId >= nextId) nextId = assignedId + 1
+                    merged.add(item.copy(id = assignedId, note = highlightNotes[item.id] ?: item.note))
+                    existingTexts.add(key)
+                    pageChanged = true
+                }
+            }
+
+            if (pageChanged) {
+                mergedHighlightPages++
+                pageHighlightSummaries[page] = merged
+                val serialized = "type:textContent|" + merged.joinToString("|") { hl ->
+                    "${hl.id}\$${hl.style.legacyTypeValue}\$${hl.text.replace('|', ' ').replace('$', ' ')}"
+                }
+                pageSerializedHighlights[page] = serialized
+                _events.tryEmit(
+                    ReaderEvent.PageHighlightsChanged(
+                        documentId = documentId,
+                        pageIndex = page,
+                        rawSerializedHighlights = serialized,
+                        compressedPayload = PayloadCodec.encodeIfNeeded(serialized),
+                        summaryItems = merged,
+                    ),
+                )
+            }
+        }
+
+        // 3. Merge de formulários/respostas por página (mantém não-vazios locais e adiciona índices remotos ausentes)
+        var mergedFormPages = 0
+        remote.pageForms.forEach { (page, rawRemote) ->
+            val remoteForm = ReaderJsBridge.parsePageFormState(rawRemote)
+            if (!remoteForm.hasNonBlankContent) return@forEach
+            val localForm = pageFormStates[page] ?: PageFormState()
+            val mergedAnnotations = mergeFormEntries(localForm.annotations, remoteForm.annotations)
+            val mergedAnswers = mergeFormEntries(localForm.answers, remoteForm.answers)
+            val combined = PageFormState(annotations = mergedAnnotations, answers = mergedAnswers)
+            if (combined != localForm) {
+                mergedFormPages++
+                pageFormStates[page] = combined
+                val canonical = ReaderJsBridge.serializePageFormState(combined)
+                _events.tryEmit(
+                    ReaderEvent.PageFormChanged(
+                        documentId = documentId,
+                        pageIndex = page,
+                        rawJsonPayload = canonical,
+                        compressedPayload = PayloadCodec.encodeIfNeeded(canonical),
+                        formState = combined,
+                    ),
+                )
+            }
+        }
+
+        // 4. Merge de bookmarks (deduplicando por id e por (pageIndex, scrollY))
+        var addedBookmarks = 0
+        val existingIds = bookmarks.map { it.id }.toMutableSet()
+        val existingCoords = bookmarks.map { it.pageIndex to it.scrollY }.toMutableSet()
+        for (bm in remote.bookmarks) {
+            val coord = bm.pageIndex to bm.scrollY
+            if (bm.id !in existingIds && coord !in existingCoords) {
+                bookmarks.add(bm)
+                existingIds.add(bm.id)
+                existingCoords.add(coord)
+                addedBookmarks++
+            }
+        }
+        if (addedBookmarks > 0) {
+            nextBookmarkSeq = bookmarks.size + 1
+        }
+
+        // 5. Resolução de progresso segundo ProgressMergePolicy
+        val remoteProgress = remote.progress
+        val adoptRemoteProgress = if (remoteProgress == null) {
+            false
+        } else {
+            when (progressPolicy) {
+                ProgressMergePolicy.KEEP_LOCAL -> false
+                ProgressMergePolicy.PREFER_REMOTE -> true
+                ProgressMergePolicy.NEWEST_TIMESTAMP ->
+                    maxOf(remote.updatedAtEpochMs, remoteProgress.lastUpdateEpochMs) > cur.progress.lastUpdateEpochMs
+                ProgressMergePolicy.FURTHEST_PROGRESS ->
+                    isProgressFurther(remoteProgress, cur.progress)
+            }
+        }
+
+        val lastIndex = (publication.spine.size - 1).coerceAtLeast(0)
+        val finalPage = if (adoptRemoteProgress && remoteProgress != null) {
+            remoteProgress.pageIndex.coerceIn(0, lastIndex)
+        } else {
+            cur.pageIndex
+        }
+        val finalScroll = if (adoptRemoteProgress && remoteProgress != null) {
+            remoteProgress.scrollY.coerceAtLeast(0)
+        } else {
+            cur.scrollY
+        }
+        val finalSubPage = if (adoptRemoteProgress && remoteProgress != null) {
+            remoteProgress.subPage.coerceAtLeast(0)
+        } else {
+            cur.currentSubPage
+        }
+        val finalProgress = if (adoptRemoteProgress && remoteProgress != null) {
+            remoteProgress.copy(
+                pageIndex = finalPage,
+                scrollY = finalScroll,
+                subPage = finalSubPage,
+            )
+        } else {
+            cur.progress
+        }
+
+        _state.value = cur.copy(
+            pageIndex = finalPage,
+            scrollY = finalScroll,
+            currentSubPage = finalSubPage,
+            progress = finalProgress,
+            currentPageSerializedHighlights = pageSerializedHighlights[finalPage].orEmpty(),
+            currentPageHighlights = pageHighlightSummaries[finalPage].orEmpty(),
+            currentPageFormState = pageFormStates[finalPage] ?: PageFormState(),
+            bookmarks = bookmarks.toList(),
+            hasBookmarkAtCurrentPage = bookmarks.any { it.pageIndex == finalPage },
+            stats = buildStats(finalPage, finalProgress.pageProgression),
+        )
+
+        if (adoptRemoteProgress) {
+            _events.tryEmit(ReaderEvent.ProgressUpdated(finalProgress))
+        }
+        if (addedBookmarks > 0) {
+            syncBookmarksStateAndEmit()
+        }
+
+        SnapshotMergeResult(
+            progressUpdated = adoptRemoteProgress,
+            addedBookmarks = addedBookmarks,
+            mergedHighlightPages = mergedHighlightPages,
+            mergedHighlightNotes = mergedNotes,
+            mergedFormPages = mergedFormPages,
+        )
+    }
+
+    /** Sobrecarga concisa para iOS/Swift de [prefetchAdjacentChapters] com raio padrão `1`. */
+    public fun prefetchAdjacentChapters(): Int = prefetchAdjacentChapters(radius = 1)
+
+    /**
+     * Pré-aquece no cache LRU do [com.readerengine.core.model.ResourceProvider] e no cache de texto
+     * da [Publication] os capítulos adjacentes (`pageIndex - radius .. pageIndex + radius`),
+     * reduzindo latência nas viradas de capítulo. Retorna o número de capítulos pré-carregados.
+     */
+    public fun prefetchAdjacentChapters(radius: Int = 1): Int {
+        val safeRadius = radius.coerceIn(1, 5)
+        val curPage = _state.value.pageIndex
+        val spineSize = publication.spine.size
+        if (spineSize <= 1) return 0
+        return ReaderObservability.measureSpan(
+            observer = effectiveObserver,
+            name = "session.prefetch_adjacent",
+            attributes = mapOf("pageIndex" to curPage.toString(), "radius" to safeRadius.toString()),
+        ) {
+            var count = 0
+            for (delta in -safeRadius..safeRadius) {
+                if (delta == 0) continue
+                val idx = curPage + delta
+                if (idx in 0 until spineSize) {
+                    val href = publication.spine[idx]
+                    val ok = runCatching {
+                        publication.cachedPlainText(href) { raw ->
+                            raw.replace(Regex("""<head\b[^>]*>[\s\S]*?</head>""", RegexOption.IGNORE_CASE), " ")
+                                .replace(Regex("""<script\b[^>]*>[\s\S]*?</script>""", RegexOption.IGNORE_CASE), " ")
+                                .replace(Regex("""<style\b[^>]*>[\s\S]*?</style>""", RegexOption.IGNORE_CASE), " ")
+                                .replace(Regex("""<[^>]+>"""), " ")
+                                .let { XmlEntities.decode(it) }
+                                .replace(Regex("""\s+"""), " ")
+                                .trim()
+                        }
+                    }.isSuccess
+                    if (ok) count++
+                }
+            }
+            count
+        }
+    }
+
+    private fun mergeFormEntries(local: List<FormEntry>, remote: List<FormEntry>): List<FormEntry> {
+        val byIndex = LinkedHashMap<Int, FormEntry>()
+        for (entry in local) {
+            byIndex[entry.index] = entry
+        }
+        for (entry in remote) {
+            val existing = byIndex[entry.index]
+            if (existing == null || (existing.content.isBlank() && entry.content.isNotBlank())) {
+                byIndex[entry.index] = entry
+            }
+        }
+        return byIndex.values.sortedBy { it.index }
+    }
+
+    private fun isProgressFurther(candidate: ReadingProgress, current: ReadingProgress): Boolean {
+        if (candidate.totalPercentage != current.totalPercentage) {
+            return candidate.totalPercentage > current.totalPercentage
+        }
+        if (candidate.pageIndex != current.pageIndex) {
+            return candidate.pageIndex > current.pageIndex
+        }
+        if (candidate.subPage != current.subPage) {
+            return candidate.subPage > current.subPage
+        }
+        return candidate.scrollY > current.scrollY
+    }
+
     /**
      * Exporta todo o caderno de estudos (grifos, notas, marcadores e respostas de formulários)
      * agrupado por capítulo em formato Markdown.
@@ -1737,6 +2005,16 @@ public class ReaderSession(
                         ),
                     )
                 }
+            }
+
+            ReaderJsBridge.ACTION_SELECTION_CHANGED -> {
+                val href = publication.spine.getOrNull(current.pageIndex).orEmpty()
+                val context = ReaderJsBridge.parseSelectionContextPayload(
+                    rawPayload = payload,
+                    pageIndex = current.pageIndex,
+                    href = href,
+                )
+                _uiEffects.tryEmit(ReaderUiEffect.SelectionChanged(context))
             }
 
             else -> {

@@ -2,6 +2,7 @@ package com.readerengine.core.provider
 
 import com.readerengine.core.error.ReaderException
 import com.readerengine.core.model.ResourceProvider
+import com.readerengine.core.observability.ZipCacheStats
 import com.readerengine.core.platform.defaultFileSystem
 import okio.Buffer
 import okio.FileSystem
@@ -147,6 +148,15 @@ public class ZipResourceProvider private constructor(
     @kotlin.concurrent.Volatile
     private var cacheSnapshot: Map<String, ByteArray> = emptyMap()
 
+    @kotlin.concurrent.Volatile
+    private var cacheHits: Long = 0L
+
+    @kotlin.concurrent.Volatile
+    private var cacheMisses: Long = 0L
+
+    @kotlin.concurrent.Volatile
+    private var cacheEvictions: Long = 0L
+
     private data class ZipEntryMeta(
         val name: String,
         val compressionMethod: Int,
@@ -159,9 +169,25 @@ public class ZipResourceProvider private constructor(
 
     public fun entryNames(): Set<String> = directory.keys
 
+    override fun cacheStats(): ZipCacheStats {
+        val snapshot = cacheSnapshot
+        return ZipCacheStats(
+            hits = cacheHits,
+            misses = cacheMisses,
+            evictions = cacheEvictions,
+            entryCount = snapshot.size,
+            currentBytes = snapshot.values.sumOf { it.size.toLong() },
+            maxBytes = limits.maxCacheBytes.toLong(),
+        )
+    }
+
     override fun read(href: String): ByteArray {
         val clean = normalizeHref(href)
-        cacheSnapshot[clean]?.let { return it }
+        cacheSnapshot[clean]?.let {
+            cacheHits++
+            return it
+        }
+        cacheMisses++
 
         val meta = directory[clean]
             ?: throw ReaderException.ResourceNotFound(href)
@@ -181,6 +207,7 @@ public class ZipResourceProvider private constructor(
                 if (eldest.key == clean) break
                 totalBytes -= eldest.value.size.toLong()
                 iterator.remove()
+                cacheEvictions++
             }
             cacheSnapshot = next
         }

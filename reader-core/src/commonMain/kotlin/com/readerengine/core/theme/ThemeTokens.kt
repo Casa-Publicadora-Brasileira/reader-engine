@@ -50,6 +50,15 @@ public data class Typography(
     val lineHeight: Float,
     @SerialName("text_align")
     val textAlign: String = "justify",
+    val hyphens: Boolean = true,
+    val orphans: Int = 2,
+    val widows: Int = 2,
+    @SerialName("letter_spacing_em")
+    val letterSpacingEm: Float = 0f,
+    @SerialName("word_spacing_em")
+    val wordSpacingEm: Float = 0f,
+    @SerialName("paragraph_spacing_em")
+    val paragraphSpacingEm: Float = 0.75f,
 ) {
     public constructor(
         fontFamily: String,
@@ -60,6 +69,51 @@ public data class Typography(
         baseSizePx = baseSizePx,
         lineHeight = lineHeight,
         textAlign = "justify",
+        hyphens = true,
+        orphans = 2,
+        widows = 2,
+        letterSpacingEm = 0f,
+        wordSpacingEm = 0f,
+        paragraphSpacingEm = 0.75f,
+    )
+
+    public constructor(
+        fontFamily: String,
+        baseSizePx: Float,
+        lineHeight: Float,
+        textAlign: String,
+    ) : this(
+        fontFamily = fontFamily,
+        baseSizePx = baseSizePx,
+        lineHeight = lineHeight,
+        textAlign = textAlign,
+        hyphens = true,
+        orphans = 2,
+        widows = 2,
+        letterSpacingEm = 0f,
+        wordSpacingEm = 0f,
+        paragraphSpacingEm = 0.75f,
+    )
+
+    public constructor(
+        fontFamily: String,
+        baseSizePx: Float,
+        lineHeight: Float,
+        textAlign: String,
+        hyphens: Boolean,
+        orphans: Int,
+        widows: Int,
+    ) : this(
+        fontFamily = fontFamily,
+        baseSizePx = baseSizePx,
+        lineHeight = lineHeight,
+        textAlign = textAlign,
+        hyphens = hyphens,
+        orphans = orphans,
+        widows = widows,
+        letterSpacingEm = 0f,
+        wordSpacingEm = 0f,
+        paragraphSpacingEm = 0.75f,
     )
 }
 
@@ -71,6 +125,8 @@ public data class Shape(
     val spacingUnitPx: Float,
     @SerialName("horizontal_padding_px")
     val horizontalPaddingPx: Int = 24,
+    @SerialName("max_line_width_px")
+    val maxLineWidthPx: Int = 0,
 ) {
     public constructor(
         cornerRadiusPx: Float,
@@ -79,6 +135,18 @@ public data class Shape(
         cornerRadiusPx = cornerRadiusPx,
         spacingUnitPx = spacingUnitPx,
         horizontalPaddingPx = 24,
+        maxLineWidthPx = 0,
+    )
+
+    public constructor(
+        cornerRadiusPx: Float,
+        spacingUnitPx: Float,
+        horizontalPaddingPx: Int,
+    ) : this(
+        cornerRadiusPx = cornerRadiusPx,
+        spacingUnitPx = spacingUnitPx,
+        horizontalPaddingPx = horizontalPaddingPx,
+        maxLineWidthPx = 0,
     )
 }
 
@@ -152,12 +220,30 @@ public data class ThemeTokens(
                 }
             } else {
                 val safeTextAlign = sanitizeCssTextAlign(typography.textAlign) ?: "justify"
+                val hyphensRule = if (typography.hyphens) "auto" else "none"
+                val safeOrphans = typography.orphans.coerceIn(1, 5)
+                val safeWidows = typography.widows.coerceIn(1, 5)
                 val padH = shape.horizontalPaddingPx.coerceIn(0, 240)
                 val gap = padH * 2
                 append("html,body{background-color:$bg !important;color:$fg !important;font-family:$family !important;font-size:${fontSizePx}px;line-height:$lineHeight !important;}")
                 append("body{padding-left:${padH}px !important;padding-right:${padH}px !important;text-align:$safeTextAlign !important;box-sizing:border-box;}")
                 append("body *:not([class*=\"highlight_\"]){color:$fg !important;background-color:transparent !important;line-height:inherit;}")
                 append("body,body p,body div,body li,body blockquote{text-align:$safeTextAlign !important;}")
+                append("body,body p,body div,body li,body blockquote{hyphens:$hyphensRule;-webkit-hyphens:$hyphensRule;orphans:$safeOrphans;widows:$safeWidows;}")
+                val safeLetterSpacing = typography.letterSpacingEm.coerceIn(-0.05f, 0.5f)
+                val safeWordSpacing = typography.wordSpacingEm.coerceIn(0f, 1.0f)
+                val safeParagraphSpacing = typography.paragraphSpacingEm.coerceIn(0f, 3.0f)
+                if (safeLetterSpacing != 0f || safeWordSpacing > 0f) {
+                    append("body,body p,body li,body blockquote{")
+                    if (safeLetterSpacing != 0f) append("letter-spacing:${safeLetterSpacing}em !important;")
+                    if (safeWordSpacing > 0f) append("word-spacing:${safeWordSpacing}em !important;")
+                    append("}")
+                }
+                append("body p{margin-bottom:${safeParagraphSpacing}em;}")
+                val safeMaxWidth = shape.maxLineWidthPx.coerceIn(0, 2400)
+                if (safeMaxWidth > 0) {
+                    append("html:not(.reader-paginated) body{max-width:${safeMaxWidth}px;margin-left:auto !important;margin-right:auto !important;}")
+                }
                 append("html.reader-paginated{height:var(--reader-page-height,560px) !important;min-height:var(--reader-page-height,560px) !important;max-height:var(--reader-page-height,560px) !important;width:100% !important;overflow:hidden !important;margin:0 !important;padding:0 !important;box-sizing:border-box !important;}")
                 append("html.reader-paginated body{height:var(--reader-page-height,560px) !important;min-height:var(--reader-page-height,560px) !important;max-height:var(--reader-page-height,560px) !important;width:100% !important;overflow:visible !important;margin:0 !important;box-sizing:border-box !important;}")
                 append("html.reader-paginated body{column-width:calc(100vw - ${gap}px);column-gap:${gap}px;column-fill:auto;padding:16px ${padH}px !important;}")
@@ -183,6 +269,8 @@ public data class ThemeTokens(
             append(".highlight_annotation,.highlight_annotation *{background-color:#FFE082 !important;border-bottom:2px dotted #F57C00;color:#111 !important;}")
             val ttsBg = if (isNightMode) "rgba(106,183,255,0.32)" else "rgba(255,213,79,0.45)"
             append(".reader-tts-active,.reader-tts-active *{background-color:$ttsBg !important;border-radius:3px;transition:background-color 0.15s ease;}")
+            val searchBg = if (isNightMode) "#FFB300" else "#FFCA28"
+            append(".reader-search-match,.reader-search-match *{background-color:$searchBg !important;color:#111 !important;border-radius:3px;padding:0 2px;box-shadow:0 0 0 2px $searchBg;}")
         }
     }
 
@@ -269,6 +357,104 @@ public data class ThemeTokens(
                 lineHeight = 1.43f,
             ),
             shape = Shape(cornerRadiusPx = 4f, spacingUnitPx = 4f),
+        )
+
+        /** Preset Sépia (papel quente de baixo cansaço visual para leitura prolongada). */
+        public fun sepia(): ThemeTokens = ThemeTokens(
+            designSystem = DesignSystem.CUSTOM,
+            colors = Colors(
+                background = "#F4ECD8",
+                surface = "#EAE0C8",
+                onSurface = "#3B2F20",
+                primary = "#8B5A2B",
+                onPrimary = "#FFFDF8",
+                nightBackground = "#1C1915",
+                nightOnSurface = "#E5DAC3",
+                nightPrimary = "#D4A373",
+            ),
+            typography = Typography(
+                fontFamily = "Georgia, 'Bookerly', serif",
+                baseSizePx = 18f,
+                lineHeight = 1.65f,
+                textAlign = "justify",
+                hyphens = true,
+                orphans = 2,
+                widows = 2,
+                paragraphSpacingEm = 0.85f,
+            ),
+            shape = Shape(
+                cornerRadiusPx = 10f,
+                spacingUnitPx = 8f,
+                horizontalPaddingPx = 28,
+                maxLineWidthPx = 720,
+            ),
+        )
+
+        /** Preset AMOLED Alto Contraste (preto absoluto `#000000` e texto branco `#FFFFFF`). */
+        public fun amoledDark(): ThemeTokens = ThemeTokens(
+            designSystem = DesignSystem.CUSTOM,
+            colors = Colors(
+                background = "#000000",
+                surface = "#111111",
+                onSurface = "#FFFFFF",
+                primary = "#82CFFF",
+                onPrimary = "#000000",
+                nightBackground = "#000000",
+                nightOnSurface = "#FFFFFF",
+                nightPrimary = "#82CFFF",
+            ),
+            typography = Typography(
+                fontFamily = "system-ui, -apple-system, sans-serif",
+                baseSizePx = 19f,
+                lineHeight = 1.7f,
+                textAlign = "left",
+                hyphens = false,
+                orphans = 2,
+                widows = 2,
+                paragraphSpacingEm = 0.9f,
+            ),
+            shape = Shape(
+                cornerRadiusPx = 8f,
+                spacingUnitPx = 8f,
+                horizontalPaddingPx = 24,
+                maxLineWidthPx = 720,
+            ),
+        )
+
+        /**
+         * Preset otimizado para dislexia e baixa visão (WCAG/DAISY):
+         * alinhamento à esquerda, sem hifenização, maior espaçamento entre letras, palavras e parágrafos.
+         */
+        public fun dyslexiaFriendly(): ThemeTokens = ThemeTokens(
+            designSystem = DesignSystem.CUSTOM,
+            colors = Colors(
+                background = "#FAF8F2",
+                surface = "#EFECE2",
+                onSurface = "#1F1F1F",
+                primary = "#1A56DB",
+                onPrimary = "#FFFFFF",
+                nightBackground = "#1A1C1E",
+                nightOnSurface = "#ECEAE4",
+                nightPrimary = "#7BB4FF",
+            ),
+            typography = Typography(
+                fontFamily = "'OpenDyslexic', 'Atkinson Hyperlegible', Verdana, Arial, sans-serif",
+                baseSizePx = 19f,
+                lineHeight = 1.85f,
+                textAlign = "left",
+                hyphens = false,
+                orphans = 2,
+                widows = 2,
+                letterSpacingEm = 0.08f,
+                wordSpacingEm = 0.16f,
+                paragraphSpacingEm = 1.25f,
+            ),
+            shape = Shape(
+                cornerRadiusPx = 12f,
+                spacingUnitPx = 10f,
+                horizontalPaddingPx = 28,
+                maxLineWidthPx = 680,
+            ),
         )
     }
 }

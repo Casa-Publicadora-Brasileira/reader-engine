@@ -2,6 +2,59 @@
 
 Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 
+## [1.0.0] - 2026-11-23
+
+### Added
+- **Acessibilidade Editorial Profunda & Presets de Tema (`ThemeTokens`):**
+  - Novos parâmetros `letterSpacingEm`, `wordSpacingEm` e `paragraphSpacingEm` em `ThemeTokens.Typography`, e `maxLineWidthPx` em `ThemeTokens.Shape` para leitura confortável em tablets/desktop e acessibilidade WCAG/DAISY.
+  - Novos presets prontos: `ThemeTokens.sepia()`, `ThemeTokens.amoledDark()` e `ThemeTokens.dyslexiaFriendly()`.
+- **Sincronização Multi-Dispositivo com Merge Inteligente (`mergeBookStateSnapshot`):**
+  - Novos tipos `ProgressMergePolicy` (`NEWEST_TIMESTAMP`, `FURTHEST_PROGRESS`, `KEEP_LOCAL`, `PREFER_REMOTE`) e `SnapshotMergeResult`.
+  - Método `ReaderSession.mergeBookStateSnapshot(remotePayload, progressPolicy)` realizando união determinística sem perda de dados de bookmarks, highlights, notas e formulários, resolvendo o progresso conforme a política escolhida.
+- **Seleção Contextual Enriquecida (`SelectionContext`):**
+  - Novos modelos `SelectionRect` e `SelectionContext(selectedText, contextSentence, pageIndex, rect, locator)`, ação `ReaderJsBridge.ACTION_SELECTION_CHANGED`, comando `SCRIPT_GET_SELECTION_CONTEXT` e efeito `ReaderUiEffect.SelectionChanged` para dicionários, tradução e menus flutuantes nativos.
+- **Pré-aquecimento de Capítulos Adjacentes (`prefetchAdjacentChapters`):**
+  - Novo método `ReaderSession.prefetchAdjacentChapters(radius = 1)` instrumentado via span `session.prefetch_adjacent` para viradas de capítulo sem latência.
+- **Paridade iOS (`sample-ios`):**
+  - `OSLogReaderObserver` (`os.Logger`) conectado ao `ReaderEngine` em `ReaderViewModel.swift` e tratamento nativo de `ReaderUiEffectImageActivated` e `ReaderUiEffectSelectionChanged`.
+- **CI Multiplataforma (Linux + macOS iOS) & Testes de Concorrência:**
+  - Job `ios` (`macos-15`) adicionado ao `.github/workflows/ci.yml` validando `:reader-core:assembleReaderCoreDebugXCFramework` e `xcodebuild` do `sample-ios` em todo Push/PR.
+  - Testes de concorrência multi-coroutine e entradas Unicode no `ZipResourceProvider`.
+
+## [0.9.0] - 2026-11-19
+
+### Added
+- **Sistema de Observabilidade Multiplataforma (`com.readerengine.core.observability`):**
+  - SPI plugável `ReaderObserver` (Logs estruturados + Spans monotônicos + Métricas) com implementação padrão `ReaderObserver.NoOp` (zero overhead), fan-out resiliente `CompositeReaderObserver`, ring buffer `InMemoryDiagnosticsBuffer` e helper `ReaderObservability.measureSpan(...)` baseado em `kotlin.time.TimeSource.Monotonic`.
+  - Instrumentação automática em `ReaderEngine` (`book.open`, `book.spine_pages`) e `ReaderSession` (`session.render_document`, `search.query`, `search.results_count`).
+  - Estatísticas em tempo real do cache LRU (`ZipCacheStats`: `hits`, `misses`, `evictions`, `entryCount`, `currentBytes`, `maxBytes`, `hitRate`) em `ZipResourceProvider` com delegação transparente em `DecryptingResourceProvider` e `CbzResourceProvider`.
+- **Observabilidade dentro da WebView (JS Runtime Errors & Pagination Metrics):**
+  - Novas ações `ReaderJsBridge.ACTION_JS_ERROR` (`window.onerror` e `unhandledrejection`) e `ReaderJsBridge.ACTION_JS_METRIC` (`webview.pagination_ms` medido em `_computeTotalSubPages()`) roteadas automaticamente para o `ReaderObserver` pelo `ReaderSession`.
+- **Snapshot de Diagnóstico Técnico (`diagnosticsSnapshot`):**
+  - Novos métodos `ReaderSession.diagnosticsSnapshot()` e `ReaderSession.exportDiagnosticsJson()` retornando versão do SDK, estado de leitura, `ZipCacheStats` e últimos logs/spans/métricas em memória para suporte e depuração.
+- **Exemplo no `sample-android`:**
+  - `LogcatReaderObserver` conectado ao `ReaderEngine` em `MainActivity.kt`.
+
+## [0.8.0] - 2026-11-19
+
+### Added
+- **Navegação Reversa Inteligente (`LastSubPage`) e Histórico de Navegação (`NavigationBackstack`):**
+  - No modo `PAGINATED`, retroceder capítulo (`PrevPage` ou gesto `reader_gesture_prev_page`) abre automaticamente o capítulo anterior na **última sub-página** (`data-reader-subpage="last"`, `ReaderJsBridge.INITIAL_SUB_PAGE_LAST` e `readerJS.goToLastSubPage()`).
+  - Novo modelo `NavigationEntry`, campos `canNavigateBack`, `canNavigateForward` e `previousLocation` em `ReaderState`, e comandos `ReaderCommand.NavigateBack` / `ReaderCommand.NavigateForward` para voltar à posição exata após saltos não-lineares (TOC, links internos, busca, slider ou bookmarks).
+- **Navegação e Destaque Visual para Resultados de Busca (`Search Match Highlight`):**
+  - Campo `SearchResult.occurrenceInPage` calculado em `BookSearchEngine.search(...)`.
+  - Novos comandos `ReaderCommand.NavigateToSearchResult(query, pageIndex, occurrenceInPage)` e `ReaderCommand.ClearSearchHighlight`, funções JS `readerJS.scrollToSearchMatch(...)` / `readerJS.clearSearchHighlight()` (com suporte a rolagem no modo `SCROLL` e troca automática de sub-página no modo `PAGINATED`) e estilo `.reader-search-match` em `ThemeTokens.toContentCss()`.
+- **Zoom / Lightbox Nativo de Imagens e Figuras (`Image Tap Inspection`):**
+  - Novo modelo `ImageActivation(src, resolvedHref, alt, caption)` e efeito `ReaderUiEffect.ImageActivated`.
+  - Interceptação de toques em `<img>` / `<figure>` em `ReaderJsBridge` (`ACTION_IMAGE_TAP = "reader_image_tap"`), preservando `alt` e `<figcaption>` sem disparar virada de página lateral.
+- **Exportador de Caderno de Estudos e Citações (`StudyNotebookExporter`):**
+  - Novos métodos em `ReaderSession`: `exportStudyNotebookMarkdown()`, `exportStudyNotebookHtml()` (com `@media print` pronto para impressão/PDF) e `formatQuoteCitation(highlight)` com referência bibliográfica automática (título, autores, capítulo e página impressa do `pageList`).
+- **Tipografia Editorial Avançada (`Hyphenation`, `lang` Automático, `Widows/Orphans`):**
+  - Novos parâmetros `hyphens: Boolean = true`, `orphans: Int = 2` e `widows: Int = 2` em `ThemeTokens.Typography`, gerando `hyphens: auto; -webkit-hyphens: auto; orphans; widows;` em `ThemeTokens.toContentCss()`.
+  - Injeção automática do atributo `lang` em `<html>` a partir de `Metadata.language` em `ReaderJsBridge.injectThemeAndBridge(...)` e `ReaderSession.currentDocument(...)`.
+- **Suporte Nativo a FictionBook 2 (`Fb2Parser`):**
+  - Novo parser `.fb2` e `.fb2.zip` registrado em `ParserRegistry.default()` reutilizando `XmlTokenizer`: extrai metadados (`<title-info>`), capa e imagens Base64 (`<binary>`), capítulos (`<section>`), sumário (`toc`) e notas de rodapé (`<body name="notes">`) integradas ao popup `epub:type="footnote"`.
+
 ## [0.7.0] - 2026-11-19
 
 ### Added

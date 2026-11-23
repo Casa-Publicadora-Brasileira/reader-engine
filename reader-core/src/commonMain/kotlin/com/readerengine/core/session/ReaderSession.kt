@@ -4,28 +4,42 @@ import com.readerengine.core.bridge.InterceptedUrl
 import com.readerengine.core.bridge.PayloadCodec
 import com.readerengine.core.bridge.ReaderJsBridge
 import com.readerengine.core.error.ReaderException
+import com.readerengine.core.export.StudyNotebookExporter
 import com.readerengine.core.model.Bookmark
 import com.readerengine.core.model.BookStateSnapshot
 import com.readerengine.core.model.FormEntry
 import com.readerengine.core.model.HighlightItem
 import com.readerengine.core.model.HighlightStyle
+import com.readerengine.core.model.ImageActivation
 import com.readerengine.core.model.InitialBookState
 import com.readerengine.core.model.Locator
 import com.readerengine.core.model.MediaOverlay
 import com.readerengine.core.model.MediaOverlayClip
 import com.readerengine.core.model.Metadata
+import com.readerengine.core.model.NavigationEntry
 import com.readerengine.core.model.PageFormState
 import com.readerengine.core.model.PagePreview
 import com.readerengine.core.model.PageProgressionDirection
+import com.readerengine.core.model.ProgressMergePolicy
 import com.readerengine.core.model.Publication
 import com.readerengine.core.model.ReaderStrings
 import com.readerengine.core.model.ReadingMode
 import com.readerengine.core.model.ReadingProgress
 import com.readerengine.core.model.ReadingStats
 import com.readerengine.core.model.SearchResult
+import com.readerengine.core.model.SelectionContext
+import com.readerengine.core.model.SnapshotMergeResult
 import com.readerengine.core.model.TocEntry
 import com.readerengine.core.model.TocItem
 import com.readerengine.core.model.TtsSentence
+import com.readerengine.core.observability.CompositeReaderObserver
+import com.readerengine.core.observability.InMemoryDiagnosticsBuffer
+import com.readerengine.core.observability.ReaderDiagnosticsSnapshot
+import com.readerengine.core.observability.ReaderLogLevel
+import com.readerengine.core.observability.ReaderLogRecord
+import com.readerengine.core.observability.ReaderMetric
+import com.readerengine.core.observability.ReaderObservability
+import com.readerengine.core.observability.ReaderObserver
 import com.readerengine.core.parser.XmlEntities
 import com.readerengine.core.platform.defaultFileSystem
 import com.readerengine.core.provider.normalizeHref
@@ -87,6 +101,9 @@ public data class ReaderState(
     val landmarks: List<TocItem> = emptyList(),
     val positions: List<Locator> = emptyList(),
     val stats: ReadingStats = ReadingStats(),
+    val canNavigateBack: Boolean = false,
+    val canNavigateForward: Boolean = false,
+    val previousLocation: NavigationEntry? = null,
 )
 
 /**
@@ -175,15 +192,39 @@ public sealed interface ReaderUiEffect {
     public data class ShowMessage(
         val message: String,
     ) : ReaderUiEffect
+
+    /**
+     * Disparado quando o usuário toca em uma imagem (`<img>` / `<figure>`) no conteúdo,
+     * permitindo abrir um visualizador Lightbox nativo com pinch-to-zoom.
+     */
+    public data class ImageActivated(
+        val image: ImageActivation,
+    ) : ReaderUiEffect
+
+    /**
+     * Disparado quando a seleção de texto na WebView muda (`reader_selection_changed`),
+     * enviando texto selecionado, frase de contexto e coordenadas (`null` quando a seleção é limpa).
+     */
+    public data class SelectionChanged(
+        val context: SelectionContext?,
+    ) : ReaderUiEffect
 }
 
 /** Comandos despachados pela UI nativa para a sessão. */
 public sealed interface ReaderCommand {
     public data object NextPage : ReaderCommand
     public data object PrevPage : ReaderCommand
+    public data object NavigateBack : ReaderCommand
+    public data object NavigateForward : ReaderCommand
     public data class GoToPage(val pageIndex: Int, val scrollY: Int = 0) : ReaderCommand
     public data class GoToHref(val href: String) : ReaderCommand
     public data class GoToLocator(val locator: Locator) : ReaderCommand
+    public data class NavigateToSearchResult(
+        val query: String,
+        val pageIndex: Int,
+        val occurrenceInPage: Int = 0,
+    ) : ReaderCommand
+    public data object ClearSearchHighlight : ReaderCommand
     public data class TriggerAction(val action: String, val payload: String? = null) : ReaderCommand
     public data class UpdateScroll(
         val scrollY: Int,
@@ -216,7 +257,24 @@ public sealed interface ReaderCommand {
 public class ReaderSession(
     private val publication: Publication,
     initialBookState: InitialBookState = InitialBookState(),
+    observer: ReaderObserver = ReaderObserver.NoOp,
 ) {
+    public constructor(
+        publication: Publication,
+        initialBookState: InitialBookState,
+    ) : this(
+        publication = publication,
+        initialBookState = initialBookState,
+        observer = ReaderObserver.NoOp,
+    )
+
+    private val diagnosticsBuffer = InMemoryDiagnosticsBuffer(maxEntries = 100)
+    private val effectiveObserver: ReaderObserver = if (observer === ReaderObserver.NoOp) {
+        diagnosticsBuffer
+    } else {
+        CompositeReaderObserver(diagnosticsBuffer, observer)
+    }
+
     private val json = Json { ignoreUnknownKeys = true }
     private val strings: ReaderStrings = initialBookState.strings
     private val watchScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
@@ -274,6 +332,9 @@ public class ReaderSession(
     }
 
     private val bookmarks = initialBookState.savedBookmarks.toMutableList()
+    private val backStack = ArrayDeque<NavigationEntry>()
+    private val forwardStack = ArrayDeque<NavigationEntry>()
+    private var pendingOpenAtLastSubPage: Boolean = false
     private var nextBookmarkSeq: Int = bookmarks.size + 1
     private var lastEmittedProgressPage: Int = -1
     private var lastEmittedProgressScrollY: Int = -1000
@@ -383,14 +444,30 @@ public class ReaderSession(
      * Realiza busca textual case-insensitive e insensível a acentos em todos os capítulos do livro,
      * retornando trechos com contexto (`snippet`), índice da página, posição relativa e `Locator`.
      */
-    public fun search(query: String, maxResults: Int = 50): List<SearchResult> =
-        BookSearchEngine.search(
-            publication = publication,
-            resolvedToc = resolvedToc,
-            query = query,
-            maxResults = maxResults,
-            strings = strings,
+    public fun search(query: String, maxResults: Int = 50): List<SearchResult> {
+        val results = ReaderObservability.measureSpan(
+            observer = effectiveObserver,
+            name = "search.query",
+            attributes = mapOf("queryLength" to query.trim().length.toString(), "maxResults" to maxResults.toString()),
+        ) {
+            BookSearchEngine.search(
+                publication = publication,
+                resolvedToc = resolvedToc,
+                query = query,
+                maxResults = maxResults,
+                strings = strings,
+            )
+        }
+        effectiveObserver.onMetric(
+            ReaderMetric(
+                name = "search.results_count",
+                value = results.size.toDouble(),
+                unit = "matches",
+                attributes = mapOf("documentId" to documentId),
+            ),
         )
+        return results
+    }
 
     /** Exporta o índice de busca textual de todos os capítulos como JSON serializado. */
     public fun exportSearchIndexJson(): String =
@@ -536,7 +613,44 @@ public class ReaderSession(
                 } else {
                     val prevIdx = (current.pageIndex - 1).coerceAtLeast(0)
                     if (prevIdx != current.pageIndex || current.scrollY != 0) {
-                        navigateToPageInternal(prevIdx, scrollY = 0)
+                        val openAtLast = prevIdx != current.pageIndex && current.readingMode == ReadingMode.PAGINATED
+                        navigateToPageInternal(prevIdx, scrollY = 0, openAtLastSubPage = openAtLast)
+                    }
+                }
+            }
+
+            ReaderCommand.NavigateBack -> {
+                val previous = backStack.removeLastOrNull()
+                if (previous != null) {
+                    pushHistoryEntry(forwardStack, currentNavigationEntry(current))
+                    navigateToPageInternal(
+                        targetPageIndex = previous.pageIndex.coerceIn(0, lastIndex),
+                        scrollY = previous.scrollY,
+                        targetSubPage = previous.subPage,
+                        recordHistory = false,
+                    )
+                    if (current.readingMode == ReadingMode.PAGINATED && previous.pageIndex == current.pageIndex) {
+                        _uiEffects.tryEmit(
+                            ReaderUiEffect.EvaluateJs(ReaderJsBridge.goToSubPageCommand(previous.subPage)),
+                        )
+                    }
+                }
+            }
+
+            ReaderCommand.NavigateForward -> {
+                val next = forwardStack.removeLastOrNull()
+                if (next != null) {
+                    pushHistoryEntry(backStack, currentNavigationEntry(current))
+                    navigateToPageInternal(
+                        targetPageIndex = next.pageIndex.coerceIn(0, lastIndex),
+                        scrollY = next.scrollY,
+                        targetSubPage = next.subPage,
+                        recordHistory = false,
+                    )
+                    if (current.readingMode == ReadingMode.PAGINATED && next.pageIndex == current.pageIndex) {
+                        _uiEffects.tryEmit(
+                            ReaderUiEffect.EvaluateJs(ReaderJsBridge.goToSubPageCommand(next.subPage)),
+                        )
                     }
                 }
             }
@@ -544,7 +658,8 @@ public class ReaderSession(
             is ReaderCommand.GoToPage -> {
                 val targetIdx = command.pageIndex.coerceIn(0, lastIndex)
                 val targetScroll = command.scrollY.coerceAtLeast(0)
-                navigateToPageInternal(targetIdx, scrollY = targetScroll)
+                val isJump = targetIdx != current.pageIndex || abs(targetScroll - current.scrollY) > 100
+                navigateToPageInternal(targetIdx, scrollY = targetScroll, recordHistory = isJump)
             }
 
             is ReaderCommand.GoToHref -> {
@@ -555,7 +670,28 @@ public class ReaderSession(
                 val loc = command.locator
                 val idxByHref = resolveSpineIndex(loc.href, baseDir = "")
                 val targetIdx = if (idxByHref >= 0) idxByHref else loc.pageIndex.coerceIn(0, lastIndex)
-                navigateToPageInternal(targetIdx, scrollY = 0)
+                navigateToPageInternal(targetIdx, scrollY = 0, recordHistory = targetIdx != current.pageIndex)
+            }
+
+            is ReaderCommand.NavigateToSearchResult -> {
+                val targetIdx = command.pageIndex.coerceIn(0, lastIndex)
+                if (targetIdx != current.pageIndex) {
+                    navigateToPageInternal(targetIdx, scrollY = 0, recordHistory = true)
+                }
+                _uiEffects.tryEmit(
+                    ReaderUiEffect.EvaluateJs(
+                        ReaderJsBridge.scrollToSearchMatchCommand(
+                            query = command.query,
+                            occurrenceInPage = command.occurrenceInPage,
+                        ),
+                    ),
+                )
+            }
+
+            ReaderCommand.ClearSearchHighlight -> {
+                _uiEffects.tryEmit(
+                    ReaderUiEffect.EvaluateJs(ReaderJsBridge.SCRIPT_CLEAR_SEARCH_HIGHLIGHT),
+                )
             }
 
             is ReaderCommand.TriggerAction -> {
@@ -653,7 +789,7 @@ public class ReaderSession(
             is ReaderCommand.SelectHighlightItem -> {
                 val item = command.item
                 if (item.pageIndex != current.pageIndex) {
-                    navigateToPageInternal(item.pageIndex, scrollY = item.targetScrollY)
+                    navigateToPageInternal(item.pageIndex, scrollY = item.targetScrollY, recordHistory = true)
                 } else {
                     _uiEffects.tryEmit(ReaderUiEffect.ScrollToY(scrollYPx = item.targetScrollY))
                 }
@@ -729,7 +865,11 @@ public class ReaderSession(
             is ReaderCommand.GoToBookmark -> {
                 val target = bookmarks.firstOrNull { it.id == command.bookmarkId }
                 if (target != null) {
-                    navigateToPageInternal(target.pageIndex, scrollY = target.scrollY)
+                    navigateToPageInternal(
+                        target.pageIndex,
+                        scrollY = target.scrollY,
+                        recordHistory = target.pageIndex != current.pageIndex,
+                    )
                 }
             }
 
@@ -1003,7 +1143,11 @@ public class ReaderSession(
                 }
                 val spineIdx = resolveSpineIndex(intercepted.href, baseDir = currentChapterDir())
                 if (spineIdx >= 0) {
-                    navigateToPageInternal(spineIdx, scrollY = 0)
+                    navigateToPageInternal(
+                        spineIdx,
+                        scrollY = 0,
+                        recordHistory = spineIdx != _state.value.pageIndex,
+                    )
                     if (intercepted.anchor != null) {
                         _uiEffects.tryEmit(ReaderUiEffect.ScrollToY(scrollYPx = 0, anchor = intercepted.anchor))
                     }
@@ -1026,20 +1170,38 @@ public class ReaderSession(
         val current = _state.value
         val href = publication.spine.getOrNull(current.pageIndex)
             ?: throw ReaderException.InvalidContent("Spine vazio ou índice inválido (${current.pageIndex})")
-        val rawHtml = publication.readString(href)
-        val html = ReaderJsBridge.injectThemeAndBridge(
-            rawHtml = rawHtml,
-            theme = current.theme,
-            fontScale = current.fontScale,
-            fontFamily = current.fontFamily,
-            fontSizeClass = current.fontSizeClass,
-            isNightMode = current.isNightMode,
-            readingMode = current.readingMode,
-            layout = publication.metadata.layout,
-            direction = publication.metadata.pageProgressionDirection,
-            spread = publication.metadata.spread,
-            initialSubPage = if (current.readingMode == ReadingMode.PAGINATED) current.currentSubPage else 0,
-        )
+        val openAtLast = pendingOpenAtLastSubPage
+        pendingOpenAtLastSubPage = false
+        val targetInitialSubPage = when {
+            current.readingMode != ReadingMode.PAGINATED -> 0
+            openAtLast -> ReaderJsBridge.INITIAL_SUB_PAGE_LAST
+            else -> current.currentSubPage
+        }
+        val html = ReaderObservability.measureSpan(
+            observer = effectiveObserver,
+            name = "session.render_document",
+            attributes = mapOf(
+                "pageIndex" to current.pageIndex.toString(),
+                "href" to href,
+                "readingMode" to current.readingMode.name,
+            ),
+        ) {
+            val rawHtml = publication.readString(href)
+            ReaderJsBridge.injectThemeAndBridge(
+                rawHtml = rawHtml,
+                theme = current.theme,
+                fontScale = current.fontScale,
+                fontFamily = current.fontFamily,
+                fontSizeClass = current.fontSizeClass,
+                isNightMode = current.isNightMode,
+                readingMode = current.readingMode,
+                layout = publication.metadata.layout,
+                direction = publication.metadata.pageProgressionDirection,
+                spread = publication.metadata.spread,
+                initialSubPage = targetInitialSubPage,
+                language = publication.metadata.language,
+            )
+        }
         return RenderedDocument(
             html = html,
             href = href,
@@ -1363,8 +1525,366 @@ public class ReaderSession(
         return _state.value
     }
 
-    private fun navigateToPageInternal(targetPageIndex: Int, scrollY: Int, targetSubPage: Int = 0) {
+    /** Sobrecarga concisa para iOS/Swift de [mergeBookStateSnapshot] usando [ProgressMergePolicy.NEWEST_TIMESTAMP]. */
+    public fun mergeBookStateSnapshot(remotePayload: String): SnapshotMergeResult =
+        mergeBookStateSnapshot(remotePayload = remotePayload, progressPolicy = ProgressMergePolicy.NEWEST_TIMESTAMP)
+
+    /**
+     * Realiza merge determinístico sem perda de dados entre o estado local da sessão e um
+     * snapshot remoto (`BookStateSnapshot` em JSON puro ou comprimido `gz:`), unindo bookmarks,
+     * highlights, notas e formulários, e resolvendo o progresso conforme [progressPolicy].
+     */
+    public fun mergeBookStateSnapshot(
+        remotePayload: String,
+        progressPolicy: ProgressMergePolicy = ProgressMergePolicy.NEWEST_TIMESTAMP,
+    ): SnapshotMergeResult = ReaderObservability.measureSpan(
+        observer = effectiveObserver,
+        name = "snapshot.merge",
+        attributes = mapOf("policy" to progressPolicy.name),
+    ) {
+        val decodedPayload = PayloadCodec.decodeIfNeeded(remotePayload)
+        val remote = json.decodeFromString(BookStateSnapshot.serializer(), decodedPayload)
+        val cur = _state.value
+
+        // 1. Merge de notas de highlights (preserva locais, adiciona remotas ausentes ou mais detalhadas)
+        var mergedNotes = 0
+        remote.highlightNotes.forEach { (id, remoteNote) ->
+            val clean = remoteNote.trim()
+            if (clean.isNotEmpty() && highlightNotes[id] != clean) {
+                if (!highlightNotes.containsKey(id)) {
+                    highlightNotes[id] = clean
+                    mergedNotes++
+                }
+            }
+        }
+
+        // 2. Merge de highlights por página (união por texto/id)
+        var mergedHighlightPages = 0
+        remote.pageHighlights.forEach { (page, rawRemote) ->
+            val decodedRemote = PayloadCodec.decodeIfNeeded(rawRemote)
+            val remoteItems = parseHighlightsFromSerializedString(decodedRemote, page)
+            if (remoteItems.isEmpty()) return@forEach
+
+            val localItems = pageHighlightSummaries[page].orEmpty()
+            val merged = localItems.toMutableList()
+            val existingTexts = localItems.map { it.text.trim().lowercase() }.toMutableSet()
+            var nextId = (localItems.maxOfOrNull { it.id } ?: 0) + 1
+            var pageChanged = false
+
+            for (item in remoteItems) {
+                val key = item.text.trim().lowercase()
+                if (key.isNotEmpty() && key !in existingTexts) {
+                    val assignedId = if (merged.any { it.id == item.id }) nextId++ else item.id
+                    if (assignedId >= nextId) nextId = assignedId + 1
+                    merged.add(item.copy(id = assignedId, note = highlightNotes[item.id] ?: item.note))
+                    existingTexts.add(key)
+                    pageChanged = true
+                }
+            }
+
+            if (pageChanged) {
+                mergedHighlightPages++
+                pageHighlightSummaries[page] = merged
+                val serialized = "type:textContent|" + merged.joinToString("|") { hl ->
+                    "${hl.id}\$${hl.style.legacyTypeValue}\$${hl.text.replace('|', ' ').replace('$', ' ')}"
+                }
+                pageSerializedHighlights[page] = serialized
+                _events.tryEmit(
+                    ReaderEvent.PageHighlightsChanged(
+                        documentId = documentId,
+                        pageIndex = page,
+                        rawSerializedHighlights = serialized,
+                        compressedPayload = PayloadCodec.encodeIfNeeded(serialized),
+                        summaryItems = merged,
+                    ),
+                )
+            }
+        }
+
+        // 3. Merge de formulários/respostas por página (mantém não-vazios locais e adiciona índices remotos ausentes)
+        var mergedFormPages = 0
+        remote.pageForms.forEach { (page, rawRemote) ->
+            val remoteForm = ReaderJsBridge.parsePageFormState(rawRemote)
+            if (!remoteForm.hasNonBlankContent) return@forEach
+            val localForm = pageFormStates[page] ?: PageFormState()
+            val mergedAnnotations = mergeFormEntries(localForm.annotations, remoteForm.annotations)
+            val mergedAnswers = mergeFormEntries(localForm.answers, remoteForm.answers)
+            val combined = PageFormState(annotations = mergedAnnotations, answers = mergedAnswers)
+            if (combined != localForm) {
+                mergedFormPages++
+                pageFormStates[page] = combined
+                val canonical = ReaderJsBridge.serializePageFormState(combined)
+                _events.tryEmit(
+                    ReaderEvent.PageFormChanged(
+                        documentId = documentId,
+                        pageIndex = page,
+                        rawJsonPayload = canonical,
+                        compressedPayload = PayloadCodec.encodeIfNeeded(canonical),
+                        formState = combined,
+                    ),
+                )
+            }
+        }
+
+        // 4. Merge de bookmarks (deduplicando por id e por (pageIndex, scrollY))
+        var addedBookmarks = 0
+        val existingIds = bookmarks.map { it.id }.toMutableSet()
+        val existingCoords = bookmarks.map { it.pageIndex to it.scrollY }.toMutableSet()
+        for (bm in remote.bookmarks) {
+            val coord = bm.pageIndex to bm.scrollY
+            if (bm.id !in existingIds && coord !in existingCoords) {
+                bookmarks.add(bm)
+                existingIds.add(bm.id)
+                existingCoords.add(coord)
+                addedBookmarks++
+            }
+        }
+        if (addedBookmarks > 0) {
+            nextBookmarkSeq = bookmarks.size + 1
+        }
+
+        // 5. Resolução de progresso segundo ProgressMergePolicy
+        val remoteProgress = remote.progress
+        val adoptRemoteProgress = if (remoteProgress == null) {
+            false
+        } else {
+            when (progressPolicy) {
+                ProgressMergePolicy.KEEP_LOCAL -> false
+                ProgressMergePolicy.PREFER_REMOTE -> true
+                ProgressMergePolicy.NEWEST_TIMESTAMP ->
+                    maxOf(remote.updatedAtEpochMs, remoteProgress.lastUpdateEpochMs) > cur.progress.lastUpdateEpochMs
+                ProgressMergePolicy.FURTHEST_PROGRESS ->
+                    isProgressFurther(remoteProgress, cur.progress)
+            }
+        }
+
+        val lastIndex = (publication.spine.size - 1).coerceAtLeast(0)
+        val finalPage = if (adoptRemoteProgress && remoteProgress != null) {
+            remoteProgress.pageIndex.coerceIn(0, lastIndex)
+        } else {
+            cur.pageIndex
+        }
+        val finalScroll = if (adoptRemoteProgress && remoteProgress != null) {
+            remoteProgress.scrollY.coerceAtLeast(0)
+        } else {
+            cur.scrollY
+        }
+        val finalSubPage = if (adoptRemoteProgress && remoteProgress != null) {
+            remoteProgress.subPage.coerceAtLeast(0)
+        } else {
+            cur.currentSubPage
+        }
+        val finalProgress = if (adoptRemoteProgress && remoteProgress != null) {
+            remoteProgress.copy(
+                pageIndex = finalPage,
+                scrollY = finalScroll,
+                subPage = finalSubPage,
+            )
+        } else {
+            cur.progress
+        }
+
+        _state.value = cur.copy(
+            pageIndex = finalPage,
+            scrollY = finalScroll,
+            currentSubPage = finalSubPage,
+            progress = finalProgress,
+            currentPageSerializedHighlights = pageSerializedHighlights[finalPage].orEmpty(),
+            currentPageHighlights = pageHighlightSummaries[finalPage].orEmpty(),
+            currentPageFormState = pageFormStates[finalPage] ?: PageFormState(),
+            bookmarks = bookmarks.toList(),
+            hasBookmarkAtCurrentPage = bookmarks.any { it.pageIndex == finalPage },
+            stats = buildStats(finalPage, finalProgress.pageProgression),
+        )
+
+        if (adoptRemoteProgress) {
+            _events.tryEmit(ReaderEvent.ProgressUpdated(finalProgress))
+        }
+        if (addedBookmarks > 0) {
+            syncBookmarksStateAndEmit()
+        }
+
+        SnapshotMergeResult(
+            progressUpdated = adoptRemoteProgress,
+            addedBookmarks = addedBookmarks,
+            mergedHighlightPages = mergedHighlightPages,
+            mergedHighlightNotes = mergedNotes,
+            mergedFormPages = mergedFormPages,
+        )
+    }
+
+    /** Sobrecarga concisa para iOS/Swift de [prefetchAdjacentChapters] com raio padrão `1`. */
+    public fun prefetchAdjacentChapters(): Int = prefetchAdjacentChapters(radius = 1)
+
+    /**
+     * Pré-aquece no cache LRU do [com.readerengine.core.model.ResourceProvider] e no cache de texto
+     * da [Publication] os capítulos adjacentes (`pageIndex - radius .. pageIndex + radius`),
+     * reduzindo latência nas viradas de capítulo. Retorna o número de capítulos pré-carregados.
+     */
+    public fun prefetchAdjacentChapters(radius: Int = 1): Int {
+        val safeRadius = radius.coerceIn(1, 5)
+        val curPage = _state.value.pageIndex
+        val spineSize = publication.spine.size
+        if (spineSize <= 1) return 0
+        return ReaderObservability.measureSpan(
+            observer = effectiveObserver,
+            name = "session.prefetch_adjacent",
+            attributes = mapOf("pageIndex" to curPage.toString(), "radius" to safeRadius.toString()),
+        ) {
+            var count = 0
+            for (delta in -safeRadius..safeRadius) {
+                if (delta == 0) continue
+                val idx = curPage + delta
+                if (idx in 0 until spineSize) {
+                    val href = publication.spine[idx]
+                    val ok = runCatching {
+                        publication.cachedPlainText(href) { raw ->
+                            raw.replace(Regex("""<head\b[^>]*>[\s\S]*?</head>""", RegexOption.IGNORE_CASE), " ")
+                                .replace(Regex("""<script\b[^>]*>[\s\S]*?</script>""", RegexOption.IGNORE_CASE), " ")
+                                .replace(Regex("""<style\b[^>]*>[\s\S]*?</style>""", RegexOption.IGNORE_CASE), " ")
+                                .replace(Regex("""<[^>]+>"""), " ")
+                                .let { XmlEntities.decode(it) }
+                                .replace(Regex("""\s+"""), " ")
+                                .trim()
+                        }
+                    }.isSuccess
+                    if (ok) count++
+                }
+            }
+            count
+        }
+    }
+
+    private fun mergeFormEntries(local: List<FormEntry>, remote: List<FormEntry>): List<FormEntry> {
+        val byIndex = LinkedHashMap<Int, FormEntry>()
+        for (entry in local) {
+            byIndex[entry.index] = entry
+        }
+        for (entry in remote) {
+            val existing = byIndex[entry.index]
+            if (existing == null || (existing.content.isBlank() && entry.content.isNotBlank())) {
+                byIndex[entry.index] = entry
+            }
+        }
+        return byIndex.values.sortedBy { it.index }
+    }
+
+    private fun isProgressFurther(candidate: ReadingProgress, current: ReadingProgress): Boolean {
+        if (candidate.totalPercentage != current.totalPercentage) {
+            return candidate.totalPercentage > current.totalPercentage
+        }
+        if (candidate.pageIndex != current.pageIndex) {
+            return candidate.pageIndex > current.pageIndex
+        }
+        if (candidate.subPage != current.subPage) {
+            return candidate.subPage > current.subPage
+        }
+        return candidate.scrollY > current.scrollY
+    }
+
+    /**
+     * Exporta todo o caderno de estudos (grifos, notas, marcadores e respostas de formulários)
+     * agrupado por capítulo em formato Markdown.
+     */
+    public fun exportStudyNotebookMarkdown(): String =
+        StudyNotebookExporter.exportMarkdown(
+            publication = publication,
+            toc = resolvedToc,
+            pageList = resolvedPageList,
+            highlightsByPage = pageHighlightSummaries,
+            bookmarks = bookmarks,
+            formsByPage = pageFormStates,
+            strings = strings,
+        )
+
+    /**
+     * Exporta todo o caderno de estudos em HTML autocontido com CSS de impressão (`@media print`).
+     */
+    public fun exportStudyNotebookHtml(): String =
+        StudyNotebookExporter.exportHtml(
+            publication = publication,
+            toc = resolvedToc,
+            pageList = resolvedPageList,
+            highlightsByPage = pageHighlightSummaries,
+            bookmarks = bookmarks,
+            formsByPage = pageFormStates,
+            strings = strings,
+        )
+
+    /**
+     * Retorna um snapshot de diagnóstico técnico da sessão ativa (versão do SDK, posição,
+     * estatísticas do cache LRU e últimos logs/spans/métricas coletados).
+     */
+    public fun diagnosticsSnapshot(): ReaderDiagnosticsSnapshot {
+        val cur = _state.value
+        return ReaderDiagnosticsSnapshot(
+            sdkVersion = ReaderObservability.SDK_VERSION,
+            documentId = documentId,
+            title = publication.metadata.title,
+            language = publication.metadata.language,
+            pageIndex = cur.pageIndex,
+            spineLen = cur.spineLen,
+            readingMode = cur.readingMode,
+            currentSubPage = cur.currentSubPage,
+            totalSubPages = cur.totalSubPages,
+            cacheStats = publication.provider.cacheStats(),
+            recentSpans = diagnosticsBuffer.recentSpans(),
+            recentLogs = diagnosticsBuffer.recentLogs(),
+            recentMetrics = diagnosticsBuffer.recentMetrics(),
+        )
+    }
+
+    /** Exporta [diagnosticsSnapshot] como JSON pronto para anexar em tickets de suporte/debug. */
+    public fun exportDiagnosticsJson(): String =
+        json.encodeToString(ReaderDiagnosticsSnapshot.serializer(), diagnosticsSnapshot())
+
+    /**
+     * Formata uma citação a partir de um [HighlightItem] com referência bibliográfica automática
+     * (título, autores, capítulo e página impressa do `pageList`, se disponível).
+     */
+    public fun formatQuoteCitation(highlight: HighlightItem): String =
+        StudyNotebookExporter.formatQuoteCitation(
+            publication = publication,
+            toc = resolvedToc,
+            pageList = resolvedPageList,
+            highlight = highlight,
+            strings = strings,
+        )
+
+    private fun currentNavigationEntry(state: ReaderState): NavigationEntry {
+        val title = resolvedToc.firstOrNull { it.spineIndex == state.pageIndex }?.title
+            ?.takeIf { it.isNotBlank() }
+            ?: strings.formatChapterLabel(state.pageIndex + 1)
+        return NavigationEntry(
+            pageIndex = state.pageIndex,
+            subPage = state.currentSubPage,
+            scrollY = state.scrollY,
+            title = title,
+        )
+    }
+
+    private fun pushHistoryEntry(stack: ArrayDeque<NavigationEntry>, entry: NavigationEntry) {
+        val last = stack.lastOrNull()
+        if (last == entry) return
+        if (stack.size >= MAX_NAVIGATION_HISTORY) {
+            stack.removeFirst()
+        }
+        stack.addLast(entry)
+    }
+
+    private fun navigateToPageInternal(
+        targetPageIndex: Int,
+        scrollY: Int,
+        targetSubPage: Int = 0,
+        recordHistory: Boolean = false,
+        openAtLastSubPage: Boolean = false,
+    ) {
         val current = _state.value
+        if (recordHistory) {
+            pushHistoryEntry(backStack, currentNavigationEntry(current))
+            forwardStack.clear()
+        }
+        pendingOpenAtLastSubPage = openAtLastSubPage
         val newProgress = buildProgress(
             pageIndex = targetPageIndex,
             scrollY = scrollY,
@@ -1384,6 +1904,9 @@ public class ReaderSession(
             currentPageFormState = pageFormStates[targetPageIndex] ?: PageFormState(),
             hasBookmarkAtCurrentPage = bookmarks.any { it.pageIndex == targetPageIndex },
             stats = buildStats(targetPageIndex, newProgress.pageProgression),
+            canNavigateBack = backStack.isNotEmpty(),
+            canNavigateForward = forwardStack.isNotEmpty(),
+            previousLocation = backStack.lastOrNull(),
         )
         lastEmittedProgressPage = targetPageIndex
         lastEmittedProgressScrollY = scrollY
@@ -1414,9 +1937,84 @@ public class ReaderSession(
             ReaderJsBridge.ACTION_GESTURE_PREV_PAGE -> {
                 val prevIdx = (current.pageIndex - 1).coerceAtLeast(0)
                 if (prevIdx != current.pageIndex) {
-                    navigateToPageInternal(prevIdx, scrollY = 0, targetSubPage = 0)
+                    val openAtLast = current.readingMode == ReadingMode.PAGINATED
+                    navigateToPageInternal(prevIdx, scrollY = 0, targetSubPage = 0, openAtLastSubPage = openAtLast)
                 }
                 _events.tryEmit(ReaderEvent.ActionTriggered(action, payload))
+            }
+
+            ReaderJsBridge.ACTION_IMAGE_TAP -> {
+                val parsed = ReaderJsBridge.parseImageTapPayload(payload)
+                _events.tryEmit(ReaderEvent.ActionTriggered(action, payload))
+                if (parsed != null) {
+                    val (src, alt, caption) = parsed
+                    val resolvedHref = resolveResourceHref(src)
+                    _uiEffects.tryEmit(
+                        ReaderUiEffect.ImageActivated(
+                            ImageActivation(
+                                src = src,
+                                resolvedHref = resolvedHref,
+                                alt = alt,
+                                caption = caption,
+                            ),
+                        ),
+                    )
+                } else {
+                    _uiEffects.tryEmit(ReaderUiEffect.CustomAction(action, payload))
+                }
+            }
+
+            ReaderJsBridge.ACTION_JS_ERROR -> {
+                val attrs = ReaderJsBridge.parseJsErrorPayload(payload).orEmpty()
+                val msg = attrs["message"] ?: payload.orEmpty().ifBlank { "Erro JS na WebView" }
+                effectiveObserver.onLog(
+                    ReaderLogRecord(
+                        level = ReaderLogLevel.ERROR,
+                        tag = "WebViewJS",
+                        message = msg,
+                        attributes = attrs + mapOf(
+                            "documentId" to documentId,
+                            "pageIndex" to current.pageIndex.toString(),
+                        ),
+                        errorType = "JavaScriptError",
+                        errorMessage = msg,
+                    ),
+                )
+                effectiveObserver.onMetric(
+                    ReaderMetric(
+                        name = "webview.js_error",
+                        value = 1.0,
+                        unit = "count",
+                        attributes = mapOf("documentId" to documentId),
+                    ),
+                )
+                _events.tryEmit(ReaderEvent.ActionTriggered(action, payload))
+            }
+
+            ReaderJsBridge.ACTION_JS_METRIC -> {
+                ReaderJsBridge.parseJsMetricPayload(payload)?.let { (name, value, unit) ->
+                    effectiveObserver.onMetric(
+                        ReaderMetric(
+                            name = name,
+                            value = value,
+                            unit = unit,
+                            attributes = mapOf(
+                                "documentId" to documentId,
+                                "pageIndex" to current.pageIndex.toString(),
+                            ),
+                        ),
+                    )
+                }
+            }
+
+            ReaderJsBridge.ACTION_SELECTION_CHANGED -> {
+                val href = publication.spine.getOrNull(current.pageIndex).orEmpty()
+                val context = ReaderJsBridge.parseSelectionContextPayload(
+                    rawPayload = payload,
+                    pageIndex = current.pageIndex,
+                    href = href,
+                )
+                _uiEffects.tryEmit(ReaderUiEffect.SelectionChanged(context))
             }
 
             else -> {
@@ -1555,5 +2153,6 @@ public class ReaderSession(
 
     public companion object {
         public const val DEFAULT_BOOK_BASE_URL: String = "book://content/"
+        private const val MAX_NAVIGATION_HISTORY: Int = 50
     }
 }

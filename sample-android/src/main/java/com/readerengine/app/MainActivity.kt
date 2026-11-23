@@ -97,6 +97,12 @@ import com.readerengine.core.model.SearchResult
 import com.readerengine.core.parser.Source
 import com.readerengine.core.session.ReaderCommand
 import com.readerengine.core.session.ReaderEngine
+import android.util.Log
+import com.readerengine.core.observability.ReaderLogLevel
+import com.readerengine.core.observability.ReaderLogRecord
+import com.readerengine.core.observability.ReaderMetric
+import com.readerengine.core.observability.ReaderObserver
+import com.readerengine.core.observability.ReaderSpan
 import com.readerengine.core.session.ReaderEvent
 import com.readerengine.core.session.ReaderSession
 import com.readerengine.core.session.ReaderUiEffect
@@ -110,10 +116,30 @@ import java.io.File
 
 private const val BOOK_BASE_URL = "book://content/"
 
+private object LogcatReaderObserver : ReaderObserver {
+    override fun onLog(record: ReaderLogRecord) {
+        val msg = "${record.message} ${record.attributes}"
+        when (record.level) {
+            ReaderLogLevel.DEBUG -> Log.d(record.tag, msg)
+            ReaderLogLevel.INFO -> Log.i(record.tag, msg)
+            ReaderLogLevel.WARN -> Log.w(record.tag, msg)
+            ReaderLogLevel.ERROR -> Log.e(record.tag, msg)
+        }
+    }
+
+    override fun onSpanFinished(span: ReaderSpan) {
+        Log.d("ReaderSpan", "${span.name} (${span.durationMs}ms, ok=${span.success}) ${span.attributes}")
+    }
+
+    override fun onMetric(metric: ReaderMetric) {
+        Log.d("ReaderMetric", "${metric.name}=${metric.value} ${metric.unit} ${metric.attributes}")
+    }
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val engine = ReaderEngine()
+        val engine = ReaderEngine(observer = LogcatReaderObserver)
         val samples = bundledSamples() + localSamples(assets)
         val initialIntentUri = intent?.data
         setContent {
@@ -556,6 +582,13 @@ private fun ReaderScreen(
                 }
                 is ReaderUiEffect.ShowMessage -> {
                     lastEventSummary = "ShowMessage(${effect.message})"
+                }
+                is ReaderUiEffect.ImageActivated -> {
+                    lastEventSummary = "ImageActivated(${effect.image.resolvedHref})"
+                }
+                is ReaderUiEffect.SelectionChanged -> {
+                    val preview = effect.context?.selectedText?.take(32) ?: "cleared"
+                    lastEventSummary = "SelectionChanged($preview)"
                 }
             }
         }

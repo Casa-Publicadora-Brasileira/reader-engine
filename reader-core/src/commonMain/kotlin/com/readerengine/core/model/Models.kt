@@ -1,6 +1,7 @@
 package com.readerengine.core.model
 
 import com.readerengine.core.drm.EncryptedResourceInfo
+import com.readerengine.core.observability.ZipCacheStats
 import com.readerengine.core.theme.ThemeTokens
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -142,6 +143,8 @@ public interface ResourceProvider {
         val end = (start + byteCount).coerceAtMost(all.size)
         return all.copyOfRange(start, end)
     }
+
+    public fun cacheStats(): ZipCacheStats? = null
 
     public fun close(): Unit = Unit
 }
@@ -416,7 +419,25 @@ public data class SearchResult(
     val matchIndex: Int,
     val progression: Float,
     val locator: Locator? = null,
-)
+    val occurrenceInPage: Int = 0,
+) {
+    public constructor(
+        pageIndex: Int,
+        chapterTitle: String,
+        snippet: String,
+        matchIndex: Int,
+        progression: Float,
+        locator: Locator?,
+    ) : this(
+        pageIndex = pageIndex,
+        chapterTitle = chapterTitle,
+        snippet = snippet,
+        matchIndex = matchIndex,
+        progression = progression,
+        locator = locator,
+        occurrenceInPage = 0,
+    )
+}
 
 /** Item individual de resposta ou anotação em páginas interativas / apostilas / lições. */
 @Serializable
@@ -554,4 +575,80 @@ public data class PersistedSearchIndex(
     val documentId: String,
     val spine: List<String>,
     val chapters: Map<String, String>,
+)
+
+/**
+ * Entrada no histórico de navegação do leitor (`backStack` / `forwardStack`),
+ * permitindo voltar à posição exata após saltos via TOC, links internos, busca ou bookmarks.
+ */
+@Serializable
+public data class NavigationEntry(
+    val pageIndex: Int,
+    val subPage: Int = 0,
+    val scrollY: Int = 0,
+    val title: String = "",
+)
+
+/**
+ * Metadados de uma imagem ativada por toque no documento HTML (`reader_image_tap`),
+ * permitindo ao app host abrir um visualizador Lightbox nativo com zoom.
+ */
+@Serializable
+public data class ImageActivation(
+    val src: String,
+    val resolvedHref: String,
+    val alt: String? = null,
+    val caption: String? = null,
+)
+
+/** Política de resolução de conflito para o progresso de leitura em [com.readerengine.core.session.ReaderSession.mergeBookStateSnapshot]. */
+@Serializable
+public enum class ProgressMergePolicy {
+    /** Adota o progresso remoto se `remote.updatedAtEpochMs > local.updatedAtEpochMs`. */
+    @SerialName("newest_timestamp")
+    NEWEST_TIMESTAMP,
+
+    /** Adota o progresso mais avançado no livro (`totalPercentage` / `pageIndex` / `subPage` / `scrollY`). */
+    @SerialName("furthest_progress")
+    FURTHEST_PROGRESS,
+
+    /** Mantém sempre a posição de leitura local, mesclando apenas grifos, notas, bookmarks e formulários. */
+    @SerialName("keep_local")
+    KEEP_LOCAL,
+
+    /** Adota sempre a posição de leitura remota. */
+    @SerialName("prefer_remote")
+    PREFER_REMOTE,
+}
+
+/** Resumo do resultado de um merge multi-dispositivo (`mergeBookStateSnapshot`). */
+@Serializable
+public data class SnapshotMergeResult(
+    val progressUpdated: Boolean = false,
+    val addedBookmarks: Int = 0,
+    val mergedHighlightPages: Int = 0,
+    val mergedHighlightNotes: Int = 0,
+    val mergedFormPages: Int = 0,
+)
+
+/** Retângulo delimitador em coordenadas da viewport da WebView para a seleção de texto ativa. */
+@Serializable
+public data class SelectionRect(
+    val x: Double,
+    val y: Double,
+    val width: Double,
+    val height: Double,
+)
+
+/**
+ * Contexto enriquecido da seleção de texto ativa na WebView (`reader_selection_changed`),
+ * ideal para menus flutuantes nativos, dicionário, tradução e compartilhamento de citações.
+ */
+@Serializable
+public data class SelectionContext(
+    val selectedText: String,
+    val contextSentence: String? = null,
+    val pageIndex: Int,
+    val rect: SelectionRect? = null,
+    val locator: Locator? = null,
 )

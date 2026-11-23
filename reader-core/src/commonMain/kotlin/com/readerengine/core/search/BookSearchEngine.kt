@@ -50,6 +50,7 @@ public object BookSearchEngine {
                 ?: strings.formatChapterLabel(pageIndex + 1)
 
             var searchFrom = 0
+            var occurrenceInPage = 0
             while (searchFrom < foldedPlain.length && results.size < maxResults) {
                 val matchIdx = foldedPlain.indexOf(foldedQuery, startIndex = searchFrom, ignoreCase = true)
                 if (matchIdx < 0) break
@@ -81,6 +82,7 @@ public object BookSearchEngine {
                             title = chapterTitle,
                             textQuote = matchedQuote,
                         ),
+                        occurrenceInPage = occurrenceInPage++,
                     ),
                 )
 

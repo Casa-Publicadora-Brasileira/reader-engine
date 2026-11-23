@@ -3,11 +3,14 @@ package com.readerengine.core.bridge
 import com.readerengine.core.model.FormEntry
 import com.readerengine.core.model.HighlightItem
 import com.readerengine.core.model.HighlightStyle
+import com.readerengine.core.model.Locator
 import com.readerengine.core.model.PageFormState
 import com.readerengine.core.model.PageProgressionDirection
 import com.readerengine.core.model.ReadingMode
 import com.readerengine.core.model.RenditionLayout
 import com.readerengine.core.model.RenditionSpread
+import com.readerengine.core.model.SelectionContext
+import com.readerengine.core.model.SelectionRect
 import com.readerengine.core.theme.ThemeTokens
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -34,19 +37,40 @@ public object ReaderJsBridge {
     public const val ACTION_GESTURE_NEXT_PAGE: String = "reader_gesture_next_page"
     public const val ACTION_GESTURE_PREV_PAGE: String = "reader_gesture_prev_page"
     public const val ACTION_GESTURE_TAP_CENTER: String = "reader_gesture_tap_center"
+    public const val ACTION_IMAGE_TAP: String = "reader_image_tap"
+    public const val ACTION_JS_ERROR: String = "reader_js_error"
+    public const val ACTION_JS_METRIC: String = "reader_js_metric"
+    public const val ACTION_SELECTION_CHANGED: String = "reader_selection_changed"
+
+    /** Valor sentinela para `initialSubPage` indicando abertura direta na última sub-página do capítulo. */
+    public const val INITIAL_SUB_PAGE_LAST: Int = -1
 
     public const val SCRIPT_SELECTION: String = "javascript:window.getSelection().toString()"
+    public const val SCRIPT_GET_SELECTION_CONTEXT: String =
+        "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.getSelectionContext){return readerJS.getSelectionContext();}return '';})();"
     public const val SCRIPT_GET_HIGHLIGHTS: String = "javascript:readerJS.getHighlights()"
     public const val SCRIPT_SUMMARY_HIGHLIGHTS: String = "javascript:readerJS.summaryHighlights()"
     public const val SCRIPT_UNHIGHLIGHT_SELECTION: String = "javascript:readerJS.unHighlightSelection()"
     public const val SCRIPT_NEXT_SUB_PAGE: String = "javascript:readerJS.nextSubPage()"
     public const val SCRIPT_PREV_SUB_PAGE: String = "javascript:readerJS.prevSubPage()"
+    public const val SCRIPT_GO_TO_LAST_SUB_PAGE: String =
+        "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.goToLastSubPage){return readerJS.goToLastSubPage();}return '{\"subPage\":0,\"totalSubPages\":1}';})();"
     public const val SCRIPT_GET_SUB_PAGE_STATE: String = "javascript:readerJS.getSubPageState()"
     public const val SCRIPT_GET_CHANGES: String = "javascript:getChanges()"
     public const val SCRIPT_CLEAN_CHANGES: String = "javascript:cleanChanges()"
     public const val SCRIPT_GET_ALL_MODIFICATIONS: String = "javascript:getAllModifications()"
     public const val SCRIPT_CLEAR_TTS_HIGHLIGHT: String =
         "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.clearTtsHighlight){readerJS.clearTtsHighlight();}})();"
+    public const val SCRIPT_CLEAR_SEARCH_HIGHLIGHT: String =
+        "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.clearSearchHighlight){readerJS.clearSearchHighlight();}})();"
+
+    public fun goToLastSubPageCommand(): String = SCRIPT_GO_TO_LAST_SUB_PAGE
+
+    public fun scrollToSearchMatchCommand(query: String, occurrenceInPage: Int = 0): String {
+        val literal = jsStringLiteral(query.trim())
+        val safeOcc = occurrenceInPage.coerceAtLeast(0)
+        return "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.scrollToSearchMatch){return readerJS.scrollToSearchMatch($literal,$safeOcc);}return false;})();"
+    }
 
     public fun highlightTtsSentenceCommand(
         sentenceIndex: Int,
@@ -147,9 +171,7 @@ public object ReaderJsBridge {
     )
 
     /**
-     * Injeta o CSS do tema, classes opcionais de tamanho/modo noturno/paginação horizontal,
-     * `data-reader-subpage` opcional e o polyfill `readerJS` completo (suportando grifos no DOM,
-     * paginação por colunas CSS, detecção de gestos swipe/tap e preservação de viewport).
+     * Sobrecarga compatível com chamadas de 11 parâmetros mantendo compatibilidade binária e Swift.
      */
     public fun injectThemeAndBridge(
         rawHtml: String,
@@ -163,6 +185,40 @@ public object ReaderJsBridge {
         direction: PageProgressionDirection,
         spread: RenditionSpread,
         initialSubPage: Int,
+    ): String = injectThemeAndBridge(
+        rawHtml = rawHtml,
+        theme = theme,
+        fontScale = fontScale,
+        fontFamily = fontFamily,
+        fontSizeClass = fontSizeClass,
+        isNightMode = isNightMode,
+        readingMode = readingMode,
+        layout = layout,
+        direction = direction,
+        spread = spread,
+        initialSubPage = initialSubPage,
+        language = null,
+    )
+
+    /**
+     * Injeta o CSS do tema, classes opcionais de tamanho/modo noturno/paginação horizontal,
+     * `data-reader-subpage` (incluindo `"last"` via [INITIAL_SUB_PAGE_LAST]), `lang` automático
+     * para hifenização correta e o polyfill `readerJS` completo (suportando grifos no DOM,
+     * paginação por colunas CSS, detecção de gestos swipe/tap, zoom de imagens, busca destacada e preservação de viewport).
+     */
+    public fun injectThemeAndBridge(
+        rawHtml: String,
+        theme: ThemeTokens,
+        fontScale: Float,
+        fontFamily: String,
+        fontSizeClass: String,
+        isNightMode: Boolean,
+        readingMode: ReadingMode,
+        layout: RenditionLayout,
+        direction: PageProgressionDirection,
+        spread: RenditionSpread,
+        initialSubPage: Int,
+        language: String?,
     ): String {
         val css = theme.toContentCss(
             fontScale = fontScale,
@@ -192,7 +248,13 @@ public object ReaderJsBridge {
         val htmlOpenRegex = Regex("<html(\\b)", RegexOption.IGNORE_CASE)
         val isRtl = direction == PageProgressionDirection.RTL
         val hasDirAttr = Regex("""<html\b[^>]*\bdir\s*=""", RegexOption.IGNORE_CASE).containsMatchIn(rawHtml)
-        val clampedSubPage = initialSubPage.coerceAtLeast(0)
+        val hasLangAttr = Regex("""<html\b[^>]*\blang\s*=""", RegexOption.IGNORE_CASE).containsMatchIn(rawHtml)
+        val safeLang = sanitizeLangTag(language)
+        val subPageValue = when {
+            initialSubPage == INITIAL_SUB_PAGE_LAST -> "last"
+            initialSubPage > 0 -> initialSubPage.toString()
+            else -> null
+        }
 
         var processedHtml = if (classes.isNotEmpty() && htmlOpenRegex.containsMatchIn(rawHtml)) {
             rawHtml.replaceFirst(htmlOpenRegex, Regex.escapeReplacement("<html class=\"$classes\""))
@@ -200,10 +262,17 @@ public object ReaderJsBridge {
             rawHtml
         }
 
-        if (clampedSubPage > 0 && htmlOpenRegex.containsMatchIn(processedHtml)) {
+        if (subPageValue != null && htmlOpenRegex.containsMatchIn(processedHtml)) {
             processedHtml = processedHtml.replaceFirst(
                 htmlOpenRegex,
-                Regex.escapeReplacement("<html data-reader-subpage=\"$clampedSubPage\""),
+                Regex.escapeReplacement("<html data-reader-subpage=\"$subPageValue\""),
+            )
+        }
+
+        if (safeLang != null && !hasLangAttr && htmlOpenRegex.containsMatchIn(processedHtml)) {
+            processedHtml = processedHtml.replaceFirst(
+                htmlOpenRegex,
+                Regex.escapeReplacement("<html lang=\"$safeLang\""),
             )
         }
 
@@ -234,8 +303,9 @@ public object ReaderJsBridge {
             else -> {
                 val classAttr = if (classes.isNotEmpty()) " class=\"$classes\"" else ""
                 val dirAttr = if (isRtl && !hasDirAttr) " dir=\"rtl\"" else ""
-                val subPageAttr = if (clampedSubPage > 0) " data-reader-subpage=\"$clampedSubPage\"" else ""
-                "<!doctype html><html$dirAttr$classAttr$subPageAttr><head>$headInjection</head><body>$processedHtml</body></html>"
+                val langAttr = if (safeLang != null && !hasLangAttr) " lang=\"$safeLang\"" else ""
+                val subPageAttr = if (subPageValue != null) " data-reader-subpage=\"$subPageValue\"" else ""
+                "<!doctype html><html$langAttr$dirAttr$classAttr$subPageAttr><head>$headInjection</head><body>$processedHtml</body></html>"
             }
         }
     }
@@ -431,6 +501,97 @@ public object ReaderJsBridge {
     internal fun sanitizeClassToken(raw: String): String =
         raw.trim().replace(safeCssClassRegex, "")
 
+    internal fun sanitizeLangTag(raw: String?): String? {
+        val cleaned = raw?.trim()?.replace(Regex("""[^a-zA-Z0-9_-]"""), "") ?: return null
+        return cleaned.takeIf { it.isNotEmpty() }
+    }
+
+    internal fun parseImageTapPayload(rawPayload: String?): Triple<String, String?, String?>? {
+        val unquoted = unquoteJsEvaluation(rawPayload).trim()
+        if (unquoted.isEmpty()) return null
+        return try {
+            val obj = json.parseToJsonElement(unquoted).jsonObject
+            val src = obj["src"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+                ?: return null
+            val alt = obj["alt"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+            val caption = obj["caption"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+            Triple(src, alt, caption)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    internal fun parseJsErrorPayload(rawPayload: String?): Map<String, String>? {
+        val unquoted = unquoteJsEvaluation(rawPayload).trim()
+        if (unquoted.isEmpty()) return null
+        return try {
+            val obj = json.parseToJsonElement(unquoted).jsonObject
+            val out = LinkedHashMap<String, String>()
+            obj["message"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { out["message"] = it }
+            obj["source"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { out["source"] = it }
+            obj["line"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { out["line"] = it }
+            obj["col"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { out["col"] = it }
+            out.takeIf { it.isNotEmpty() }
+        } catch (_: Exception) {
+            mapOf("message" to unquoted)
+        }
+    }
+
+    internal fun parseJsMetricPayload(rawPayload: String?): Triple<String, Double, String>? {
+        val unquoted = unquoteJsEvaluation(rawPayload).trim()
+        if (unquoted.isEmpty()) return null
+        return try {
+            val obj = json.parseToJsonElement(unquoted).jsonObject
+            val name = obj["name"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+                ?: return null
+            val value = obj["value"]?.jsonPrimitive?.doubleOrNull ?: return null
+            val unit = obj["unit"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() } ?: "count"
+            Triple(name, value, unit)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    internal fun parseSelectionContextPayload(
+        rawPayload: String?,
+        pageIndex: Int,
+        href: String,
+    ): SelectionContext? {
+        val unquoted = unquoteJsEvaluation(rawPayload).trim()
+        if (unquoted.isEmpty()) return null
+        return try {
+            val obj = json.parseToJsonElement(unquoted).jsonObject
+            val selectedText = obj["selectedText"]?.jsonPrimitive?.contentOrNull?.trim()
+                ?.takeIf { it.isNotEmpty() } ?: return null
+            val contextSentence = obj["contextSentence"]?.jsonPrimitive?.contentOrNull?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            val rectObj = obj["rect"] as? JsonObject
+            val rect = if (rectObj != null) {
+                SelectionRect(
+                    x = rectObj["x"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                    y = rectObj["y"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                    width = rectObj["width"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                    height = rectObj["height"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+                )
+            } else {
+                null
+            }
+            SelectionContext(
+                selectedText = selectedText,
+                contextSentence = contextSentence,
+                pageIndex = pageIndex,
+                rect = rect,
+                locator = Locator(
+                    href = href,
+                    pageIndex = pageIndex,
+                    textQuote = selectedText,
+                ),
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /**
      * Serializa uma string para um literal JavaScript seguro entre aspas duplas,
      * escapando caracteres de controle, aspas, barras e fechamento de tag `</script>`.
@@ -488,7 +649,9 @@ public object ReaderJsBridge {
                 var _serialized = '';
                 var _items = [];
                 var _nextId = 1;
-                var _subPage = parseInt((document.documentElement && document.documentElement.getAttribute('data-reader-subpage')) || '0', 10) || 0;
+                var _rawSubAttr = (document.documentElement && document.documentElement.getAttribute('data-reader-subpage')) || '0';
+                var _pendingLastSubPage = (_rawSubAttr === 'last');
+                var _subPage = _pendingLastSubPage ? 0 : (parseInt(_rawSubAttr, 10) || 0);
                 function _rebuildSerialized() {
                     if (!_items.length) { _serialized = ''; return; }
                     _serialized = 'type:textContent|' + _items.map(function(i){
@@ -557,12 +720,22 @@ public object ReaderJsBridge {
                     }
                 }
                 function _computeTotalSubPages() {
+                    var t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
                     _syncPaginatedMetrics();
                     var vw = _resolvePaginatedWidth();
                     var bodySw = document.body ? (document.body.scrollWidth || 0) : 0;
                     var docSw = document.documentElement ? (document.documentElement.scrollWidth || 0) : 0;
                     var sw = Math.max(vw, bodySw, docSw);
-                    return Math.max(1, Math.round(sw / vw));
+                    var total = Math.max(1, Math.round(sw / vw));
+                    if (t0 > 0 && window.ReaderEngine && window.ReaderEngine.postAction) {
+                        var elapsed = Math.round((performance.now() - t0) * 100) / 100;
+                        window.ReaderEngine.postAction('reader_js_metric', JSON.stringify({
+                            name: 'webview.pagination_ms',
+                            value: elapsed,
+                            unit: 'ms'
+                        }), false);
+                    }
+                    return total;
                 }
                 function _applySubPageOffset() {
                     _syncPaginatedMetrics();
@@ -668,7 +841,10 @@ public object ReaderJsBridge {
                     },
                     getSubPageState: function() {
                         var total = _computeTotalSubPages();
-                        if (_subPage >= total) {
+                        if (_pendingLastSubPage) {
+                            _pendingLastSubPage = false;
+                            _subPage = Math.max(0, total - 1);
+                        } else if (_subPage >= total) {
                             _subPage = Math.max(0, total - 1);
                         }
                         if (document.documentElement && document.documentElement.classList.contains('reader-paginated')) {
@@ -678,7 +854,15 @@ public object ReaderJsBridge {
                     },
                     goToSubPage: function(index) {
                         var total = _computeTotalSubPages();
+                        _pendingLastSubPage = false;
                         _subPage = Math.max(0, Math.min(total - 1, parseInt(index, 10) || 0));
+                        _applySubPageOffset();
+                        return JSON.stringify({ subPage: _subPage, totalSubPages: total });
+                    },
+                    goToLastSubPage: function() {
+                        var total = _computeTotalSubPages();
+                        _pendingLastSubPage = false;
+                        _subPage = Math.max(0, total - 1);
                         _applySubPageOffset();
                         return JSON.stringify({ subPage: _subPage, totalSubPages: total });
                     },
@@ -809,6 +993,106 @@ public object ReaderJsBridge {
                     window.readerJS.highlightTtsSentence = _highlightTtsSentenceDom;
                 }
             }
+            function _foldSearchText(str) {
+                var s = String(str || '');
+                try {
+                    if (s.normalize) {
+                        s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                    }
+                } catch (e) {}
+                return s.toLowerCase();
+            }
+            function _clearSearchHighlightDom() {
+                var marks = document.querySelectorAll('mark[data-reader-search="1"]');
+                for (var i = 0; i < marks.length; i++) {
+                    var mk = marks[i];
+                    var parent = mk.parentNode;
+                    if (parent) {
+                        while (mk.firstChild) parent.insertBefore(mk.firstChild, mk);
+                        parent.removeChild(mk);
+                        parent.normalize();
+                    }
+                }
+            }
+            function _scrollToSearchMatchDom(query, occurrenceIndex) {
+                _clearSearchHighlightDom();
+                var rawQuery = String(query || '').trim();
+                if (!rawQuery || !document.body || !document.createTreeWalker) return false;
+                var foldedQuery = _foldSearchText(rawQuery);
+                var targetOcc = Math.max(0, parseInt(occurrenceIndex, 10) || 0);
+                var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                var node;
+                var seen = 0;
+                var matchedNode = null;
+                var matchedPos = -1;
+                var firstNode = null;
+                var firstPos = -1;
+                while ((node = walker.nextNode())) {
+                    var val = node.nodeValue || '';
+                    if (!val) continue;
+                    var foldedVal = _foldSearchText(val);
+                    var from = 0;
+                    while (from < foldedVal.length) {
+                        var idx = foldedVal.indexOf(foldedQuery, from);
+                        if (idx < 0) break;
+                        if (firstNode === null) {
+                            firstNode = node;
+                            firstPos = idx;
+                        }
+                        if (seen === targetOcc) {
+                            matchedNode = node;
+                            matchedPos = idx;
+                            break;
+                        }
+                        seen++;
+                        from = idx + Math.max(1, foldedQuery.length);
+                    }
+                    if (matchedNode !== null) break;
+                }
+                if (matchedNode === null) {
+                    matchedNode = firstNode;
+                    matchedPos = firstPos;
+                }
+                if (matchedNode === null || matchedPos < 0) return false;
+                try {
+                    var r = document.createRange();
+                    var valLen = (matchedNode.nodeValue || '').length;
+                    r.setStart(matchedNode, Math.min(matchedPos, valLen));
+                    r.setEnd(matchedNode, Math.min(valLen, matchedPos + rawQuery.length));
+                    var mark = document.createElement('mark');
+                    mark.className = 'reader-search-match';
+                    mark.setAttribute('data-reader-search', '1');
+                    r.surroundContents(mark);
+                    var isPaginated = !!(document.documentElement && document.documentElement.classList.contains('reader-paginated'));
+                    if (isPaginated && typeof window.readerJS !== 'undefined' && window.readerJS.goToSubPage) {
+                        var vw = _resolvePaginatedWidth();
+                        var st = null;
+                        try { st = JSON.parse(window.readerJS.getSubPageState()); } catch (e) {}
+                        var curSub = st && typeof st.subPage === 'number' ? st.subPage : 0;
+                        var rect = mark.getBoundingClientRect();
+                        var isRtl = !!((document.documentElement && document.documentElement.dir === 'rtl') || (document.body && document.body.dir === 'rtl'));
+                        var absX = isRtl ? ((curSub * vw) - rect.left) : ((curSub * vw) + rect.left);
+                        var targetSub = vw > 0 ? Math.max(0, Math.floor(absX / vw)) : 0;
+                        var nextSt = window.readerJS.goToSubPage(targetSub);
+                        if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                            window.ReaderEngine.postAction('reader_sub_page_changed', nextSt, false);
+                        }
+                    } else {
+                        try { mark.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { try { mark.scrollIntoView(); } catch (e2) {} }
+                    }
+                    return true;
+                } catch (e) {
+                    return false;
+                }
+            }
+            if (typeof window.readerJS !== 'undefined') {
+                if (typeof window.readerJS.clearSearchHighlight !== 'function') {
+                    window.readerJS.clearSearchHighlight = _clearSearchHighlightDom;
+                }
+                if (typeof window.readerJS.scrollToSearchMatch !== 'function') {
+                    window.readerJS.scrollToSearchMatch = _scrollToSearchMatchDom;
+                }
+            }
             if (typeof window.__readerScrollHooked === 'undefined') {
                 window.__readerScrollHooked = true;
                 var _scrollTimer = null;
@@ -911,7 +1195,39 @@ public object ReaderJsBridge {
                     return !!((document.documentElement && document.documentElement.dir === 'rtl') ||
                         (document.body && document.body.dir === 'rtl'));
                 }
-                function _handleTapAt(x, y) {
+                function _findImageTarget(target) {
+                    var el = target;
+                    if (el && el.nodeType === 3) el = el.parentElement;
+                    while (el && el.nodeType === 1) {
+                        var tag = el.tagName ? el.tagName.toLowerCase() : '';
+                        if (tag === 'img') {
+                            var src = (el.getAttribute && el.getAttribute('src')) || el.src || '';
+                            if (!src) return null;
+                            var alt = (el.getAttribute && el.getAttribute('alt')) || '';
+                            var caption = '';
+                            var fig = el.parentElement;
+                            while (fig && fig.nodeType === 1) {
+                                if (fig.tagName && fig.tagName.toLowerCase() === 'figure') {
+                                    var fc = fig.querySelector ? fig.querySelector('figcaption') : null;
+                                    if (fc && fc.textContent) caption = fc.textContent.trim();
+                                    break;
+                                }
+                                if (fig.tagName && (fig.tagName.toLowerCase() === 'body' || fig.tagName.toLowerCase() === 'html')) break;
+                                fig = fig.parentElement;
+                            }
+                            return { src: src, alt: alt, caption: caption };
+                        }
+                        if (tag === 'body' || tag === 'html') break;
+                        el = el.parentElement;
+                    }
+                    return null;
+                }
+                function _handleTapAt(x, y, target) {
+                    var imgInfo = _findImageTarget(target);
+                    if (imgInfo && window.ReaderEngine && window.ReaderEngine.postAction) {
+                        window.ReaderEngine.postAction('reader_image_tap', JSON.stringify(imgInfo));
+                        return;
+                    }
                     var isPaginated = !!(document.documentElement && document.documentElement.classList.contains('reader-paginated'));
                     var vw = _resolvePaginatedWidth();
                     var ratio = vw > 0 ? (x / vw) : 0.5;
@@ -985,13 +1301,13 @@ public object ReaderJsBridge {
                         return;
                     }
                     if (dt < 320 && absDx < 14 && absDy < 14) {
-                        _handleTapAt(touch.clientX, touch.clientY);
+                        _handleTapAt(touch.clientX, touch.clientY, e.target);
                     }
                 }, { passive: true });
                 document.addEventListener('click', function(e) {
                     if (Date.now() - _lastTouchTime < 500) return;
                     if (_isInteractiveTarget(e.target) || _hasActiveTextSelection()) return;
-                    _handleTapAt(e.clientX || 0, e.clientY || 0);
+                    _handleTapAt(e.clientX || 0, e.clientY || 0, e.target);
                 }, false);
             }
             if (typeof window.__readerPaginatedHooked === 'undefined') {
@@ -1015,6 +1331,70 @@ public object ReaderJsBridge {
                 }
                 window.addEventListener('load', _onPaginatedReady);
                 window.addEventListener('resize', _onPaginatedReady);
+            }
+            if (typeof window.__readerObservabilityHooked === 'undefined') {
+                window.__readerObservabilityHooked = true;
+                window.addEventListener('error', function(e) {
+                    if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                        window.ReaderEngine.postAction('reader_js_error', JSON.stringify({
+                            message: String((e && e.message) || 'Unknown JS error'),
+                            source: String((e && e.filename) || ''),
+                            line: String((e && e.lineno) || 0),
+                            col: String((e && e.colno) || 0)
+                        }), false);
+                    }
+                });
+                window.addEventListener('unhandledrejection', function(e) {
+                    if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                        var reason = e && e.reason ? (e.reason.message || String(e.reason)) : 'Unhandled Promise rejection';
+                        window.ReaderEngine.postAction('reader_js_error', JSON.stringify({
+                            message: String(reason),
+                            source: 'promise'
+                        }), false);
+                    }
+                });
+            }
+            function _getSelectionContextJson() {
+                var sel = window.getSelection ? window.getSelection() : null;
+                var txt = sel ? sel.toString().trim() : '';
+                if (!txt || !sel || sel.rangeCount === 0) return '';
+                var range = sel.getRangeAt(0);
+                var r = range.getBoundingClientRect ? range.getBoundingClientRect() : null;
+                var block = range.commonAncestorContainer;
+                if (block && block.nodeType === 3) block = block.parentElement;
+                while (block && block.nodeType === 1) {
+                    var tag = block.tagName ? block.tagName.toLowerCase() : '';
+                    if (tag === 'p' || tag === 'li' || tag === 'blockquote' || tag === 'div' || tag === 'td' || tag === 'section') break;
+                    if (tag === 'body' || tag === 'html') break;
+                    block = block.parentElement;
+                }
+                var sentence = (block && block.textContent) ? block.textContent.replace(/\s+/g, ' ').trim() : txt;
+                if (sentence.length > 400) sentence = sentence.substring(0, 400);
+                return JSON.stringify({
+                    selectedText: txt,
+                    contextSentence: sentence,
+                    rect: r ? { x: Math.round(r.left * 10) / 10, y: Math.round(r.top * 10) / 10, width: Math.round(r.width * 10) / 10, height: Math.round(r.height * 10) / 10 } : null
+                });
+            }
+            if (typeof window.readerJS !== 'undefined' && typeof window.readerJS.getSelectionContext !== 'function') {
+                window.readerJS.getSelectionContext = _getSelectionContextJson;
+            }
+            if (typeof window.__readerSelectionHooked === 'undefined') {
+                window.__readerSelectionHooked = true;
+                var _selTimer = null;
+                var _lastSelPayload = '';
+                document.addEventListener('selectionchange', function() {
+                    if (_selTimer) clearTimeout(_selTimer);
+                    _selTimer = setTimeout(function() {
+                        var payload = _getSelectionContextJson();
+                        if (payload !== _lastSelPayload) {
+                            _lastSelPayload = payload;
+                            if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                                window.ReaderEngine.postAction('reader_selection_changed', payload, false);
+                            }
+                        }
+                    }, 180);
+                });
             }
         })();
     """

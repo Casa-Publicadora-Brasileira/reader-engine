@@ -168,5 +168,6 @@ public class ParserRegistry {
             .register(EpubParser())
             .register(HpubParser())
             .register(CbzParser())
+            .register(Fb2Parser())
     }
 }

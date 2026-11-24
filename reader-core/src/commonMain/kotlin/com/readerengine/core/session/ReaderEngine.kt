@@ -1,5 +1,8 @@
 package com.readerengine.core.session
 
+import com.readerengine.core.audiobook.AudiobookParser
+import com.readerengine.core.audiobook.AudiobookSession
+import com.readerengine.core.audiobook.InitialAudiobookState
 import com.readerengine.core.drm.ContentDecryptor
 import com.readerengine.core.model.InitialBookState
 import com.readerengine.core.observability.ReaderLogLevel
@@ -97,6 +100,92 @@ public class ReaderEngine(
             customDecryptor = customDecryptor,
         )
         return openSource(source = source, initialState = initialState, mode = "disk")
+    }
+
+    /** Abre um audiobook (`.audiobook`, `.abz`, `.zip` ou `.audiobook.json`) a partir de bytes em memória. */
+    public fun openAudiobook(
+        name: String,
+        bytes: ByteArray,
+    ): AudiobookSession = openAudiobook(
+        name = name,
+        bytes = bytes,
+        initialState = InitialAudiobookState(),
+    )
+
+    /** Abre um audiobook a partir de bytes em memória com estado inicial completo. */
+    public fun openAudiobook(
+        name: String,
+        bytes: ByteArray,
+        initialState: InitialAudiobookState,
+    ): AudiobookSession {
+        val source = Source.fromBytes(
+            name = name,
+            bytes = bytes,
+            zipLimits = zipLimits,
+            customDecryptor = customDecryptor,
+        )
+        return openAudiobookSource(source = source, initialState = initialState, mode = "memory")
+    }
+
+    /** Abre um audiobook diretamente do disco via `Okio FileHandle` (streaming zero-copy). */
+    public fun openAudiobook(
+        path: Path,
+    ): AudiobookSession = openAudiobook(
+        path = path,
+        fileSystem = defaultFileSystem,
+        initialState = InitialAudiobookState(),
+    )
+
+    /** Abre um audiobook diretamente do disco via `Okio FileHandle` com estado inicial completo. */
+    public fun openAudiobook(
+        path: Path,
+        fileSystem: FileSystem = defaultFileSystem,
+        initialState: InitialAudiobookState = InitialAudiobookState(),
+    ): AudiobookSession {
+        val source = Source.fromPath(
+            path = path,
+            fileSystem = fileSystem,
+            zipLimits = zipLimits,
+            customDecryptor = customDecryptor,
+        )
+        return openAudiobookSource(source = source, initialState = initialState, mode = "disk")
+    }
+
+    private fun openAudiobookSource(
+        source: Source,
+        initialState: InitialAudiobookState,
+        mode: String,
+    ): AudiobookSession {
+        val ext = source.extension().orEmpty()
+        val attrs = mapOf("name" to source.name, "extension" to ext, "mode" to mode)
+        val publication = ReaderObservability.measureSpan(
+            observer = observer,
+            name = "audiobook.open",
+            attributes = attrs,
+        ) {
+            AudiobookParser().parse(source)
+        }
+        observer.onMetric(
+            ReaderMetric(
+                name = "audiobook.tracks_count",
+                value = publication.tracks.size.toDouble(),
+                unit = "tracks",
+                attributes = mapOf("extension" to ext, "mode" to mode),
+            ),
+        )
+        observer.onLog(
+            ReaderLogRecord(
+                level = ReaderLogLevel.INFO,
+                tag = "ReaderEngine",
+                message = "Audiobook aberto: '${publication.metadata.title.ifBlank { source.name }}' (${publication.tracks.size} faixas)",
+                attributes = attrs + ("tracks" to publication.tracks.size.toString()),
+            ),
+        )
+        return AudiobookSession(
+            publication = publication,
+            initialState = initialState,
+            observer = observer,
+        )
     }
 
     private fun openSource(

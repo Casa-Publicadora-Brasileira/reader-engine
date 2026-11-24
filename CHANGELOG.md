@@ -2,6 +2,19 @@
 
 Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 
+## [1.1.0] - 2026-11-23
+
+### Added
+- **Suporte Completo a Audiobooks (`com.readerengine.core.audiobook`):**
+  - Novo `AudiobookParser` em `commonMain` suportando **Readium Audiobook (`.audiobook` / `manifest.json`)**, pacotes ZIP de áudio (`.abz` / `.zip` com ordenação numérica natural de `.mp3`/`.m4a`/`.m4b`/`.aac`/`.ogg`/`.opus`/`.wav`/`.flac` e capa automática) e manifestos `.audiobook.json`.
+  - Nova máquina de estados reativa `AudiobookSession` com `AudioTrack`, `AudioChapter` (timestamps `#t=`), `AudioBookmark`, controle de velocidade (`0.5x..3.0x`), *sleep timer*, streaming zero-copy por range (`readTrackRange`, `trackSize` pronto para Media3/ExoPlayer e AVPlayer), `FlowSubscription` (`watchState`/`watchEvents`/`watchUiEffects`), `exportAudiobookSnapshot` / `mergeAudiobookSnapshot` e atalhos `ReaderEngine.openAudiobook(...)`.
+- **Suporte Híbrido Nativo a PDF (`com.readerengine.core.pdf` + `PdfParser`):**
+  - Novo `PdfParser` registrado no `ParserRegistry.default()` com `PdfDocumentBackend` (`expect/actual`) usando **zero dependências externas**:
+    - **Android (`androidMain`)**: `android.graphics.pdf.PdfRenderer` nativo com renderização PNG sob demanda.
+    - **iOS (`iosMain`)**: `PDFKit` nativo (`PDFDocument`, `PDFPage`, `PDFOutline` para sumário hierárquico, extração de texto nativo para `BookSearchEngine` e renderização PNG).
+    - **JVM (`jvmMain`)**: scanner estrutural leve (`%PDF-`, `/Info`, `/Type /Page`) + suporte a backend/extrator plugável (`PdfTextExtractor`).
+  - Novos métodos em `ReaderSession`: `isPdfDocument()`, `pdfPageSize(pageIndex)` e `renderPdfPagePng(pageIndex, widthPx, heightPx)`.
+
 ## [1.0.0] - 2026-11-23
 
 ### Added

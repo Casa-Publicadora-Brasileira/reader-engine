@@ -169,5 +169,6 @@ public class ParserRegistry {
             .register(HpubParser())
             .register(CbzParser())
             .register(Fb2Parser())
+            .register(PdfParser())
     }
 }

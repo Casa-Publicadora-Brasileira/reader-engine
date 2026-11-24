@@ -2,7 +2,7 @@
 
 Motor de leitura digital multiplataforma (**Kotlin Multiplatform — KMP**), *headless* e de alta performance para **Android**, **iOS** e **JVM**.
 
-O SDK **`:reader-core`** (`com.readerengine.core`) concentra toda a engenharia de parsing, segurança, busca, criptografia/DRM, paginação e gerenciamento de estado para livros **EPUB 2**, **EPUB 3** (*reflowable* e *Fixed-Layout*), **HPUB (Baker Framework)**, **CBZ (Quadrinhos/Mangás)**, **FB2 (FictionBook 2)** e **JSON**, expondo uma máquina de estados reativa (`ReaderSession`) pronta para ser conectada a qualquer camada de UI nativa (**Jetpack Compose**, **Android Views**, **SwiftUI**, **UIKit** ou **Desktop/Backend JVM**).
+O SDK **`:reader-core`** (`com.readerengine.core`) concentra toda a engenharia de parsing, segurança, busca, criptografia/DRM, paginação e gerenciamento de estado para livros **EPUB 2**, **EPUB 3** (*reflowable* e *Fixed-Layout*), **HPUB (Baker Framework)**, **CBZ (Quadrinhos/Mangás)**, **FB2 (FictionBook 2)**, **PDF (Híbrido Nativo)**, **Audiobooks (`.audiobook` / `.abz`)** e **JSON**, expondo máquinas de estado reativas (`ReaderSession` e `AudiobookSession`) prontas para serem conectadas a qualquer camada de UI nativa (**Jetpack Compose**, **Android Views**, **SwiftUI**, **UIKit** ou **Desktop/Backend JVM**).
 
 ---
 
@@ -30,7 +30,7 @@ Construir um leitor EPUB/HPUB corporativo em múltiplas plataformas costuma exig
 
 | Capacidade | Descrição Técnica |
 |------------|-------------------|
-| **Formatos Suportados** | **EPUB 2**, **EPUB 3** (*Reflowable* e *Fixed-Layout* `pre-paginated` via parser XML determinístico `XmlTokenizer`), **HPUB** (`book.json`), **CBZ** (quadrinhos/mangás com `ComicInfo.xml` e ordenação numérica natural), **FB2** (`.fb2` e `.fb2.zip` com imagens Base64 e notas de rodapé) e **JSON** estruturado. |
+| **Formatos Suportados** | **EPUB 2**, **EPUB 3** (*Reflowable* e *Fixed-Layout* `pre-paginated` via `XmlTokenizer`), **HPUB** (`book.json`), **CBZ** (quadrinhos/mangás com `ComicInfo.xml`), **FB2** (`.fb2` / `.fb2.zip`), **PDF** (híbrido nativo via `PdfRenderer` no Android e `PDFKit` no iOS, zero dependências), **Audiobooks** (Readium `.audiobook`, `.abz` e `.audiobook.json` via `AudiobookSession`) e **JSON** estruturado. |
 | **Streaming em Disco (`Okio FileHandle`) & ZIP64** | Abre livros de centenas de megabytes diretamente do disco (`okio.Path`) lendo apenas o *Central Directory* nos 65 KB finais do ZIP (com suporte a **ZIP64**), sem carregar o arquivo inteiro na RAM. |
 | **Cache LRU Thread-Safe & Anti-Zip Bomb** | Cache LRU em memória limitado a **16 MB** protegido por `Mutex` e proteção determinística contra *Zip Bombs* (`ZipLimits`: máx. 10.000 entradas, 50 MB/entrada, 1 GB total) e *Path Traversal*. |
 | **Streaming de Vídeo e Áudio (HTTP 206)** | Leitura parcial zero-copy (`readResourceRange`) para entradas `STORED`, permitindo *seek* instantâneo e *buffering* em tags `<video>` e `<audio>` embarcadas no EPUB 3. |
@@ -116,13 +116,13 @@ No `build.gradle.kts` do módulo consumidor:
 ```kotlin
 dependencies {
     // Em um projeto Kotlin Multiplatform (commonMain):
-    implementation("com.readerengine:reader-core:1.0.0")
+    implementation("com.readerengine:reader-core:1.1.0")
 
     // Ou diretamente em um projeto Android puro:
-    implementation("com.readerengine:reader-core-android:1.0.0")
+    implementation("com.readerengine:reader-core-android:1.1.0")
 
     // Ou em um projeto JVM puro (Desktop / Backend):
-    implementation("com.readerengine:reader-core-jvm:1.0.0")
+    implementation("com.readerengine:reader-core-jvm:1.1.0")
 }
 ```
 
@@ -163,7 +163,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.readerengine:reader-core-android:1.0.0")
+    implementation("com.readerengine:reader-core-android:1.1.0")
 }
 ```
 
@@ -176,7 +176,7 @@ O pipeline de release gera o binário universal **`ReaderCore.xcframework.zip`**
 #### Opção A: Via `Package.swift` (Swift Package Manager)
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Casa-Publicadora-Brasileira/reader-engine.git", from: "1.0.0")
+    .package(url: "https://github.com/Casa-Publicadora-Brasileira/reader-engine.git", from: "1.1.0")
 ]
 ```
 

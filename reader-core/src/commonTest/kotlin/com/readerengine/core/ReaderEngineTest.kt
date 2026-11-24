@@ -1,5 +1,9 @@
 package com.readerengine.core
 
+import com.readerengine.core.audiobook.AudiobookCommand
+import com.readerengine.core.audiobook.AudiobookParser
+import com.readerengine.core.audiobook.AudiobookUiEffect
+import com.readerengine.core.audiobook.InitialAudiobookState
 import com.readerengine.core.bridge.InterceptedUrl
 import com.readerengine.core.bridge.PayloadCodec
 import com.readerengine.core.bridge.ReaderJsBridge
@@ -38,6 +42,11 @@ import com.readerengine.core.parser.CbzParser
 import com.readerengine.core.parser.EpubParser
 import com.readerengine.core.parser.HpubParser
 import com.readerengine.core.parser.ParserRegistry
+import com.readerengine.core.parser.PdfParser
+import com.readerengine.core.pdf.PdfDocumentBackend
+import com.readerengine.core.pdf.PdfDocumentInfo
+import com.readerengine.core.pdf.PdfOutlineItem
+import com.readerengine.core.pdf.PdfPageSize
 import com.readerengine.core.parser.SmilParser
 import com.readerengine.core.parser.Source
 import com.readerengine.core.parser.XmlEntities
@@ -2241,6 +2250,176 @@ class ReaderEngineTest {
             assertEquals(3, stats.entryCount)
         } finally {
             zip.close()
+        }
+    }
+
+    // --- FASE 8 (v1.1.0) ---
+
+    @Test
+    fun audiobookParserAndSessionSupportReadiumManifestStreamingAndMerge() {
+        val manifestJson = """
+            {
+              "metadata": {
+                "title": "Esperança Viva",
+                "author": ["Ellen White"],
+                "language": "pt-BR",
+                "identifier": "ab-esperanca-1"
+              },
+              "readingOrder": [
+                {"href": "audio/track1.mp3", "type": "audio/mpeg", "title": "Introdução", "duration": 120.0},
+                {"href": "audio/track2.mp3", "type": "audio/mpeg", "title": "Capítulo 1", "duration": 180.0}
+              ],
+              "resources": [
+                {"href": "images/cover.jpg", "type": "image/jpeg", "rel": "cover"}
+              ],
+              "toc": [
+                {"title": "Abertura", "href": "audio/track1.mp3#t=0"},
+                {"title": "Parte 2 da Intro", "href": "audio/track1.mp3#t=45"},
+                {"title": "Capítulo 1", "href": "audio/track2.mp3#t=10"}
+              ]
+            }
+        """.trimIndent()
+        val track1Bytes = ByteArray(1024) { (it % 251).toByte() }
+        val track2Bytes = ByteArray(512) { ((it * 3) % 251).toByte() }
+        val coverBytes = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte())
+
+        val audiobookZip = buildStoredZip(
+            entries = mapOf(
+                "manifest.json" to manifestJson.encodeToByteArray(),
+                "audio/track1.mp3" to track1Bytes,
+                "audio/track2.mp3" to track2Bytes,
+                "images/cover.jpg" to coverBytes,
+            ),
+            asZip64 = false,
+        )
+
+        val buffer = InMemoryDiagnosticsBuffer()
+        val engine = ReaderEngine(observer = buffer)
+        val session = engine.openAudiobook("esperanca.audiobook", audiobookZip)
+        try {
+            assertEquals("Esperança Viva", session.state.value.metadata.title)
+            assertEquals(listOf("Ellen White"), session.state.value.metadata.authors)
+            assertEquals(2, session.state.value.tracks.size)
+            assertEquals(3, session.state.value.chapters.size)
+            assertEquals(300.0, session.state.value.totalDurationSeconds)
+            assertContentEquals(coverBytes, session.readCoverBytes())
+            assertEquals(1024L, session.trackSize(0))
+            assertContentEquals(track1Bytes.copyOfRange(100, 164), session.readTrackRange(0, 100L, 64))
+            assertTrue(buffer.recentSpans().any { it.name == "audiobook.open" && it.success })
+
+            val effects = mutableListOf<AudiobookUiEffect>()
+            val sub = session.watchUiEffects { effects.add(it) }
+            try {
+                // Ir para o capítulo 2 (track 1, startSeconds = 10.0)
+                session.dispatch(AudiobookCommand.GoToChapter(chapterIndex = 2, autoPlay = true))
+                assertEquals(1, session.state.value.currentTrackIndex)
+                assertEquals(10.0, session.state.value.positionSeconds)
+                assertTrue(session.state.value.isPlaying)
+                assertTrue(effects.filterIsInstance<AudiobookUiEffect.LoadTrack>().any { it.trackIndex == 1 && it.startPositionSeconds == 10.0 })
+
+                // Velocidade e sleep timer
+                session.dispatch(AudiobookCommand.SetPlaybackRate(1.5f))
+                assertEquals(1.5f, session.state.value.playbackRate)
+                session.dispatch(AudiobookCommand.SetSleepTimer(durationSeconds = 2))
+                session.dispatch(AudiobookCommand.TickSleepTimer(elapsedSeconds = 2))
+                assertFalse(session.state.value.isPlaying)
+                assertTrue(effects.any { it is AudiobookUiEffect.SleepTimerExpired })
+
+                // Bookmark + merge multi-dispositivo
+                session.dispatch(AudiobookCommand.AddBookmark(label = "Trecho marcante", timestampEpochMs = 1000L))
+                val remoteSession = engine.openAudiobook(
+                    "esperanca.audiobook",
+                    audiobookZip,
+                    InitialAudiobookState(initialTrackIndex = 1, initialPositionSeconds = 90.0),
+                )
+                remoteSession.dispatch(AudiobookCommand.UpdatePosition(90.0, timestampEpochMs = 5000L))
+                remoteSession.dispatch(AudiobookCommand.AddBookmark(label = "Bookmark remoto", timestampEpochMs = 5000L))
+                val remoteJson = remoteSession.exportAudiobookSnapshot()
+                remoteSession.close()
+
+                val mergeRes = session.mergeAudiobookSnapshot(remoteJson, ProgressMergePolicy.NEWEST_TIMESTAMP)
+                assertTrue(mergeRes.progressUpdated)
+                assertEquals(1, mergeRes.addedBookmarks)
+                assertEquals(2, session.state.value.bookmarks.size)
+                assertEquals(90.0, session.state.value.positionSeconds)
+            } finally {
+                sub.cancel()
+            }
+        } finally {
+            session.close()
+        }
+
+        // Também suporta .abz com ordenação numérica natural
+        val abzZip = buildStoredZip(
+            entries = mapOf(
+                "track10.mp3" to byteArrayOf(1, 2, 3),
+                "track2.mp3" to byteArrayOf(4, 5, 6),
+                "cover.png" to byteArrayOf(7, 8, 9),
+            ),
+            asZip64 = false,
+        )
+        val abzPub = AudiobookParser().parse(Source.fromBytes("curso.abz", abzZip))
+        assertEquals(listOf("track2.mp3", "track10.mp3"), abzPub.tracks.map { it.href })
+        assertEquals("cover.png", abzPub.metadata.coverHref)
+        abzPub.close()
+    }
+
+    @Test
+    fun pdfParserOpensMinimalPdfAndSupportsCustomBackendAndSearch() {
+        val minimalPdf = """
+            %PDF-1.4
+            1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+            2 0 obj << /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >> endobj
+            3 0 obj << /Type /Page /Parent 2 0 R >> endobj
+            4 0 obj << /Type /Page /Parent 2 0 R >> endobj
+            5 0 obj << /Title (Manual Técnico PDF) /Author (Equipe CPB) >> endobj
+            %%EOF
+        """.trimIndent().encodeToByteArray()
+
+        val engine = ReaderEngine()
+        val session = engine.open("manual.pdf", minimalPdf)
+        try {
+            assertTrue(session.isPdfDocument())
+            assertEquals("Manual Técnico PDF", session.state.value.metadata.title)
+            assertEquals(listOf("Equipe CPB"), session.state.value.metadata.authors)
+            assertEquals(2, session.state.value.spineLen)
+            assertEquals(RenditionLayout.PRE_PAGINATED, session.state.value.metadata.layout)
+            assertNotNull(session.pdfPageSize(0))
+            val png = session.renderPdfPagePng(0, widthPx = 720)
+            assertNotNull(png)
+            assertTrue(png.size >= 8)
+            assertNotNull(session.readCoverBytes())
+            assertTrue(session.currentHtml().contains("pdf-page-0000.png"))
+        } finally {
+            session.close()
+        }
+
+        // Backend customizado com Outline + extração de texto integrada ao BookSearchEngine
+        val fakeBackend = object : PdfDocumentBackend {
+            override val info = PdfDocumentInfo(
+                pageCount = 2,
+                title = "Guia PDF Rico",
+                author = "Autor X",
+                outline = listOf(
+                    PdfOutlineItem("Introdução", pageIndex = 0),
+                    PdfOutlineItem("Conclusão", pageIndex = 1),
+                ),
+            )
+            override fun pageSize(pageIndex: Int) = PdfPageSize(612f, 792f)
+            override fun extractPageText(pageIndex: Int) =
+                if (pageIndex == 0) "Bem-vindo ao guia completo." else "Conclusão sobre arquitetura multiplataforma."
+            override fun renderPagePng(pageIndex: Int, widthPx: Int, heightPx: Int) = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47)
+        }
+        val richPub = PdfParser(customBackendFactory = { fakeBackend }).parse(Source.fromBytes("guia.pdf", minimalPdf))
+        val richSession = ReaderSession(richPub)
+        try {
+            assertEquals("Introdução", richSession.state.value.toc[0].title)
+            assertEquals("Conclusão", richSession.state.value.toc[1].title)
+            val hits = richSession.search("arquitetura")
+            assertEquals(1, hits.size)
+            assertEquals(1, hits.single().pageIndex)
+        } finally {
+            richSession.close()
         }
     }
 }

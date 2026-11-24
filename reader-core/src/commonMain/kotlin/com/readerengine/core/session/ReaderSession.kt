@@ -40,7 +40,9 @@ import com.readerengine.core.observability.ReaderLogRecord
 import com.readerengine.core.observability.ReaderMetric
 import com.readerengine.core.observability.ReaderObservability
 import com.readerengine.core.observability.ReaderObserver
+import com.readerengine.core.parser.PdfResourceProvider
 import com.readerengine.core.parser.XmlEntities
+import com.readerengine.core.pdf.PdfPageSize
 import com.readerengine.core.platform.defaultFileSystem
 import com.readerengine.core.provider.normalizeHref
 import com.readerengine.core.search.BookSearchEngine
@@ -1215,6 +1217,20 @@ public class ReaderSession(
      */
     public fun readCoverBytes(): ByteArray? =
         publication.metadata.coverHref?.let { runCatching { readResource(it) }.getOrNull() }
+
+    /** Retorna `true` quando a publicação aberta é um documento PDF nativo ([PdfResourceProvider]). */
+    public fun isPdfDocument(): Boolean = publication.provider is PdfResourceProvider
+
+    /** Retorna as dimensões em pontos (pt) da página PDF informada, ou `null` se não for PDF. */
+    public fun pdfPageSize(pageIndex: Int): PdfPageSize? =
+        (publication.provider as? PdfResourceProvider)?.pageSize(pageIndex)
+
+    /**
+     * Renderiza uma página do PDF como PNG em alta resolução utilizando o motor nativo da plataforma
+     * (`PdfRenderer` no Android, `PDFKit` no iOS), ou retorna `null` se a publicação não for PDF.
+     */
+    public fun renderPdfPagePng(pageIndex: Int, widthPx: Int, heightPx: Int = 0): ByteArray? =
+        (publication.provider as? PdfResourceProvider)?.renderPagePng(pageIndex, widthPx, heightPx)
 
     /**
      * Retorna o preview rápido (`title` e `excerpt` de texto limpo) de uma página da `spine`

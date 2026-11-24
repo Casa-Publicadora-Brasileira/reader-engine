@@ -1,0 +1,144 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "url": "../../reader-core/1.2.0/reader-core-1.2.0.module",
+    "group": "com.readerengine",
+    "module": "reader-core",
+    "version": "1.2.0",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "9.9.0"
+    }
+  },
+  "variants": [
+    {
+      "name": "jvmApiElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-api",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-core",
+          "version": {
+            "requires": "1.9.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-serialization-json",
+          "version": {
+            "requires": "1.7.3"
+          }
+        },
+        {
+          "group": "com.squareup.okio",
+          "module": "okio",
+          "version": {
+            "requires": "3.9.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.4.20"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "reader-core-jvm-1.2.0.jar",
+          "url": "reader-core-jvm-1.2.0.jar",
+          "size": 871970,
+          "sha512": "fae9b67febd46beb85ff0be14019e440407cc57235a38ae31e7c610389a0b9b77c7fad75998e0189fec9bbc0a1ef882e56fe5e6d99f747b589f65166484e3fca",
+          "sha256": "df4a35bc08de4fb6fda577d3550dbd18c1bc12e06320511a47313cb6ccc187be",
+          "sha1": "8065ed50322fda78f174141cbb9cdb0892c955c5",
+          "md5": "6ba7c197315c6796730721ae506410de"
+        }
+      ]
+    },
+    {
+      "name": "jvmRuntimeElements-published",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-core",
+          "version": {
+            "requires": "1.9.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-serialization-json",
+          "version": {
+            "requires": "1.7.3"
+          }
+        },
+        {
+          "group": "com.squareup.okio",
+          "module": "okio",
+          "version": {
+            "requires": "3.9.1"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.4.20"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "reader-core-jvm-1.2.0.jar",
+          "url": "reader-core-jvm-1.2.0.jar",
+          "size": 871970,
+          "sha512": "fae9b67febd46beb85ff0be14019e440407cc57235a38ae31e7c610389a0b9b77c7fad75998e0189fec9bbc0a1ef882e56fe5e6d99f747b589f65166484e3fca",
+          "sha256": "df4a35bc08de4fb6fda577d3550dbd18c1bc12e06320511a47313cb6ccc187be",
+          "sha1": "8065ed50322fda78f174141cbb9cdb0892c955c5",
+          "md5": "6ba7c197315c6796730721ae506410de"
+        }
+      ]
+    },
+    {
+      "name": "jvmSourcesElements-published",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.jvm.environment": "standard-jvm",
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime",
+        "org.jetbrains.kotlin.platform.type": "jvm"
+      },
+      "files": [
+        {
+          "name": "reader-core-jvm-1.2.0-sources.jar",
+          "url": "reader-core-jvm-1.2.0-sources.jar",
+          "size": 114358,
+          "sha512": "56fc4bb81c1aeaefed6c2e1a0aae54b1c8d16bf5b8da89ef863ccb8e0f866d05767470ba8c2dbc7eeb140fdb1347631ae7e66e2f1ce6d0fb9b66b6e042fd2ec6",
+          "sha256": "2a5365b31ee5f30d2dfd712299de717be4990ddad9c857ec0f974a4a6e9ed7eb",
+          "sha1": "1539b6811cebc72844c94bc154949a002de8cd7b",
+          "md5": "74a1a38faf2e17d68fa4388c80458e31"
+        }
+      ]
+    }
+  ]
+}

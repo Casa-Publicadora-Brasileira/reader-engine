@@ -127,7 +127,31 @@ public data class Locator(
     val progression: Float = 0f,
     val title: String? = null,
     val textQuote: String? = null,
-)
+    val textBefore: String? = null,
+    val textAfter: String? = null,
+    val cssSelector: String? = null,
+    val position: Int? = null,
+    val totalProgression: Float? = null,
+) {
+    public constructor(
+        href: String,
+        pageIndex: Int,
+        progression: Float,
+        title: String?,
+        textQuote: String?,
+    ) : this(
+        href = href,
+        pageIndex = pageIndex,
+        progression = progression,
+        title = title,
+        textQuote = textQuote,
+        textBefore = null,
+        textAfter = null,
+        cssSelector = null,
+        position = null,
+        totalProgression = null,
+    )
+}
 
 /** Acesso sob demanda aos bytes dos recursos da publicação (ZIP, memória, disco). */
 public interface ResourceProvider {
@@ -272,18 +296,23 @@ public class Publication(
                 val startChar = (chunkIdx * safeBlock).coerceAtMost(length)
                 val endChar = (startChar + 80).coerceAtMost(length)
                 val quote = if (startChar < endChar) text.substring(startChar, endChar).trim() else null
+                val posNumber = result.size + 1
                 result.add(
                     Locator(
                         href = href,
                         pageIndex = pageIdx,
                         progression = progression,
-                        title = "Posição ${result.size + 1}",
+                        title = "Posição $posNumber",
                         textQuote = quote,
+                        position = posNumber,
                     ),
                 )
             }
         }
-        return result
+        val total = result.size.coerceAtLeast(1)
+        return result.mapIndexed { idx, loc ->
+            loc.copy(totalProgression = (idx.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+        }
     }
 }
 

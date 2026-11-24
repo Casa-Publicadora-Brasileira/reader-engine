@@ -17,6 +17,8 @@ import com.readerengine.core.model.Bookmark
 import com.readerengine.core.model.BookStateSnapshot
 import com.readerengine.core.model.HighlightStyle
 import com.readerengine.core.model.InitialBookState
+import com.readerengine.core.model.MediaOverlay
+import com.readerengine.core.model.MediaOverlayClip
 import com.readerengine.core.model.Metadata
 import com.readerengine.core.model.PageProgressionDirection
 import com.readerengine.core.model.ProgressMergePolicy
@@ -61,6 +63,7 @@ import com.readerengine.core.session.ReaderEvent
 import com.readerengine.core.session.ReaderSession
 import com.readerengine.core.session.ReaderState
 import com.readerengine.core.session.ReaderUiEffect
+import com.readerengine.core.theme.CustomFontFace
 import com.readerengine.core.theme.Shape
 import com.readerengine.core.theme.ThemeTokens
 import com.readerengine.core.theme.Typography
@@ -2420,6 +2423,216 @@ class ReaderEngineTest {
             assertEquals(1, hits.single().pageIndex)
         } finally {
             richSession.close()
+        }
+    }
+
+    // --- FASE 9 (v1.2.0) ---
+
+    @Test
+    fun locatorW3cFieldsPopulatedInPositionsSearchAndProgress() {
+        val pub = Publication(
+            metadata = Metadata(title = "Precisão W3C"),
+            spine = listOf("c1.xhtml", "c2.xhtml"),
+            resources = listOf(
+                Resource("c1.xhtml", "application/xhtml+xml"),
+                Resource("c2.xhtml", "application/xhtml+xml"),
+            ),
+            toc = listOf(
+                TocEntry("Primeiro", href = "c1.xhtml"),
+                TocEntry("Segundo", href = "c2.xhtml"),
+            ),
+            provider = MemoryResourceProvider(
+                mapOf(
+                    "c1.xhtml" to "<html><body><p>Antes do termo esperança aparece fé firme no capítulo.</p></body></html>".encodeToByteArray(),
+                    "c2.xhtml" to "<html><body><p>Capítulo dois com esperança renovada e texto final.</p></body></html>".encodeToByteArray(),
+                ),
+            ),
+        )
+
+        val positions = pub.positions()
+        assertEquals(2, positions.size)
+        assertEquals(1, positions[0].position)
+        assertEquals(2, positions[1].position)
+        assertEquals(0f, positions[0].totalProgression)
+        assertEquals(0.5f, positions[1].totalProgression)
+
+        val session = ReaderSession(pub)
+        val matches = session.search("esperança")
+        assertEquals(2, matches.size)
+        val firstLoc = matches[0].locator
+        assertNotNull(firstLoc)
+        assertTrue(firstLoc.textBefore.orEmpty().contains("termo"))
+        assertTrue(firstLoc.textAfter.orEmpty().contains("aparece"))
+        assertNotNull(firstLoc.totalProgression)
+
+        session.dispatch(ReaderCommand.GoToPage(1))
+        val progressLoc = session.state.value.progress.locator
+        assertNotNull(progressLoc)
+        assertEquals(2, progressLoc.position)
+        assertNotNull(progressLoc.totalProgression)
+
+        // parseSelectionContextPayload e parseSummaryHighlights extraem campos W3C
+        val selCtx = ReaderJsBridge.parseSelectionContextPayload(
+            rawPayload = """{"selectedText":"esperança","contextSentence":"Antes do termo esperança aparece fé.","textBefore":"Antes do termo","textAfter":"aparece fé","cssSelector":"body > p:nth-of-type(1)","rect":{"x":10,"y":20,"width":50,"height":16}}""",
+            pageIndex = 0,
+            href = "c1.xhtml",
+        )
+        assertNotNull(selCtx)
+        assertEquals("Antes do termo", selCtx.locator?.textBefore)
+        assertEquals("aparece fé", selCtx.locator?.textAfter)
+        assertEquals("body > p:nth-of-type(1)", selCtx.locator?.cssSelector)
+
+        val summaryItems = ReaderJsBridge.parseSummaryHighlights(
+            rawJsValue = """[{"id":7,"text":"esperança","cor":"highlight_yellow","pos":120.0,"textBefore":"termo","textAfter":"aparece","cssSelector":"#p1"}]""",
+            pageIndex = 0,
+        )
+        assertEquals(1, summaryItems.size)
+        assertEquals("termo", summaryItems[0].locator?.textBefore)
+        assertEquals("aparece", summaryItems[0].locator?.textAfter)
+        assertEquals("#p1", summaryItems[0].locator?.cssSelector)
+        session.close()
+    }
+
+    @Test
+    fun themeTokensSupportsPublisherStylesCustomFontFaceAndPaginationBreakProtection() {
+        val base = ThemeTokens.material3()
+        val withFontsAndPubStyles = base.copy(
+            publisherStyles = true,
+            customFontFaces = listOf(
+                CustomFontFace(
+                    family = "Literata",
+                    srcUrl = "fonts/Literata-Regular.woff2",
+                    weight = "400",
+                    style = "normal",
+                    format = "woff2",
+                ),
+                CustomFontFace(
+                    family = "EvilFont",
+                    srcUrl = "javascript:alert(1)",
+                ),
+            ),
+        )
+
+        val css = withFontsAndPubStyles.toContentCss(
+            fontScale = 1.25f,
+            readingMode = ReadingMode.PAGINATED,
+        )
+        assertTrue(css.contains("@font-face{font-family:'Literata';src:url('fonts/Literata-Regular.woff2') format('woff2');font-weight:400;font-style:normal;font-display:swap;}"))
+        assertFalse(css.contains("EvilFont"))
+        assertFalse(css.contains("javascript:"))
+        assertTrue(css.contains("font-size:125%;"))
+        // publisherStyles = true não força font-family nem text-align !important
+        assertFalse(css.contains("font-family:Roboto, system-ui, sans-serif !important;"))
+        assertTrue(css.contains("html.reader-paginated figure,html.reader-paginated table,html.reader-paginated pre,html.reader-paginated blockquote{break-inside:avoid;-webkit-column-break-inside:avoid;}"))
+        assertTrue(css.contains("table{max-width:100%;overflow-x:auto;}"))
+    }
+
+    @Test
+    fun readerJsBridgeContainsMultiNodeHighlightAndPaginatedTtsAutoFlip() {
+        val pub = Publication(
+            metadata = Metadata(title = "Bridge W3C"),
+            spine = listOf("ch1.xhtml"),
+            resources = listOf(Resource("ch1.xhtml", "application/xhtml+xml")),
+            toc = listOf(TocEntry("Cap 1", href = "ch1.xhtml")),
+            provider = MemoryResourceProvider(
+                mapOf("ch1.xhtml" to "<html><body><p>Parágrafo <em>inicial</em> completo.</p></body></html>".encodeToByteArray()),
+            ),
+        )
+        val session = ReaderSession(pub, InitialBookState(readingMode = ReadingMode.PAGINATED))
+        val html = session.currentHtml()
+        assertTrue(html.contains("_collectTextEntries"))
+        assertTrue(html.contains("splitText"))
+        assertTrue(html.contains("_extractSelectionBoundaryContext"))
+        assertTrue(html.contains("_buildCssSelector"))
+        assertTrue(html.contains("_ensureElementVisibleInPaginated"))
+        session.close()
+    }
+
+    @Test
+    fun mediaOverlaySynchronizerDrivesChapterSwitchHighlightDeduplicationAndTapToAudio() {
+        val overlays = listOf(
+            MediaOverlay(
+                href = "smil/book.smil",
+                clips = listOf(
+                    MediaOverlayClip(
+                        id = "p1",
+                        textHref = "text/ch1.xhtml",
+                        textFragmentId = "el-1",
+                        audioHref = "audio/book.mp3",
+                        clipBeginSeconds = 0.0,
+                        clipEndSeconds = 5.0,
+                    ),
+                    MediaOverlayClip(
+                        id = "p2",
+                        textHref = "text/ch2.xhtml",
+                        textFragmentId = "el-2",
+                        audioHref = "audio/book.mp3",
+                        clipBeginSeconds = 5.0,
+                        clipEndSeconds = 12.0,
+                    ),
+                ),
+            ),
+        )
+        val pub = Publication(
+            metadata = Metadata(title = "Livro Narrado"),
+            spine = listOf("text/ch1.xhtml", "text/ch2.xhtml"),
+            resources = listOf(
+                Resource("text/ch1.xhtml", "application/xhtml+xml"),
+                Resource("text/ch2.xhtml", "application/xhtml+xml"),
+            ),
+            toc = listOf(
+                TocEntry("Cap 1", href = "text/ch1.xhtml"),
+                TocEntry("Cap 2", href = "text/ch2.xhtml"),
+            ),
+            provider = MemoryResourceProvider(
+                mapOf(
+                    "text/ch1.xhtml" to "<html><body><p id=\"el-1\">Primeira fala.</p></body></html>".encodeToByteArray(),
+                    "text/ch2.xhtml" to "<html><body><p id=\"el-2\">Segunda fala.</p></body></html>".encodeToByteArray(),
+                ),
+            ),
+            mediaOverlays = overlays,
+        )
+        val session = ReaderSession(pub)
+        val effects = mutableListOf<ReaderUiEffect>()
+        val sub = session.watchUiEffects { effects.add(it) }
+        try {
+            // Tick 1 no clipe 1 (capítulo 0)
+            val sync1 = session.syncMediaOverlayAt("audio/book.mp3", 1.5)
+            assertNotNull(sync1)
+            assertEquals(0, sync1.pageIndex)
+            assertFalse(sync1.chapterChanged)
+            assertTrue(sync1.clipChanged)
+
+            // Tick 2 no mesmo clipe: não deve emitir EvaluateJs duplicado
+            val countBeforeDup = effects.filterIsInstance<ReaderUiEffect.EvaluateJs>().size
+            val syncDup = session.syncMediaOverlayAt("audio/book.mp3", 3.0)
+            assertNotNull(syncDup)
+            assertFalse(syncDup.clipChanged)
+            assertEquals(countBeforeDup, effects.filterIsInstance<ReaderUiEffect.EvaluateJs>().size)
+
+            // Tick 3 avança para clipe 2 no capítulo 2 -> navega automaticamente para pageIndex = 1 e destaca el-2
+            val sync2 = session.syncMediaOverlayAt("audio/book.mp3", 7.2)
+            assertNotNull(sync2)
+            assertEquals(1, sync2.pageIndex)
+            assertTrue(sync2.chapterChanged)
+            assertTrue(sync2.clipChanged)
+            assertEquals(1, session.state.value.pageIndex)
+            val lastEval = effects.filterIsInstance<ReaderUiEffect.EvaluateJs>().lastOrNull()
+            assertNotNull(lastEval)
+            assertTrue(lastEval.script.contains("el-2"))
+
+            // Toque-para-áudio pelo elementId
+            val tapClip = session.findMediaOverlayClipForElement("el-2")
+            assertNotNull(tapClip)
+            assertEquals(5.0, tapClip.clipBeginSeconds)
+
+            session.resetMediaOverlaySync()
+            val clearEval = effects.filterIsInstance<ReaderUiEffect.EvaluateJs>().lastOrNull()
+            assertNotNull(clearEval)
+            assertTrue(clearEval.script.contains("clearTtsHighlight"))
+        } finally {
+            sub.cancel()
+            session.close()
         }
     }
 }

@@ -334,6 +334,7 @@ public class ReaderSession(
     }
 
     private val bookmarks = initialBookState.savedBookmarks.toMutableList()
+    private val mediaOverlaySynchronizer = MediaOverlaySynchronizer(this)
     private val backStack = ArrayDeque<NavigationEntry>()
     private val forwardStack = ArrayDeque<NavigationEntry>()
     private var pendingOpenAtLastSubPage: Boolean = false
@@ -555,6 +556,28 @@ public class ReaderSession(
                 audioMatches && inBounds
             }
     }
+
+    /**
+     * Sincroniza automaticamente a UI do leitor (capítulo + destaque DOM + auto-virada de sub-página
+     * no modo `PAGINATED`) com o timestamp atual do áudio narrado de EPUB 3 Media Overlays (`.smil`).
+     */
+    public fun syncMediaOverlayAt(audioHref: String, positionSeconds: Double): MediaOverlaySyncResult? =
+        mediaOverlaySynchronizer.syncAt(audioHref, positionSeconds)
+
+    /**
+     * Localiza o clipe SMIL associado a um `elementId` no capítulo atual (para toque-para-áudio).
+     */
+    public fun findMediaOverlayClipForElement(elementId: String): MediaOverlayClip? =
+        mediaOverlaySynchronizer.clipForElement(elementId)
+
+    /**
+     * Localiza o clipe SMIL associado a um `elementId` no capítulo `pageIndex` (para toque-para-áudio).
+     */
+    public fun findMediaOverlayClipForElement(elementId: String, pageIndex: Int): MediaOverlayClip? =
+        mediaOverlaySynchronizer.clipForElement(elementId, pageIndex)
+
+    /** Limpa o estado interno de deduplicação e remove o destaque SMIL/TTS ativo no DOM. */
+    public fun resetMediaOverlaySync(): Unit = mediaOverlaySynchronizer.reset()
 
     /** Exporta a lista de marcadores (Bookmarks) como JSON. */
     public fun exportBookmarksJson(): String =
@@ -941,11 +964,15 @@ public class ReaderSession(
         val href = publication.spine.getOrNull(pageIndex).orEmpty()
         val summaryList = when {
             rawSummaryJson != null -> ReaderJsBridge.parseSummaryHighlights(rawSummaryJson, pageIndex).map { item ->
+                val baseLoc = item.locator
                 item.copy(
                     locator = Locator(
                         href = href,
                         pageIndex = pageIndex,
                         textQuote = item.text,
+                        textBefore = baseLoc?.textBefore,
+                        textAfter = baseLoc?.textAfter,
+                        cssSelector = baseLoc?.cssSelector,
                     ),
                     note = highlightNotes[item.id],
                 )
@@ -2093,6 +2120,15 @@ public class ReaderSession(
         } else {
             0f
         }
+        val pagePositions = resolvedPositions.filter { it.pageIndex == pageIndex }
+        val globalPos = if (pagePositions.isNotEmpty()) {
+            val posIdx = ((pagePositions.size - 1) * pageProgression).toInt()
+                .coerceIn(0, pagePositions.size - 1)
+            pagePositions[posIdx].position
+        } else {
+            null
+        }
+        val totalProg = (percentage / 100f).coerceIn(0f, 1f)
         return ReadingProgress(
             documentId = documentId,
             pageIndex = pageIndex,
@@ -2109,6 +2145,8 @@ public class ReaderSession(
                 pageIndex = pageIndex,
                 progression = pageProgression,
                 title = chapterTitle,
+                position = globalPos,
+                totalProgression = totalProg,
             ),
         )
     }

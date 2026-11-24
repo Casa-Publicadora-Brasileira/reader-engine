@@ -60,13 +60,20 @@ public object BookSearchEngine {
                 val prefix = if (snippetStart > 0) "…" else ""
                 val suffix = if (snippetEnd < plainText.length) "…" else ""
                 val snippet = prefix + plainText.substring(snippetStart, snippetEnd).trim() + suffix
-                val matchedQuote = plainText.substring(
-                    matchIdx,
-                    (matchIdx + cleanQuery.length).coerceAtMost(plainText.length),
-                )
+                val matchEnd = (matchIdx + cleanQuery.length).coerceAtMost(plainText.length)
+                val matchedQuote = plainText.substring(matchIdx, matchEnd)
+                val textBefore = plainText.substring((matchIdx - 32).coerceAtLeast(0), matchIdx)
+                    .trim().takeIf { it.isNotEmpty() }
+                val textAfter = plainText.substring(matchEnd, (matchEnd + 32).coerceAtMost(plainText.length))
+                    .trim().takeIf { it.isNotEmpty() }
 
                 val progression = (matchIdx.toFloat() / plainText.length.coerceAtLeast(1).toFloat())
                     .coerceIn(0f, 1f)
+                val totalProg = if (publication.spine.isNotEmpty()) {
+                    ((pageIndex.toFloat() + progression) / publication.spine.size.toFloat()).coerceIn(0f, 1f)
+                } else {
+                    progression
+                }
 
                 results.add(
                     SearchResult(
@@ -81,6 +88,9 @@ public object BookSearchEngine {
                             progression = progression,
                             title = chapterTitle,
                             textQuote = matchedQuote,
+                            textBefore = textBefore,
+                            textAfter = textAfter,
+                            totalProgression = totalProg,
                         ),
                         occurrenceInPage = occurrenceInPage++,
                     ),

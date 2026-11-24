@@ -2,6 +2,22 @@
 
 Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 
+## [1.2.0] - 2026-11-24
+
+### Added
+- **Motor de Highlights Multi-Parágrafo & Sobreposição (`ReaderJsBridge`):**
+  - Substituído `range.surroundContents()` por segmentação multi-nó via `TreeWalker` + `splitText` em `FALLBACK_READER_JS`, suportando grifos que atravessam múltiplos `<p>`, tags inline aninhadas (`<em>`, `<strong>`, `<a>`) e grifos sobrepostos sem quebrar o DOM.
+  - Restauração inteligente de grifos no DOM (`_applyTextHighlightInDom`) com suporte multi-nó e desambiguação contextual via `textBefore` e `textAfter` (W3C Web Annotation).
+- **`Locator` W3C de Precisão Editorial (`Models.kt` & `BookSearchEngine.kt`):**
+  - Novos campos opcionais em `Locator`: `textBefore`, `textAfter`, `cssSelector`, `position` (1-based alinhado a `Publication.positions()`) e `totalProgression`, mantendo construtor secundário de 5 argumentos para retrocompatibilidade binária e Swift.
+  - Preenchimento automático em `Publication.positions()`, `BookSearchEngine.search()`, `ReaderSession.buildProgress()`, `ReaderJsBridge.parseSelectionContextPayload()` e `parseSummaryHighlights()`.
+- **Evolução do `ThemeTokens` para Nível `ReadiumCSS`:**
+  - Novo modelo `CustomFontFace(family, srcUrl, weight, style, format)` com sanitização CSS contra XSS, injetando regras `@font-face` automaticamente.
+  - Toggle `ThemeTokens.publisherStyles: Boolean = false` para alternar entre o estilo editorial original do EPUB e a tipografia customizada do leitor.
+  - Proteção de quebras na paginação CSS (`break-inside: avoid` para `figure`, `table`, `pre`, `blockquote` e `overflow-x: auto` em tabelas).
+- **Orquestrador de Sincronização Áudio/Texto (`MediaOverlaySynchronizer`):**
+  - Nova classe `MediaOverlaySynchronizer`, modelo `MediaOverlaySyncResult` e atalhos em `ReaderSession` (`syncMediaOverlayAt`, `findMediaOverlayClipForElement`, `resetMediaOverlaySync`), com troca automática de capítulo, deduplicação de eventos por clipe, destaque no DOM e auto-virada de sub-página no modo `PAGINATED`.
+
 ## [1.1.0] - 2026-11-23
 
 ### Added

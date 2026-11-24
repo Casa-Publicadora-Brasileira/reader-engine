@@ -150,6 +150,17 @@ public data class Shape(
     )
 }
 
+/** Definição segura de fonte customizada injetada via regra CSS `@font-face`. */
+@Serializable
+public data class CustomFontFace(
+    val family: String,
+    @SerialName("src_url")
+    val srcUrl: String,
+    val weight: String = "normal",
+    val style: String = "normal",
+    val format: String? = null,
+)
+
 @Serializable
 public data class ThemeTokens(
     @SerialName("design_system")
@@ -157,7 +168,24 @@ public data class ThemeTokens(
     val colors: Colors,
     val typography: Typography,
     val shape: Shape,
+    @SerialName("publisher_styles")
+    val publisherStyles: Boolean = false,
+    @SerialName("custom_font_faces")
+    val customFontFaces: List<CustomFontFace> = emptyList(),
 ) {
+    public constructor(
+        designSystem: DesignSystem = DesignSystem.MATERIAL3,
+        colors: Colors,
+        typography: Typography,
+        shape: Shape,
+    ) : this(
+        designSystem = designSystem,
+        colors = colors,
+        typography = typography,
+        shape = shape,
+        publisherStyles = false,
+        customFontFaces = emptyList(),
+    )
     /**
      * Gera o CSS injetado no HTML da WebView respeitando escala de fonte, família de fonte customizada,
      * modo noturno, alinhamento de texto, margens horizontais, paginação horizontal por colunas CSS
@@ -213,33 +241,64 @@ public data class ThemeTokens(
             append(":root{color-scheme:")
             append(if (isNightMode) "dark" else "light")
             append(";}")
+            for (face in customFontFaces) {
+                val safeFaceFamily = sanitizeCssFontFamily(face.family, fallback = "")
+                val safeUrl = sanitizeCssFontUrl(face.srcUrl)
+                if (safeFaceFamily.isNotEmpty() && safeUrl != null) {
+                    val safeWeight = sanitizeCssFontWeight(face.weight)
+                    val safeStyle = sanitizeCssFontStyle(face.style)
+                    val safeFmt = sanitizeCssFontFormat(face.format)
+                    append("@font-face{font-family:'")
+                    append(safeFaceFamily.trim('\'', '"'))
+                    append("';src:url('")
+                    append(safeUrl)
+                    append("')")
+                    if (safeFmt != null) {
+                        append(" format('")
+                        append(safeFmt)
+                        append("')")
+                    }
+                    append(";font-weight:")
+                    append(safeWeight)
+                    append(";font-style:")
+                    append(safeStyle)
+                    append(";font-display:swap;}")
+                }
+            }
             if (layout == RenditionLayout.PRE_PAGINATED) {
                 append("html,body{background:$bg;background-color:$bg !important;color:$fg !important;margin:0;padding:0;overflow:hidden;}")
                 if (spread == RenditionSpread.LANDSCAPE || spread == RenditionSpread.BOTH) {
                     append("@media (orientation: landscape){html.reader-fixed-layout body{display:flex;justify-content:center;align-items:center;}}")
                 }
             } else {
-                val safeTextAlign = sanitizeCssTextAlign(typography.textAlign) ?: "justify"
-                val hyphensRule = if (typography.hyphens) "auto" else "none"
-                val safeOrphans = typography.orphans.coerceIn(1, 5)
-                val safeWidows = typography.widows.coerceIn(1, 5)
                 val padH = shape.horizontalPaddingPx.coerceIn(0, 240)
                 val gap = padH * 2
-                append("html,body{background-color:$bg !important;color:$fg !important;font-family:$family !important;font-size:${fontSizePx}px;line-height:$lineHeight !important;}")
-                append("body{padding-left:${padH}px !important;padding-right:${padH}px !important;text-align:$safeTextAlign !important;box-sizing:border-box;}")
-                append("body *:not([class*=\"highlight_\"]){color:$fg !important;background-color:transparent !important;line-height:inherit;}")
-                append("body,body p,body div,body li,body blockquote{text-align:$safeTextAlign !important;}")
-                append("body,body p,body div,body li,body blockquote{hyphens:$hyphensRule;-webkit-hyphens:$hyphensRule;orphans:$safeOrphans;widows:$safeWidows;}")
-                val safeLetterSpacing = typography.letterSpacingEm.coerceIn(-0.05f, 0.5f)
-                val safeWordSpacing = typography.wordSpacingEm.coerceIn(0f, 1.0f)
-                val safeParagraphSpacing = typography.paragraphSpacingEm.coerceIn(0f, 3.0f)
-                if (safeLetterSpacing != 0f || safeWordSpacing > 0f) {
-                    append("body,body p,body li,body blockquote{")
-                    if (safeLetterSpacing != 0f) append("letter-spacing:${safeLetterSpacing}em !important;")
-                    if (safeWordSpacing > 0f) append("word-spacing:${safeWordSpacing}em !important;")
-                    append("}")
+                if (publisherStyles) {
+                    val scalePct = (safeScale * 100f).toInt().coerceIn(50, 300)
+                    append("html,body{background-color:$bg !important;color:$fg !important;font-size:$scalePct%;}")
+                    append("body{padding-left:${padH}px !important;padding-right:${padH}px !important;box-sizing:border-box;}")
+                    append("body *:not([class*=\"highlight_\"]){color:$fg !important;background-color:transparent !important;}")
+                } else {
+                    val safeTextAlign = sanitizeCssTextAlign(typography.textAlign) ?: "justify"
+                    val hyphensRule = if (typography.hyphens) "auto" else "none"
+                    val safeOrphans = typography.orphans.coerceIn(1, 5)
+                    val safeWidows = typography.widows.coerceIn(1, 5)
+                    append("html,body{background-color:$bg !important;color:$fg !important;font-family:$family !important;font-size:${fontSizePx}px;line-height:$lineHeight !important;}")
+                    append("body{padding-left:${padH}px !important;padding-right:${padH}px !important;text-align:$safeTextAlign !important;box-sizing:border-box;}")
+                    append("body *:not([class*=\"highlight_\"]){color:$fg !important;background-color:transparent !important;line-height:inherit;}")
+                    append("body,body p,body div,body li,body blockquote{text-align:$safeTextAlign !important;}")
+                    append("body,body p,body div,body li,body blockquote{hyphens:$hyphensRule;-webkit-hyphens:$hyphensRule;orphans:$safeOrphans;widows:$safeWidows;}")
+                    val safeLetterSpacing = typography.letterSpacingEm.coerceIn(-0.05f, 0.5f)
+                    val safeWordSpacing = typography.wordSpacingEm.coerceIn(0f, 1.0f)
+                    val safeParagraphSpacing = typography.paragraphSpacingEm.coerceIn(0f, 3.0f)
+                    if (safeLetterSpacing != 0f || safeWordSpacing > 0f) {
+                        append("body,body p,body li,body blockquote{")
+                        if (safeLetterSpacing != 0f) append("letter-spacing:${safeLetterSpacing}em !important;")
+                        if (safeWordSpacing > 0f) append("word-spacing:${safeWordSpacing}em !important;")
+                        append("}")
+                    }
+                    append("body p{margin-bottom:${safeParagraphSpacing}em;}")
                 }
-                append("body p{margin-bottom:${safeParagraphSpacing}em;}")
                 val safeMaxWidth = shape.maxLineWidthPx.coerceIn(0, 2400)
                 if (safeMaxWidth > 0) {
                     append("html:not(.reader-paginated) body{max-width:${safeMaxWidth}px;margin-left:auto !important;margin-right:auto !important;}")
@@ -249,6 +308,7 @@ public data class ThemeTokens(
                 append("html.reader-paginated body{column-width:calc(100vw - ${gap}px);column-gap:${gap}px;column-fill:auto;padding:16px ${padH}px !important;}")
                 append("html.reader-paginated body > div,html.reader-paginated body > section,html.reader-paginated body > article,html.reader-paginated body > main{height:auto !important;min-height:0 !important;max-height:none !important;overflow:visible !important;}")
                 append("html.reader-paginated img,html.reader-paginated svg,html.reader-paginated video{max-height:calc(var(--reader-page-height,560px) - 64px) !important;max-width:100% !important;break-inside:avoid;}")
+                append("html.reader-paginated figure,html.reader-paginated table,html.reader-paginated pre,html.reader-paginated blockquote{break-inside:avoid;-webkit-column-break-inside:avoid;}table{max-width:100%;overflow-x:auto;}")
                 if (spread == RenditionSpread.LANDSCAPE || spread == RenditionSpread.BOTH) {
                     append("@media (orientation: landscape){html.reader-paginated body{column-count:2;column-width:auto;column-gap:${gap}px;}}")
                 }
@@ -279,6 +339,41 @@ public data class ThemeTokens(
         private val hexColorRegex = Regex("""^#[0-9a-fA-F]{3,8}$""")
         private val safeFontCharsRegex = Regex("""^[a-zA-Z0-9\s,'"_.-]+$""")
         private val allowedTextAligns = setOf("justify", "left", "right", "center", "start", "end")
+        private val allowedFontWeights = setOf("normal", "bold", "lighter", "bolder", "100", "200", "300", "400", "500", "600", "700", "800", "900")
+        private val allowedFontStyles = setOf("normal", "italic", "oblique")
+        private val allowedFontFormats = setOf("truetype", "opentype", "woff", "woff2", "embedded-opentype", "svg")
+
+        internal fun sanitizeCssFontUrl(raw: String): String? {
+            val trimmed = raw.trim()
+            if (trimmed.isEmpty()) return null
+            val lower = trimmed.lowercase()
+            if (lower.startsWith("javascript:") || lower.startsWith("vbscript:") || lower.startsWith("data:text/html")) {
+                return null
+            }
+            if (trimmed.contains("<") || trimmed.contains(">") || trimmed.contains("\"") ||
+                trimmed.contains("'") || trimmed.contains("(") || trimmed.contains(")") ||
+                trimmed.contains(";") || trimmed.contains("{") || trimmed.contains("}") ||
+                trimmed.contains("\\") || trimmed.contains("\n") || trimmed.contains("\r")
+            ) {
+                return null
+            }
+            return trimmed
+        }
+
+        internal fun sanitizeCssFontWeight(raw: String): String {
+            val normalized = raw.trim().lowercase()
+            return if (normalized in allowedFontWeights) normalized else "normal"
+        }
+
+        internal fun sanitizeCssFontStyle(raw: String): String {
+            val normalized = raw.trim().lowercase()
+            return if (normalized in allowedFontStyles) normalized else "normal"
+        }
+
+        internal fun sanitizeCssFontFormat(raw: String?): String? {
+            val normalized = raw?.trim()?.lowercase() ?: return null
+            return normalized.takeIf { it in allowedFontFormats }
+        }
 
         internal fun sanitizeCssTextAlign(raw: String?): String? {
             val normalized = raw?.trim()?.lowercase() ?: return null

@@ -351,6 +351,21 @@ public object ReaderJsBridge {
                 val pos = obj["pos"]?.jsonPrimitive?.doubleOrNull
                     ?: obj["position"]?.jsonPrimitive?.doubleOrNull
                     ?: 0.0
+                val textBefore = obj["textBefore"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+                val textAfter = obj["textAfter"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+                val cssSelector = obj["cssSelector"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+                val itemLocator = if (textBefore != null || textAfter != null || cssSelector != null) {
+                    com.readerengine.core.model.Locator(
+                        href = "",
+                        pageIndex = pageIndex,
+                        textQuote = text,
+                        textBefore = textBefore,
+                        textAfter = textAfter,
+                        cssSelector = cssSelector,
+                    )
+                } else {
+                    null
+                }
 
                 HighlightItem(
                     id = id,
@@ -358,6 +373,7 @@ public object ReaderJsBridge {
                     text = text,
                     style = HighlightStyle.fromRaw(rawColor),
                     scrollPositionY = pos,
+                    locator = itemLocator,
                 )
             }
         } catch (_: Exception) {
@@ -565,6 +581,12 @@ public object ReaderJsBridge {
                 ?.takeIf { it.isNotEmpty() } ?: return null
             val contextSentence = obj["contextSentence"]?.jsonPrimitive?.contentOrNull?.trim()
                 ?.takeIf { it.isNotEmpty() }
+            val textBefore = obj["textBefore"]?.jsonPrimitive?.contentOrNull?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            val textAfter = obj["textAfter"]?.jsonPrimitive?.contentOrNull?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            val cssSelector = obj["cssSelector"]?.jsonPrimitive?.contentOrNull?.trim()
+                ?.takeIf { it.isNotEmpty() }
             val rectObj = obj["rect"] as? JsonObject
             val rect = if (rectObj != null) {
                 SelectionRect(
@@ -585,6 +607,9 @@ public object ReaderJsBridge {
                     href = href,
                     pageIndex = pageIndex,
                     textQuote = selectedText,
+                    textBefore = textBefore,
+                    textAfter = textAfter,
+                    cssSelector = cssSelector,
                 ),
             )
         } catch (_: Exception) {
@@ -670,30 +695,190 @@ public object ReaderJsBridge {
                         }
                     }
                 }
+                function _buildCssSelector(node) {
+                    var el = node;
+                    if (el && el.nodeType === 3) el = el.parentElement;
+                    if (!el || el.nodeType !== 1) return '';
+                    var parts = [];
+                    while (el && el.nodeType === 1) {
+                        var tag = el.tagName ? el.tagName.toLowerCase() : '';
+                        if (!tag) break;
+                        if (el.id) {
+                            parts.unshift('#' + el.id);
+                            break;
+                        }
+                        if (tag === 'body' || tag === 'html') {
+                            parts.unshift(tag);
+                            if (tag === 'body') break;
+                        } else {
+                            var idx = 1;
+                            var sib = el.previousElementSibling;
+                            while (sib) {
+                                if (sib.tagName && sib.tagName.toLowerCase() === tag) idx++;
+                                sib = sib.previousElementSibling;
+                            }
+                            parts.unshift(tag + ':nth-of-type(' + idx + ')');
+                        }
+                        el = el.parentElement;
+                    }
+                    return parts.join(' > ');
+                }
+                function _collectTextEntries(rootEl) {
+                    var list = [];
+                    if (!rootEl || !document.createTreeWalker) return list;
+                    var walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, null, false);
+                    var n;
+                    var offset = 0;
+                    while ((n = walker.nextNode())) {
+                        var v = n.nodeValue || '';
+                        if (v.length > 0) {
+                            list.push({ node: n, start: offset, end: offset + v.length });
+                            offset += v.length;
+                        }
+                    }
+                    return list;
+                }
+                function _extractSelectionBoundaryContext(range) {
+                    var res = { before: '', after: '', selector: '' };
+                    if (!range || !document.body) return res;
+                    res.selector = _buildCssSelector(range.startContainer);
+                    try {
+                        var pre = document.createRange();
+                        pre.selectNodeContents(document.body);
+                        pre.setEnd(range.startContainer, range.startOffset);
+                        var preTxt = pre.toString().replace(/\s+/g, ' ').trim();
+                        if (preTxt.length > 32) preTxt = preTxt.substring(preTxt.length - 32);
+                        res.before = preTxt;
+                    } catch (e) {}
+                    try {
+                        var post = document.createRange();
+                        post.selectNodeContents(document.body);
+                        post.setStart(range.endContainer, range.endOffset);
+                        var postTxt = post.toString().replace(/\s+/g, ' ').trim();
+                        if (postTxt.length > 32) postTxt = postTxt.substring(0, 32);
+                        res.after = postTxt;
+                    } catch (e) {}
+                    return res;
+                }
                 function _wrapRangeSafe(range, id, cls) {
                     try {
-                        var span = document.createElement('span');
-                        span.className = cls;
-                        span.setAttribute('data-reader-hl-id', String(id));
-                        range.surroundContents(span);
-                        return span.getBoundingClientRect().top + (window.scrollY || window.pageYOffset || 0);
+                        if (!range || !document.createTreeWalker) {
+                            return window.scrollY || window.pageYOffset || 0;
+                        }
+                        var root = range.commonAncestorContainer;
+                        if (root && root.nodeType === 3) {
+                            var startOff = range.startOffset;
+                            var endOff = range.endOffset;
+                            if (endOff <= startOff) return window.scrollY || window.pageYOffset || 0;
+                            var targetNode = root;
+                            if (startOff > 0) {
+                                targetNode = root.splitText(startOff);
+                                endOff -= startOff;
+                            }
+                            if (endOff < (targetNode.nodeValue || '').length) {
+                                targetNode.splitText(endOff);
+                            }
+                            var singleSpan = document.createElement('span');
+                            singleSpan.className = cls;
+                            singleSpan.setAttribute('data-reader-hl-id', String(id));
+                            if (targetNode.parentNode) {
+                                targetNode.parentNode.insertBefore(singleSpan, targetNode);
+                                singleSpan.appendChild(targetNode);
+                                return singleSpan.getBoundingClientRect().top + (window.scrollY || window.pageYOffset || 0);
+                            }
+                        }
+                        var segments = [];
+                        var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+                        var node;
+                        while ((node = walker.nextNode())) {
+                            if (!node.nodeValue || node.nodeValue.length === 0) continue;
+                            if (typeof range.intersectsNode === 'function' && !range.intersectsNode(node)) continue;
+                            var s = (node === range.startContainer) ? range.startOffset : 0;
+                            var e = (node === range.endContainer) ? range.endOffset : node.nodeValue.length;
+                            if (e > s) {
+                                segments.push({ node: node, start: s, end: e });
+                            }
+                        }
+                        var firstSpan = null;
+                        for (var i = 0; i < segments.length; i++) {
+                            var seg = segments[i];
+                            var tn = seg.node;
+                            var segEnd = seg.end;
+                            if (seg.start > 0) {
+                                tn = tn.splitText(seg.start);
+                                segEnd -= seg.start;
+                            }
+                            if (segEnd < (tn.nodeValue || '').length) {
+                                tn.splitText(segEnd);
+                            }
+                            var sp = document.createElement('span');
+                            sp.className = cls;
+                            sp.setAttribute('data-reader-hl-id', String(id));
+                            if (tn.parentNode) {
+                                tn.parentNode.insertBefore(sp, tn);
+                                sp.appendChild(tn);
+                                if (!firstSpan) firstSpan = sp;
+                            }
+                        }
+                        if (firstSpan) {
+                            return firstSpan.getBoundingClientRect().top + (window.scrollY || window.pageYOffset || 0);
+                        }
+                        return window.scrollY || window.pageYOffset || 0;
                     } catch (e) {
                         return window.scrollY || window.pageYOffset || 0;
                     }
                 }
-                function _applyTextHighlightInDom(id, cls, text) {
+                function _applyTextHighlightInDom(id, cls, text, textBefore, textAfter) {
                     if (!text || !document.body || !document.createTreeWalker) return;
-                    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-                    var node;
-                    while ((node = walker.nextNode())) {
-                        var idx = node.nodeValue ? node.nodeValue.indexOf(text) : -1;
-                        if (idx >= 0) {
-                            var r = document.createRange();
-                            r.setStart(node, idx);
-                            r.setEnd(node, idx + text.length);
-                            _wrapRangeSafe(r, id, cls);
+                    var entries = _collectTextEntries(document.body);
+                    if (!entries.length) return;
+                    var fullText = entries.map(function(it){ return it.node.nodeValue || ''; }).join('');
+                    var searchFrom = 0;
+                    var bestPos = -1;
+                    var bestScore = -1;
+                    var beforeNeedle = textBefore ? String(textBefore).trim() : '';
+                    var afterNeedle = textAfter ? String(textAfter).trim() : '';
+                    while (searchFrom < fullText.length) {
+                        var pos = fullText.indexOf(text, searchFrom);
+                        if (pos < 0) break;
+                        var score = 0;
+                        if (beforeNeedle) {
+                            var preSlice = fullText.substring(Math.max(0, pos - 48), pos).replace(/\s+/g, ' ').trim();
+                            if (preSlice.indexOf(beforeNeedle) >= 0) score += 2;
+                        }
+                        if (afterNeedle) {
+                            var postSlice = fullText.substring(pos + text.length, Math.min(fullText.length, pos + text.length + 48)).replace(/\s+/g, ' ').trim();
+                            if (postSlice.indexOf(afterNeedle) >= 0) score += 2;
+                        }
+                        if (bestPos < 0 || score > bestScore) {
+                            bestPos = pos;
+                            bestScore = score;
+                        }
+                        if (!beforeNeedle && !afterNeedle) break;
+                        searchFrom = pos + Math.max(1, text.length);
+                    }
+                    if (bestPos < 0) return;
+                    var targetStart = bestPos;
+                    var targetEnd = bestPos + text.length;
+                    var startEntry = null;
+                    var endEntry = null;
+                    for (var i = 0; i < entries.length; i++) {
+                        var en = entries[i];
+                        if (!startEntry && targetStart >= en.start && targetStart <= en.end) {
+                            startEntry = en;
+                        }
+                        if (targetEnd >= en.start && targetEnd <= en.end) {
+                            endEntry = en;
                             break;
                         }
+                    }
+                    if (startEntry && endEntry) {
+                        try {
+                            var r = document.createRange();
+                            r.setStart(startEntry.node, targetStart - startEntry.start);
+                            r.setEnd(endEntry.node, targetEnd - endEntry.start);
+                            _wrapRangeSafe(r, id, cls);
+                        } catch (e) {}
                     }
                 }
                 function _resolvePaginatedHeight() {
@@ -780,11 +965,22 @@ public object ReaderJsBridge {
                             var id = _nextId++;
                             var cls = color.indexOf('highlight_') === 0 ? color : ('highlight_' + color);
                             var pos = window.scrollY || window.pageYOffset || 0;
+                            var ctx = { before: '', after: '', selector: '' };
                             if (selObj && selObj.rangeCount > 0) {
-                                pos = _wrapRangeSafe(selObj.getRangeAt(0), id, cls);
+                                var range = selObj.getRangeAt(0);
+                                ctx = _extractSelectionBoundaryContext(range);
+                                pos = _wrapRangeSafe(range, id, cls);
                                 try { selObj.removeAllRanges(); } catch (e) {}
                             }
-                            _items.push({ id: id, text: sel, cor: cls, pos: pos });
+                            _items.push({
+                                id: id,
+                                text: sel,
+                                cor: cls,
+                                pos: pos,
+                                textBefore: ctx.before,
+                                textAfter: ctx.after,
+                                cssSelector: ctx.selector
+                            });
                             _rebuildSerialized();
                         }
                         return _serialized;
@@ -942,13 +1138,35 @@ public object ReaderJsBridge {
                     }
                 }
             }
+            function _ensureElementVisibleInPaginated(el) {
+                if (!el) return;
+                var isPaginated = !!(document.documentElement && document.documentElement.classList.contains('reader-paginated'));
+                if (isPaginated && typeof window.readerJS !== 'undefined' && window.readerJS.goToSubPage && el.getBoundingClientRect) {
+                    var vw = _resolvePaginatedWidth();
+                    var st = null;
+                    try { st = JSON.parse(window.readerJS.getSubPageState()); } catch (e) {}
+                    var curSub = st && typeof st.subPage === 'number' ? st.subPage : 0;
+                    var rect = el.getBoundingClientRect();
+                    var isRtl = !!((document.documentElement && document.documentElement.dir === 'rtl') || (document.body && document.body.dir === 'rtl'));
+                    var absX = isRtl ? ((curSub * vw) - rect.left) : ((curSub * vw) + rect.left);
+                    var targetSub = vw > 0 ? Math.max(0, Math.floor(absX / vw)) : 0;
+                    if (targetSub !== curSub) {
+                        var nextSt = window.readerJS.goToSubPage(targetSub);
+                        if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                            window.ReaderEngine.postAction('reader_sub_page_changed', nextSt, false);
+                        }
+                    }
+                    return;
+                }
+                try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { try { el.scrollIntoView(); } catch (e2) {} }
+            }
             function _highlightTtsSentenceDom(index, text, elementId) {
                 _clearTtsHighlightDom();
                 if (elementId) {
                     var targetEl = document.getElementById(elementId);
                     if (targetEl) {
                         if (targetEl.classList) targetEl.classList.add('reader-tts-active');
-                        try { targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { try { targetEl.scrollIntoView(); } catch (e2) {} }
+                        _ensureElementVisibleInPaginated(targetEl);
                         return true;
                     }
                 }
@@ -975,7 +1193,7 @@ public object ReaderJsBridge {
                                         span.setAttribute('data-reader-tts', '1');
                                         span.setAttribute('data-reader-tts-idx', String(index || 0));
                                         r.surroundContents(span);
-                                        try { span.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { try { span.scrollIntoView(); } catch (e2) {} }
+                                        _ensureElementVisibleInPaginated(span);
                                         return true;
                                     } catch (e) {}
                                 }
@@ -1370,9 +1588,13 @@ public object ReaderJsBridge {
                 }
                 var sentence = (block && block.textContent) ? block.textContent.replace(/\s+/g, ' ').trim() : txt;
                 if (sentence.length > 400) sentence = sentence.substring(0, 400);
+                var ctx = _extractSelectionBoundaryContext(range);
                 return JSON.stringify({
                     selectedText: txt,
                     contextSentence: sentence,
+                    textBefore: ctx.before,
+                    textAfter: ctx.after,
+                    cssSelector: ctx.selector,
                     rect: r ? { x: Math.round(r.left * 10) / 10, y: Math.round(r.top * 10) / 10, width: Math.round(r.width * 10) / 10, height: Math.round(r.height * 10) / 10 } : null
                 });
             }

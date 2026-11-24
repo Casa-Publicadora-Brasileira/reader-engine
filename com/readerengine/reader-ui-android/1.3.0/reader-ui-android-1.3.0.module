@@ -1,0 +1,135 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "com.readerengine",
+    "module": "reader-ui-android",
+    "version": "1.3.0",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "9.9.0"
+    }
+  },
+  "variants": [
+    {
+      "name": "releaseVariantReleaseApiPublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-api"
+      },
+      "dependencies": [
+        {
+          "group": "com.readerengine",
+          "module": "reader-core",
+          "version": {
+            "requires": "1.3.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.4.20"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "reader-ui-android-1.3.0.aar",
+          "url": "reader-ui-android-1.3.0.aar",
+          "size": 51021,
+          "sha512": "6bacbcbde4d97c8ac49a283a4012620ec60a226bd7a982bcb9eab196f1f99c408c64bbaa86a889fbedd664cac29c8058c79449ec1d36466eb9fe2691aad09db5",
+          "sha256": "7ad26c5b9d69162a28be000827675bb3fb7194e458af9e82ac339f8875d4407e",
+          "sha1": "9f3d00c2a34704e1f833e594a8260a0cb8c313df",
+          "md5": "d321d03397a1124fba78568f9fa2fcb7"
+        }
+      ]
+    },
+    {
+      "name": "releaseVariantReleaseRuntimePublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-runtime"
+      },
+      "dependencies": [
+        {
+          "group": "androidx.compose",
+          "module": "compose-bom",
+          "version": {
+            "requires": "2024.10.01"
+          },
+          "attributes": {
+            "org.gradle.category": "platform"
+          }
+        },
+        {
+          "group": "androidx.compose.ui",
+          "module": "ui"
+        },
+        {
+          "group": "androidx.compose.foundation",
+          "module": "foundation"
+        },
+        {
+          "group": "androidx.webkit",
+          "module": "webkit",
+          "version": {
+            "requires": "1.12.1"
+          }
+        },
+        {
+          "group": "com.readerengine",
+          "module": "reader-core",
+          "version": {
+            "requires": "1.3.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.4.20"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "reader-ui-android-1.3.0.aar",
+          "url": "reader-ui-android-1.3.0.aar",
+          "size": 51021,
+          "sha512": "6bacbcbde4d97c8ac49a283a4012620ec60a226bd7a982bcb9eab196f1f99c408c64bbaa86a889fbedd664cac29c8058c79449ec1d36466eb9fe2691aad09db5",
+          "sha256": "7ad26c5b9d69162a28be000827675bb3fb7194e458af9e82ac339f8875d4407e",
+          "sha1": "9f3d00c2a34704e1f833e594a8260a0cb8c313df",
+          "md5": "d321d03397a1124fba78568f9fa2fcb7"
+        }
+      ]
+    },
+    {
+      "name": "releaseVariantReleaseSourcePublication",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "reader-ui-android-1.3.0-sources.jar",
+          "url": "reader-ui-android-1.3.0-sources.jar",
+          "size": 7920,
+          "sha512": "2f76622d51343626af2b29b53d8b71de580771cf3efbc3586e2e566abe5c5de4f77927bcc1ad3b0dbfe6de1b1b3c381f3d9463786796799262af45cfbbbc8db9",
+          "sha256": "65502a49cea0b8ab8346ee6ef92289b95c6117fa912da7c9f7e1b5b2c49465c9",
+          "sha1": "22055c9e0a97aa4bddc8bf8feed7160255e55d87",
+          "md5": "f782f5b5bcfc00a81cc7ccf82165f0b4"
+        }
+      ]
+    }
+  ]
+}

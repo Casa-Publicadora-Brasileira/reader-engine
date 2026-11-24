@@ -28,11 +28,11 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Run KMP unit tests & build Android sample
-        run: ./gradlew :reader-core:jvmTest :reader-core:assembleRelease :sample-android:assembleDebug --no-daemon
+      - name: Run KMP unit tests & build Android modules
+        run: ./gradlew :reader-core:jvmTest :reader-core:assembleRelease :reader-ui-android:testDebugUnitTest :reader-ui-android:assembleRelease :sample-android:assembleDebug --no-daemon
 
   ios:
-    name: Build XCFramework & iOS Sample (macOS)
+    name: Build XCFramework, ReaderEngineUI & iOS Sample (macOS)
     runs-on: macos-15
 
     steps:
@@ -50,6 +50,16 @@ jobs:
 
       - name: Assemble ReaderCore Debug XCFramework
         run: ./gradlew :reader-core:assembleReaderCoreDebugXCFramework --no-daemon
+
+      - name: Typecheck ReaderEngineUI Swift package sources
+        run: |
+          SDK_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          FRAMEWORK_DIR="$(find reader-core/build/XCFrameworks/debug/ReaderCore.xcframework -maxdepth 1 -type d -name 'ios-*simulator' | head -n 1)"
+          swiftc -typecheck \
+            -sdk "$SDK_PATH" \
+            -target arm64-apple-ios16.0-simulator \
+            -F "$FRAMEWORK_DIR" \
+            reader-ui-ios/Sources/ReaderEngineUI/*.swift
 
       - name: Build iOS Sample App (Simulator)
         run: |

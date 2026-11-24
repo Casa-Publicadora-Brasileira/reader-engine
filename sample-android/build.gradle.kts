@@ -51,7 +51,7 @@ android {
 }
 
 dependencies {
-    implementation(project(":reader-core"))
+    implementation(project(":reader-ui-android"))
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")

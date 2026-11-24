@@ -1,20 +1,14 @@
 package com.readerengine.app
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
 import android.content.res.AssetManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.util.Log
 import android.view.View
-import android.webkit.JavascriptInterface
-import android.webkit.JsResult
 import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -24,6 +18,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -87,31 +82,28 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.readerengine.core.bridge.ReaderJsBridge
 import com.readerengine.core.model.Bookmark
 import com.readerengine.core.model.HighlightStyle
 import com.readerengine.core.model.InitialBookState
 import com.readerengine.core.model.ReadingMode
 import com.readerengine.core.model.ReadingProgress
 import com.readerengine.core.model.SearchResult
-import com.readerengine.core.parser.Source
-import com.readerengine.core.session.ReaderCommand
-import com.readerengine.core.session.ReaderEngine
-import android.util.Log
 import com.readerengine.core.observability.ReaderLogLevel
 import com.readerengine.core.observability.ReaderLogRecord
 import com.readerengine.core.observability.ReaderMetric
 import com.readerengine.core.observability.ReaderObserver
 import com.readerengine.core.observability.ReaderSpan
+import com.readerengine.core.parser.Source
+import com.readerengine.core.session.ReaderCommand
+import com.readerengine.core.session.ReaderEngine
 import com.readerengine.core.session.ReaderEvent
 import com.readerengine.core.session.ReaderSession
 import com.readerengine.core.session.ReaderUiEffect
-import com.readerengine.core.session.RenderedDocument
+import com.readerengine.ui.ReaderContentView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okio.Path.Companion.toOkioPath
-import java.io.ByteArrayInputStream
 import java.io.File
 
 private const val BOOK_BASE_URL = "book://content/"
@@ -323,145 +315,6 @@ private fun localSamples(assets: AssetManager): List<SampleBook> {
     }
 }
 
-private class BookResourceWebViewClient(
-    private val sessionProvider: () -> ReaderSession?,
-) : WebViewClient() {
-
-    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-        val url = request?.url?.toString() ?: return false
-        val session = sessionProvider() ?: return false
-        return session.handleUrlNavigation(url)
-    }
-
-    override fun onPageFinished(view: WebView?, url: String?) {
-        super.onPageFinished(view, url)
-        val webView = view ?: return
-        val session = sessionProvider() ?: return
-        val state = session.state.value
-        if (state.currentPageSerializedHighlights.isNotBlank()) {
-            val restoreCmd = ReaderJsBridge.setHighlightsCommand(state.currentPageSerializedHighlights)
-            webView.evaluateJavascript(restoreCmd.removePrefix("javascript:"), null)
-        }
-        if (state.scrollY > 0 && state.readingMode == ReadingMode.SCROLL) {
-            val scrollCmd = ReaderJsBridge.scrollToYCommand(state.scrollY)
-            webView.evaluateJavascript(scrollCmd.removePrefix("javascript:"), null)
-        }
-        if (state.readingMode == ReadingMode.PAGINATED) {
-            webView.evaluateJavascript("readerJS.getSubPageState()") { raw ->
-                ReaderJsBridge.parseSubPageState(raw)?.let { (sub, total) ->
-                    session.onSubPageReported(sub, total)
-                }
-            }
-        }
-    }
-
-    override fun shouldInterceptRequest(
-        view: WebView?,
-        request: WebResourceRequest?,
-    ): WebResourceResponse? {
-        val url = request?.url ?: return null
-        if (url.scheme != "book" || url.host != "content") {
-            return super.shouldInterceptRequest(view, request)
-        }
-
-        val session = sessionProvider() ?: return notFoundResponse()
-        val href = url.path?.removePrefix("/") ?: return notFoundResponse()
-
-        return try {
-            val mimeType = session.resourceMediaType(href) ?: guessMimeType(href)
-            val totalSize = session.resourceSize(href)
-            val rangeHeader = request.requestHeaders?.entries
-                ?.firstOrNull { it.key.equals("Range", ignoreCase = true) }?.value
-
-            if (rangeHeader != null && rangeHeader.startsWith("bytes=") && totalSize != null && totalSize > 0L) {
-                val rangeValue = rangeHeader.removePrefix("bytes=").trim()
-                val parts = rangeValue.split('-')
-                val start = parts.getOrNull(0)?.toLongOrNull() ?: 0L
-                val endRequested = parts.getOrNull(1)?.toLongOrNull()
-                // Default chunk to at most 1 MB per range chunk if end is omitted
-                val effectiveEnd = if (endRequested != null && endRequested >= start) {
-                    minOf(endRequested, totalSize - 1L)
-                } else {
-                    minOf(start + 1024L * 1024L - 1L, totalSize - 1L)
-                }
-                val length = (effectiveEnd - start + 1L).toInt()
-                val chunk = session.readResourceRange(href, start, length)
-
-                val responseHeaders = mutableMapOf(
-                    "Content-Range" to "bytes $start-$effectiveEnd/$totalSize",
-                    "Accept-Ranges" to "bytes",
-                    "Content-Length" to length.toString(),
-                    "Content-Type" to mimeType,
-                    "Access-Control-Allow-Origin" to "*",
-                )
-                WebResourceResponse(
-                    mimeType,
-                    "UTF-8",
-                    206,
-                    "Partial Content",
-                    responseHeaders,
-                    ByteArrayInputStream(chunk),
-                )
-            } else {
-                val bytes = session.readResource(href)
-                val responseHeaders = mutableMapOf(
-                    "Accept-Ranges" to "bytes",
-                    "Content-Length" to bytes.size.toString(),
-                    "Content-Type" to mimeType,
-                    "Access-Control-Allow-Origin" to "*",
-                )
-                WebResourceResponse(
-                    mimeType,
-                    "UTF-8",
-                    200,
-                    "OK",
-                    responseHeaders,
-                    ByteArrayInputStream(bytes),
-                )
-            }
-        } catch (e: Exception) {
-            notFoundResponse()
-        }
-    }
-
-    private fun notFoundResponse() = WebResourceResponse(
-        "text/plain",
-        "UTF-8",
-        404,
-        "Not Found",
-        emptyMap(),
-        ByteArrayInputStream("Resource not found".toByteArray()),
-    )
-
-    private fun guessMimeType(href: String): String {
-        val lower = href.substringBefore('#').lowercase()
-        return when {
-            lower.endsWith(".html") || lower.endsWith(".xhtml") -> "application/xhtml+xml"
-            lower.endsWith(".css") -> "text/css"
-            lower.endsWith(".js") -> "application/javascript"
-            lower.endsWith(".png") -> "image/png"
-            lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
-            lower.endsWith(".gif") -> "image/gif"
-            lower.endsWith(".svg") -> "image/svg+xml"
-            lower.endsWith(".webp") -> "image/webp"
-            lower.endsWith(".woff2") -> "font/woff2"
-            lower.endsWith(".woff") -> "font/woff"
-            lower.endsWith(".ttf") -> "font/ttf"
-            lower.endsWith(".otf") -> "font/otf"
-            lower.endsWith(".mp4") || lower.endsWith(".m4v") -> "video/mp4"
-            lower.endsWith(".webm") -> "video/webm"
-            lower.endsWith(".ogv") -> "video/ogg"
-            lower.endsWith(".mov") -> "video/quicktime"
-            lower.endsWith(".mp3") -> "audio/mpeg"
-            lower.endsWith(".m4a") -> "audio/mp4"
-            lower.endsWith(".aac") -> "audio/aac"
-            lower.endsWith(".wav") -> "audio/wav"
-            lower.endsWith(".ogg") || lower.endsWith(".oga") -> "audio/ogg"
-            else -> "application/octet-stream"
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ReaderScreen(
@@ -484,7 +337,6 @@ private fun ReaderScreen(
     var showOpenBookDialog by remember { mutableStateOf(false) }
     var pendingFileFilter by remember { mutableStateOf(DeviceFileFilter.ALL) }
     var lastEventSummary by remember { mutableStateOf("Aguardando eventos...") }
-    var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var showBookmarks by remember { mutableStateOf(false) }
     var isSearchExpanded by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
@@ -534,61 +386,6 @@ private fun ReaderScreen(
                 is ReaderEvent.ActionTriggered -> {
                     lastEventSummary =
                         "ActionTriggered(${event.action}${if (event.payload != null) ": ${event.payload}" else ""})"
-                }
-            }
-        }
-    }
-
-    // Collect one-shot UI effects (JS execution, scroll, custom URI schemes)
-    LaunchedEffect(session) {
-        val currentSession = session ?: return@LaunchedEffect
-        currentSession.uiEffects.collect { effect ->
-            when (effect) {
-                is ReaderUiEffect.EvaluateJs -> {
-                    val webView = webViewRef ?: return@collect
-                    val rawScript = effect.script.removePrefix("javascript:")
-                    webView.evaluateJavascript(rawScript) { evalResult ->
-                        ReaderJsBridge.parseSubPageState(evalResult)?.let { (sub, total) ->
-                            currentSession.onSubPageReported(sub, total)
-                        }
-                        if (rawScript.contains("highlightSelection") ||
-                            rawScript.contains("unHighlightSelection") ||
-                            rawScript.contains("removeHighlight")
-                        ) {
-                            webView.evaluateJavascript("readerJS.getHighlights()") { serializedRaw ->
-                                webView.evaluateJavascript("readerJS.summaryHighlights()") { summaryRaw ->
-                                    currentSession.onPageHighlightsReported(
-                                        rawSerializedHighlights = serializedRaw ?: "",
-                                        rawSummaryJson = summaryRaw,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-                is ReaderUiEffect.ScrollToY -> {
-                    val scrollCmd = ReaderJsBridge.scrollToYCommand(effect.scrollYPx, effect.anchor)
-                    webViewRef?.evaluateJavascript(scrollCmd.removePrefix("javascript:"), null)
-                }
-                is ReaderUiEffect.OpenCustomUri -> {
-                    lastEventSummary = "OpenCustomUri(${effect.scheme}://${effect.title})"
-                }
-                is ReaderUiEffect.CustomAction -> {
-                    lastEventSummary =
-                        "CustomAction(${effect.action}${if (effect.payload != null) ": ${effect.payload}" else ""})"
-                }
-                is ReaderUiEffect.OpenExternalUrl -> {
-                    lastEventSummary = "OpenExternalUrl(${effect.url})"
-                }
-                is ReaderUiEffect.ShowMessage -> {
-                    lastEventSummary = "ShowMessage(${effect.message})"
-                }
-                is ReaderUiEffect.ImageActivated -> {
-                    lastEventSummary = "ImageActivated(${effect.image.resolvedHref})"
-                }
-                is ReaderUiEffect.SelectionChanged -> {
-                    val preview = effect.context?.selectedText?.take(32) ?: "cleared"
-                    lastEventSummary = "SelectionChanged($preview)"
                 }
             }
         }
@@ -1047,97 +844,61 @@ private fun ReaderScreen(
             )
             Spacer(modifier = Modifier.height(4.dp))
 
-            val currentDoc: RenderedDocument? = remember(
-                session,
-                readerState?.pageIndex,
-                readerState?.fontScale,
-                readerState?.fontFamily,
-                readerState?.fontSizeClass,
-                readerState?.isNightMode,
-                readerState?.readingMode,
-                readerState?.theme,
-            ) {
-                session?.currentDocument(BOOK_BASE_URL)
-            }
-
-            @SuppressLint("SetJavaScriptEnabled")
-            AndroidView(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                factory = { ctx ->
-                    WebView(ctx).apply {
-                        webViewClient = BookResourceWebViewClient { session }
-                        webChromeClient = object : WebChromeClient() {
-                            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
-                                customFullscreenView = view
-                                customFullscreenCallback = callback
+            val activeSession = session
+            if (activeSession != null) {
+                ReaderContentView(
+                    session = activeSession,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    schemeBase = BOOK_BASE_URL,
+                    onUiEffect = { effect ->
+                        when (effect) {
+                            is ReaderUiEffect.OpenCustomUri -> {
+                                lastEventSummary = "OpenCustomUri(${effect.scheme}://${effect.title})"
                             }
-
-                            override fun onHideCustomView() {
-                                customFullscreenCallback?.onCustomViewHidden()
-                                customFullscreenView = null
-                                customFullscreenCallback = null
+                            is ReaderUiEffect.CustomAction -> {
+                                lastEventSummary =
+                                    "CustomAction(${effect.action}${if (effect.payload != null) ": ${effect.payload}" else ""})"
                             }
-
-                            override fun onJsAlert(
-                                view: WebView?,
-                                url: String?,
-                                message: String?,
-                                result: JsResult?,
-                            ): Boolean {
-                                lastEventSummary = "JsAlert(${message.orEmpty()})"
-                                result?.confirm()
-                                return true
+                            is ReaderUiEffect.OpenExternalUrl -> {
+                                lastEventSummary = "OpenExternalUrl(${effect.url})"
                             }
+                            is ReaderUiEffect.ShowMessage -> {
+                                lastEventSummary = "ShowMessage(${effect.message})"
+                            }
+                            is ReaderUiEffect.ImageActivated -> {
+                                lastEventSummary = "ImageActivated(${effect.image.resolvedHref})"
+                            }
+                            is ReaderUiEffect.SelectionChanged -> {
+                                val preview = effect.context?.selectedText?.take(32) ?: "cleared"
+                                lastEventSummary = "SelectionChanged($preview)"
+                            }
+                            is ReaderUiEffect.EvaluateJs,
+                            is ReaderUiEffect.ScrollToY,
+                            -> Unit
                         }
-                        settings.javaScriptEnabled = true
-                        settings.mediaPlaybackRequiresUserGesture = false
-                        settings.allowFileAccess = false
-                        settings.allowContentAccess = false
-                        setBackgroundColor(0xFF131313.toInt())
-                        addJavascriptInterface(
-                            ScrollProgressInterface { scrollY, contentHeightPx, viewportHeightPx ->
-                                post {
-                                    session?.dispatch(
-                                        ReaderCommand.UpdateScroll(
-                                            scrollY = scrollY,
-                                            contentHeightPx = contentHeightPx,
-                                            viewportHeightPx = viewportHeightPx,
-                                            timestampEpochMs = System.currentTimeMillis(),
-                                        ),
-                                    )
-                                }
-                            },
-                            "AndroidScrollProgress",
-                        )
-                        addJavascriptInterface(
-                            ActionBridge { name, payload ->
-                                post {
-                                    session?.dispatch(ReaderCommand.TriggerAction(name, payload))
-                                }
-                            },
-                            "AndroidActionBridge",
-                        )
-                        webViewRef = this
-                    }
-                },
-                update = { webView ->
-                    val doc = currentDoc
-                    val bgColor = if (readerState?.isNightMode == true) 0xFF131313.toInt() else 0xFFF3FAF7.toInt()
-                    webView.setBackgroundColor(bgColor)
-                    if (doc != null && webView.tag != doc) {
-                        webView.tag = doc
-                        webView.loadDataWithBaseURL(
-                            doc.baseUrl,
-                            doc.html.ifBlank { "<html><body></body></html>" },
-                            "text/html",
-                            "utf-8",
-                            null,
-                        )
-                    }
-                },
-            )
+                    },
+                    onJsAlert = { message ->
+                        lastEventSummary = "JsAlert($message)"
+                    },
+                    onShowFullscreenView = { view, callback ->
+                        customFullscreenView = view
+                        customFullscreenCallback = callback
+                    },
+                    onHideFullscreenView = {
+                        customFullscreenCallback?.onCustomViewHidden()
+                        customFullscreenView = null
+                        customFullscreenCallback = null
+                    },
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                )
+            }
         }
     }
     }

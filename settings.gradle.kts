@@ -19,4 +19,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "reader-engine"
 include(":reader-core")
+include(":reader-ui-android")
 include(":sample-android")

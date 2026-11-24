@@ -2,6 +2,22 @@
 
 Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 
+## [1.3.0] - 2026-11-24
+
+### Added
+- **Módulo Opcional `:reader-ui-android` (`com.readerengine:reader-ui-android`):**
+  - Biblioteca Jetpack Compose + `WebView` *drop-in* mantendo `:reader-core` 100% *headless*.
+  - `ReaderResourceWebViewClient`: interceptor `book://content/` com streaming parcial HTTP `200`/`206`/`416` (`parseByteRangeHeader`, `guessReaderMimeType`), navegação delegada para `session.handleUrlNavigation(url)` e restauração automática de highlights, formulários (`annotations`/`answers`), `scrollY` e paginação em `onPageFinished`.
+  - Bridges JavaScript com regras de preservação R8/ProGuard (`consumer-rules.pro`): `ReaderScrollProgressBridge` e `ReaderActionBridge`.
+  - Composables prontos para multi-app: `ReaderWebView`, `PdfReaderCanvas` (com *pinch-to-zoom*, arraste e duplo toque) e `ReaderContentView` (seleção automática entre PDF e WebView).
+- **Pacote SwiftUI Opcional `reader-ui-ios` (`ReaderEngineUI`):**
+  - `ReaderBookSchemeHandler` (`WKURLSchemeHandler` com suporte thread-safe a HTTP 200/206/416).
+  - `ReaderWebView` (`UIViewRepresentable` sobre `WKWebView` conectado diretamente ao `ReaderSession`, sem ciclos de retenção via proxy fraco para `WKScriptMessageHandler`).
+  - `PdfReaderView` (`PDFKit` com *pinch-to-zoom*, arraste e duplo toque) e `ReaderContentView` universal.
+- **Refatoração do `sample-android` e Pipelines CI/CD:**
+  - `sample-android` agora consome diretamente `project(":reader-ui-android")` com `ReaderContentView`, removendo código duplicado de bridges e `WebViewClient`.
+  - Workflows `.github/workflows/ci.yml` e `.github/workflows/publish-mobile.yml` atualizados para testar, validar e publicar `:reader-ui-android` e validar compilação Swift de `ReaderEngineUI`.
+
 ## [1.2.0] - 2026-11-24
 
 ### Added

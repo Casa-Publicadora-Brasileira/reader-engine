@@ -116,13 +116,16 @@ No `build.gradle.kts` do módulo consumidor:
 ```kotlin
 dependencies {
     // Em um projeto Kotlin Multiplatform (commonMain):
-    implementation("com.readerengine:reader-core:1.2.0")
+    implementation("com.readerengine:reader-core:1.3.0")
 
-    // Ou diretamente em um projeto Android puro:
-    implementation("com.readerengine:reader-core-android:1.2.0")
+    // Ou diretamente em um projeto Android puro (headless):
+    implementation("com.readerengine:reader-core-android:1.3.0")
+
+    // Ou Android UI drop-in (Jetpack Compose + WebView HTTP 206 + PdfReaderCanvas, já inclui :reader-core):
+    implementation("com.readerengine:reader-ui-android:1.3.0")
 
     // Ou em um projeto JVM puro (Desktop / Backend):
-    implementation("com.readerengine:reader-core-jvm:1.2.0")
+    implementation("com.readerengine:reader-core-jvm:1.3.0")
 }
 ```
 
@@ -163,7 +166,11 @@ repositories {
 }
 
 dependencies {
-    implementation("com.readerengine:reader-core-android:1.2.0")
+    // Recomendado para apps Jetpack Compose (já inclui reader-core-android):
+    implementation("com.readerengine:reader-ui-android:1.3.0")
+
+    // Ou apenas o motor headless sem UI:
+    // implementation("com.readerengine:reader-core-android:1.3.0")
 }
 ```
 
@@ -171,13 +178,21 @@ dependencies {
 
 ### 3.3 iOS — Swift Package Manager / XCFramework
 
-O pipeline de release gera o binário universal **`ReaderCore.xcframework.zip`** contendo as fatias `iosArm64` (dispositivos físicos), `iosSimulatorArm64` (simuladores Apple Silicon) e `iosX64` (simuladores Intel).
+O pipeline de release gera o binário universal **`ReaderCore.xcframework.zip`** contendo as fatias `iosArm64` (dispositivos físicos), `iosSimulatorArm64` (simuladores Apple Silicon) e `iosX64` (simuladores Intel). O repositório também inclui o pacote SwiftUI opcional **`reader-ui-ios` (`ReaderEngineUI`)** com `ReaderContentView`, `ReaderWebView`, `PdfReaderView` e `ReaderBookSchemeHandler`.
 
 #### Opção A: Via `Package.swift` (Swift Package Manager)
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Casa-Publicadora-Brasileira/reader-engine.git", from: "1.2.0")
+    .package(url: "https://github.com/Casa-Publicadora-Brasileira/reader-engine.git", from: "1.3.0")
 ]
+```
+Ou localmente apontando para `reader-ui-ios/` após gerar `ReaderCore.xcframework` em `release`:
+```swift
+import ReaderEngineUI
+
+ReaderContentView(session: session) { effect in
+    // Opcional: OpenCustomUri, ImageActivated, SelectionChanged...
+}
 ```
 
 #### Opção B: Gerar o `XCFramework` localmente (macOS)
@@ -190,9 +205,23 @@ O artefato será gerado em `reader-core/build/XCFrameworks/release/ReaderCore.xc
 
 ## 4. Guia de Uso por Plataforma
 
-### 4.1 Android (Jetpack Compose + WebView + HTTP 206 Streaming)
+### 4.1 Android (Jetpack Compose — *Drop-in* com `:reader-ui-android` ou Customizado)
 
-No Android, o ciclo de integração consiste em 4 passos simples (veja a implementação completa de referência em [`sample-android/src/main/java/com/readerengine/app/MainActivity.kt`](sample-android/src/main/java/com/readerengine/app/MainActivity.kt)):
+Com o módulo opcional **`:reader-ui-android`** (`com.readerengine.ui`), basta montar `ReaderContentView(session)` para ter `WebView`, `ReaderResourceWebViewClient` (HTTP 200/206/416), bridges JS e `PdfReaderCanvas` prontos para produção:
+
+```kotlin
+import com.readerengine.ui.ReaderContentView
+
+ReaderContentView(
+    session = session,
+    modifier = Modifier.fillMaxSize(),
+    onUiEffect = { effect ->
+        // Reagir a OpenCustomUri, ImageActivated, SelectionChanged, OpenExternalUrl...
+    },
+)
+```
+
+Caso precise de controle manual sem `:reader-ui-android`, o ciclo de integração *headless* completo consiste nos passos abaixo (veja o app de referência em [`sample-android/src/main/java/com/readerengine/app/MainActivity.kt`](sample-android/src/main/java/com/readerengine/app/MainActivity.kt)):
 
 #### Passo 1: Abrir o livro a partir do disco (`Okio Path`) com `InitialBookState`
 ```kotlin
@@ -605,7 +634,7 @@ val engine = ReaderEngine(
 
 ```text
 reader-engine/
-├── reader-core/                       # SDK KMP (:reader-core -> Android AAR / iOS XCFramework / JVM JAR)
+├── reader-core/                       # SDK KMP headless (:reader-core -> Android AAR / iOS XCFramework / JVM JAR)
 │   └── src/
 │       ├── commonMain/kotlin/com/readerengine/core/
 │       │   ├── bridge/                # ReaderJsBridge (Scroll, CSS Columns, MathML) & PayloadCodec (gz:)
@@ -617,8 +646,10 @@ reader-engine/
 │       │   ├── search/                # BookSearchEngine (busca full-text sem acentos com cache)
 │       │   ├── session/               # ReaderEngine, ReaderSession, FlowSubscription, RenderedDocument
 │       │   └── theme/                 # ThemeTokens (Material 3, HIG, Fluent, Custom)
-│       └── commonTest/                # 76 testes unitários e de regressão multiplataforma
-├── sample-android/                    # App Android de referência (:sample-android) em Jetpack Compose
+│       └── commonTest/                # Testes unitários e de regressão multiplataforma
+├── reader-ui-android/                 # Módulo opcional Jetpack Compose + WebView HTTP 206 + PdfReaderCanvas
+├── reader-ui-ios/                     # Pacote SwiftUI opcional (ReaderEngineUI) + WKURLSchemeHandler + PdfReaderView
+├── sample-android/                    # App Android de referência (:sample-android) consumindo :reader-ui-android
 ├── sample-ios/                        # App iOS de referência (SwiftUI + WKWebView + ReaderCore.xcframework)
 ├── fixtures/                          # Arquivos de teste (.epub, .hpub, .json)
 └── _reversa_sdd/                      # Especificação arquitetural completa (C4, ERD, ADRs, Contratos SDD)
@@ -627,11 +658,11 @@ reader-engine/
 ### Comandos Úteis
 
 ```bash
-# Executar a suíte completa de testes unitários KMP (JVM)
-./gradlew :reader-core:jvmTest
+# Executar a suíte completa de testes unitários KMP e UI Android
+./gradlew :reader-core:jvmTest :reader-ui-android:testDebugUnitTest
 
-# Gerar o AAR de Release do Android e o JAR da JVM
-./gradlew :reader-core:assembleRelease :reader-core:jvmJar
+# Gerar os AARs de Release (Core + UI Android) e o JAR da JVM
+./gradlew :reader-core:assembleRelease :reader-ui-android:assembleRelease :reader-core:jvmJar
 
 # Compilar o aplicativo Android de demonstração (:sample-android)
 ./gradlew :sample-android:assembleDebug
@@ -647,7 +678,8 @@ xcodebuild -project sample-ios/ReaderEngineSample.xcodeproj -scheme ReaderEngine
 # Publicar artefatos no GitHub Packages / GitHub Enterprise
 ./gradlew :reader-core:publishAndroidReleasePublicationToGitHubPackagesRepository \
           :reader-core:publishJvmPublicationToGitHubPackagesRepository \
-          :reader-core:publishKotlinMultiplatformPublicationToGitHubPackagesRepository
+          :reader-core:publishKotlinMultiplatformPublicationToGitHubPackagesRepository \
+          :reader-ui-android:publishReleasePublicationToGitHubPackagesRepository
 ```
 
 ---

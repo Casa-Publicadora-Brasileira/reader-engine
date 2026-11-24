@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version name (e.g. 0.3.2) when not tagging"
+        description: "Version name (e.g. 1.3.0) when not tagging"
         required: false
-        default: "0.3.2"
+        default: "1.3.0"
       build_ios:
         description: "Build iOS XCFramework (requires macOS runner enabled in org)"
         required: false
@@ -51,16 +51,20 @@ jobs:
       - name: Run tests, assemble & generate public Maven layout
         run: |
           ./gradlew :reader-core:jvmTest :reader-core:assembleRelease :reader-core:jvmJar \
+            :reader-ui-android:testDebugUnitTest :reader-ui-android:assembleRelease \
             :reader-core:publishAndroidReleasePublicationToPublicMavenRepository \
             :reader-core:publishJvmPublicationToPublicMavenRepository \
             :reader-core:publishKotlinMultiplatformPublicationToPublicMavenRepository \
+            :reader-ui-android:publishReleasePublicationToPublicMavenRepository \
             --no-daemon
 
-      - name: Upload Android AAR
+      - name: Upload Android AARs
         uses: actions/upload-artifact@v4
         with:
-          name: reader-core-aar
-          path: reader-core/build/outputs/aar/*.aar
+          name: reader-android-aars
+          path: |
+            reader-core/build/outputs/aar/*.aar
+            reader-ui-android/build/outputs/aar/*.aar
           if-no-files-found: error
 
       - name: Upload Public Maven Repository
@@ -70,11 +74,13 @@ jobs:
           path: public-maven/
           if-no-files-found: error
 
-      - name: Attach AAR to GitHub Release
+      - name: Attach AARs to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: reader-core/build/outputs/aar/*.aar
+          files: |
+            reader-core/build/outputs/aar/*.aar
+            reader-ui-android/build/outputs/aar/*.aar
         env:
           GITHUB_TOKEN: ${{ secrets.GHE_TOKEN || secrets.GITHUB_TOKEN }}
 
@@ -109,6 +115,7 @@ jobs:
             :reader-core:publishAndroidReleasePublicationToSonatypeCentralRepository \
             :reader-core:publishJvmPublicationToSonatypeCentralRepository \
             :reader-core:publishKotlinMultiplatformPublicationToSonatypeCentralRepository \
+            :reader-ui-android:publishReleasePublicationToSonatypeCentralRepository \
             --no-daemon
         env:
           SONATYPE_TOKEN_USER: ${{ secrets.SONATYPE_TOKEN_USER }}
@@ -122,6 +129,7 @@ jobs:
             :reader-core:publishAndroidReleasePublicationToGitHubPackagesRepository \
             :reader-core:publishJvmPublicationToGitHubPackagesRepository \
             :reader-core:publishKotlinMultiplatformPublicationToGitHubPackagesRepository \
+            :reader-ui-android:publishReleasePublicationToGitHubPackagesRepository \
             --no-daemon
         env:
           GITHUB_TOKEN: ${{ secrets.GHE_TOKEN || secrets.GITHUB_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}

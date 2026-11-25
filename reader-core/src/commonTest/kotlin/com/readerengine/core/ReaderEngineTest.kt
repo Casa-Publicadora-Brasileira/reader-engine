@@ -306,7 +306,7 @@ class ReaderEngineTest {
         assertEquals(ReadingMode.PAGINATED, session.state.value.readingMode)
         val paginatedHtml = session.currentHtml()
         assertTrue(paginatedHtml.contains("reader-paginated"))
-        assertTrue(paginatedHtml.contains("column-width:calc(100vw - 48px)"))
+        assertTrue(paginatedHtml.contains("column-width:calc(var(--reader-page-width,100vw) - (var(--reader-pad-h,24px) * 2))"))
         assertTrue(paginatedHtml.contains("math{font-family:"))
         assertTrue(ReaderJsBridge.setReadingModeCommand(ReadingMode.SCROLL).contains("resetSubPage"))
         assertEquals(1 to 4, ReaderJsBridge.parseSubPageState("\"{\\\"subPage\\\":1,\\\"totalSubPages\\\":4}\""))
@@ -924,8 +924,8 @@ class ReaderEngineTest {
         )
 
         assertTrue(
-            css.contains("html,body{background-color:#131313 !important;color:#EAEAEA !important;font-family:Georgia, serif !important;font-size:24.0px;line-height:1.8 !important;}") ||
-                css.contains("html,body{background-color:#131313 !important;color:#EAEAEA !important;font-family:Georgia, serif !important;font-size:24px;line-height:1.8 !important;}"),
+            css.contains("html,body{background-color:#131313 !important;color:#EAEAEA !important;font-family:Georgia, serif !important;font-size:24.0px !important;line-height:1.8 !important;}") ||
+                css.contains("html,body{background-color:#131313 !important;color:#EAEAEA !important;font-family:Georgia, serif !important;font-size:24px !important;line-height:1.8 !important;}"),
         )
         assertTrue(css.contains("""body *:not([class*="highlight_"]){color:#EAEAEA !important;background-color:transparent !important;line-height:inherit;}"""))
         assertTrue(css.contains("""a,a *:not([class*="highlight_"]){color:#6AB7FF !important;}"""))
@@ -942,10 +942,10 @@ class ReaderEngineTest {
             layout = RenditionLayout.REFLOWABLE,
             spread = RenditionSpread.LANDSCAPE,
         )
-        assertTrue(spreadCss.contains("html.reader-paginated{height:var(--reader-page-height,560px) !important;min-height:var(--reader-page-height,560px) !important;max-height:var(--reader-page-height,560px) !important;width:100% !important;overflow:hidden !important;"))
-        assertTrue(spreadCss.contains("html.reader-paginated body{height:var(--reader-page-height,560px) !important;min-height:var(--reader-page-height,560px) !important;max-height:var(--reader-page-height,560px) !important;width:100% !important;overflow:visible !important;"))
-        assertTrue(spreadCss.contains("html.reader-paginated body{column-width:calc(100vw - 64px);column-gap:64px;column-fill:auto;padding:16px 32px !important;}"))
-        assertTrue(spreadCss.contains("@media (orientation: landscape){html.reader-paginated body{column-count:2;column-width:auto;column-gap:64px;}}"))
+        assertTrue(spreadCss.contains("html.reader-paginated{height:var(--reader-page-height,100vh) !important;min-height:var(--reader-page-height,100vh) !important;max-height:var(--reader-page-height,100vh) !important;width:var(--reader-page-width,100%) !important;overflow:hidden !important;"))
+        assertTrue(spreadCss.contains("html.reader-paginated body{height:var(--reader-page-height,100vh) !important;min-height:var(--reader-page-height,100vh) !important;max-height:var(--reader-page-height,100vh) !important;width:var(--reader-page-width,100%) !important;overflow:visible !important;"))
+        assertTrue(spreadCss.contains("html.reader-paginated body{column-width:calc(var(--reader-page-width,100vw) - (var(--reader-pad-h,32px) * 2));column-gap:calc(var(--reader-pad-h,32px) * 2);column-fill:auto;padding:16px var(--reader-pad-h,32px) !important;}"))
+        assertTrue(spreadCss.contains("@media (min-width: 840px) and (orientation: landscape){html.reader-paginated body{column-count:2;column-width:auto;column-gap:calc(var(--reader-pad-h,32px) * 2);}}"))
 
         // Inject into <html> tag without attributes/spaces after <html
         val injectedBareHtml = ReaderJsBridge.injectThemeAndBridge(
@@ -2632,6 +2632,89 @@ class ReaderEngineTest {
             assertTrue(clearEval.script.contains("clearTtsHighlight"))
         } finally {
             sub.cancel()
+            session.close()
+        }
+    }
+
+    @Test
+    fun paginatedLayoutSupportsFullViewportAndMultipleScreenSizes() {
+        val sepiaTheme = ThemeTokens.sepia()
+        val autoCss = sepiaTheme.toContentCss(
+            fontScale = 1.0f,
+            customFontFamily = null,
+            isNightMode = false,
+            readingMode = ReadingMode.PAGINATED,
+            layout = RenditionLayout.REFLOWABLE,
+            spread = RenditionSpread.AUTO,
+        )
+        assertFalse(autoCss.contains("560px"))
+        assertTrue(autoCss.contains("var(--reader-page-height,100vh)"))
+        assertTrue(autoCss.contains("var(--reader-page-width,100%)"))
+        assertTrue(autoCss.contains("--reader-base-pad-h:28px"))
+        assertTrue(autoCss.contains("--reader-max-line-width:720px"))
+        assertTrue(autoCss.contains("@media (min-width: 840px){html.reader-paginated body{column-count:2;"))
+
+        val landscapeCss = sepiaTheme.toContentCss(
+            fontScale = 1.0f,
+            customFontFamily = null,
+            isNightMode = false,
+            readingMode = ReadingMode.PAGINATED,
+            layout = RenditionLayout.REFLOWABLE,
+            spread = RenditionSpread.LANDSCAPE,
+        )
+        assertTrue(landscapeCss.contains("@media (min-width: 840px) and (orientation: landscape){html.reader-paginated body{column-count:2;"))
+
+        val singleColCss = sepiaTheme.toContentCss(
+            fontScale = 1.0f,
+            customFontFamily = null,
+            isNightMode = false,
+            readingMode = ReadingMode.PAGINATED,
+            layout = RenditionLayout.REFLOWABLE,
+            spread = RenditionSpread.NONE,
+        )
+        assertFalse(singleColCss.contains("column-count:2"))
+
+        val viewportCmd = ReaderJsBridge.setViewportSizeCommand(390, 844)
+        assertTrue(viewportCmd.contains("readerJS.setViewportSize(390,844)"))
+
+        val injected = ReaderJsBridge.injectThemeAndBridge(
+            rawHtml = "<html><head></head><body><p>Capítulo</p></body></html>",
+            theme = sepiaTheme,
+            fontScale = 1.0f,
+            readingMode = ReadingMode.PAGINATED,
+        )
+        assertFalse(injected.contains("sh * 0.68"))
+        assertFalse(injected.contains("sh * 0.85"))
+        assertTrue(injected.contains("setViewportSize:"))
+        assertTrue(injected.contains("visualViewport"))
+    }
+
+    @Test
+    fun fontScaleChangeInPaginatedModePreservesProportionalPositionAndWrapsWords() {
+        val engine = ReaderEngine()
+        val session = engine.open("sample.epub", readFixture("sample.epub"))
+        try {
+            session.dispatch(ReaderCommand.SetReadingMode(ReadingMode.PAGINATED))
+            session.onSubPageReported(currentSubPage = 4, totalSubPages = 10)
+            session.dispatch(ReaderCommand.SetFontScale(2.0f))
+
+            val firstRender = session.currentHtml()
+            assertTrue(firstRender.contains("data-reader-subpage-ratio=\"0.4000\""))
+            assertTrue(
+                firstRender.contains("font-size:36.0px !important;") ||
+                    firstRender.contains("font-size:36px !important;"),
+            )
+            assertTrue(firstRender.contains("body p,body li,body blockquote,body dd,body dt{font-size:1em !important;}"))
+            assertTrue(firstRender.contains("html.reader-paginated body,html.reader-paginated body *{overflow-wrap:break-word;word-wrap:break-word;}"))
+
+            val secondRender = session.currentHtml()
+            assertFalse(secondRender.contains("data-reader-subpage-ratio="))
+
+            assertTrue(ReaderJsBridge.setFontFamilyCommand("Georgia").contains("reflowPaginated(true)"))
+            assertTrue(ReaderJsBridge.setFontSizeClassCommand("ESFontSize3").contains("reflowPaginated(true)"))
+            val scaleCmd = ReaderJsBridge.setFontScaleCommand(28f)
+            assertTrue(scaleCmd.contains("font-size") && scaleCmd.contains("reflowPaginated(true)"))
+        } finally {
             session.close()
         }
     }

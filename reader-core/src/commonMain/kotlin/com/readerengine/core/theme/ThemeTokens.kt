@@ -272,7 +272,8 @@ public data class ThemeTokens(
                 }
             } else {
                 val padH = shape.horizontalPaddingPx.coerceIn(0, 240)
-                val gap = padH * 2
+                val safeMaxWidth = shape.maxLineWidthPx.coerceIn(0, 2400)
+                append(":root{--reader-base-pad-h:${padH}px;--reader-max-line-width:${safeMaxWidth}px;}")
                 if (publisherStyles) {
                     val scalePct = (safeScale * 100f).toInt().coerceIn(50, 300)
                     append("html,body{background-color:$bg !important;color:$fg !important;font-size:$scalePct%;}")
@@ -283,9 +284,10 @@ public data class ThemeTokens(
                     val hyphensRule = if (typography.hyphens) "auto" else "none"
                     val safeOrphans = typography.orphans.coerceIn(1, 5)
                     val safeWidows = typography.widows.coerceIn(1, 5)
-                    append("html,body{background-color:$bg !important;color:$fg !important;font-family:$family !important;font-size:${fontSizePx}px;line-height:$lineHeight !important;}")
+                    append("html,body{background-color:$bg !important;color:$fg !important;font-family:$family !important;font-size:${fontSizePx}px !important;line-height:$lineHeight !important;}")
                     append("body{padding-left:${padH}px !important;padding-right:${padH}px !important;text-align:$safeTextAlign !important;box-sizing:border-box;}")
                     append("body *:not([class*=\"highlight_\"]){color:$fg !important;background-color:transparent !important;line-height:inherit;}")
+                    append("body p,body li,body blockquote,body dd,body dt{font-size:1em !important;}")
                     append("body,body p,body div,body li,body blockquote{text-align:$safeTextAlign !important;}")
                     append("body,body p,body div,body li,body blockquote{hyphens:$hyphensRule;-webkit-hyphens:$hyphensRule;orphans:$safeOrphans;widows:$safeWidows;}")
                     val safeLetterSpacing = typography.letterSpacingEm.coerceIn(-0.05f, 0.5f)
@@ -299,18 +301,24 @@ public data class ThemeTokens(
                     }
                     append("body p{margin-bottom:${safeParagraphSpacing}em;}")
                 }
-                val safeMaxWidth = shape.maxLineWidthPx.coerceIn(0, 2400)
                 if (safeMaxWidth > 0) {
                     append("html:not(.reader-paginated) body{max-width:${safeMaxWidth}px;margin-left:auto !important;margin-right:auto !important;}")
                 }
-                append("html.reader-paginated{height:var(--reader-page-height,560px) !important;min-height:var(--reader-page-height,560px) !important;max-height:var(--reader-page-height,560px) !important;width:100% !important;overflow:hidden !important;margin:0 !important;padding:0 !important;box-sizing:border-box !important;}")
-                append("html.reader-paginated body{height:var(--reader-page-height,560px) !important;min-height:var(--reader-page-height,560px) !important;max-height:var(--reader-page-height,560px) !important;width:100% !important;overflow:visible !important;margin:0 !important;box-sizing:border-box !important;}")
-                append("html.reader-paginated body{column-width:calc(100vw - ${gap}px);column-gap:${gap}px;column-fill:auto;padding:16px ${padH}px !important;}")
+                append("html.reader-paginated{height:var(--reader-page-height,100vh) !important;min-height:var(--reader-page-height,100vh) !important;max-height:var(--reader-page-height,100vh) !important;width:var(--reader-page-width,100%) !important;overflow:hidden !important;margin:0 !important;padding:0 !important;box-sizing:border-box !important;}")
+                append("html.reader-paginated body{height:var(--reader-page-height,100vh) !important;min-height:var(--reader-page-height,100vh) !important;max-height:var(--reader-page-height,100vh) !important;width:var(--reader-page-width,100%) !important;overflow:visible !important;margin:0 !important;box-sizing:border-box !important;}")
+                append("html.reader-paginated body{column-width:calc(var(--reader-page-width,100vw) - (var(--reader-pad-h,${padH}px) * 2));column-gap:calc(var(--reader-pad-h,${padH}px) * 2);column-fill:auto;padding:16px var(--reader-pad-h,${padH}px) !important;}")
+                append("html.reader-paginated body,html.reader-paginated body *{overflow-wrap:break-word;word-wrap:break-word;}")
                 append("html.reader-paginated body > div,html.reader-paginated body > section,html.reader-paginated body > article,html.reader-paginated body > main{height:auto !important;min-height:0 !important;max-height:none !important;overflow:visible !important;}")
-                append("html.reader-paginated img,html.reader-paginated svg,html.reader-paginated video{max-height:calc(var(--reader-page-height,560px) - 64px) !important;max-width:100% !important;break-inside:avoid;}")
+                append("html.reader-paginated img,html.reader-paginated svg,html.reader-paginated video{max-height:calc(var(--reader-page-height,100vh) - 48px) !important;max-width:100% !important;break-inside:avoid;}")
                 append("html.reader-paginated figure,html.reader-paginated table,html.reader-paginated pre,html.reader-paginated blockquote{break-inside:avoid;-webkit-column-break-inside:avoid;}table{max-width:100%;overflow-x:auto;}")
-                if (spread == RenditionSpread.LANDSCAPE || spread == RenditionSpread.BOTH) {
-                    append("@media (orientation: landscape){html.reader-paginated body{column-count:2;column-width:auto;column-gap:${gap}px;}}")
+                when (spread) {
+                    RenditionSpread.LANDSCAPE -> {
+                        append("@media (min-width: 840px) and (orientation: landscape){html.reader-paginated body{column-count:2;column-width:auto;column-gap:calc(var(--reader-pad-h,${padH}px) * 2);}}")
+                    }
+                    RenditionSpread.AUTO, RenditionSpread.BOTH -> {
+                        append("@media (min-width: 840px){html.reader-paginated body{column-count:2;column-width:auto;column-gap:calc(var(--reader-pad-h,${padH}px) * 2);}}")
+                    }
+                    RenditionSpread.NONE -> Unit
                 }
             }
             append("a,a *:not([class*=\"highlight_\"]){color:$linkColor !important;}")

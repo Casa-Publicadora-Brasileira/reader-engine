@@ -133,8 +133,15 @@ public fun ReaderWebView(
         }
     }
 
+    var layoutChangeListener by remember { mutableStateOf<View.OnLayoutChangeListener?>(null) }
+
     DisposableEffect(Unit) {
         onDispose {
+            val existingListener = layoutChangeListener
+            if (existingListener != null) {
+                webViewRef?.removeOnLayoutChangeListener(existingListener)
+            }
+            layoutChangeListener = null
             webViewRef?.apply {
                 stopLoading()
                 removeJavascriptInterface("AndroidScrollProgress")
@@ -208,6 +215,34 @@ public fun ReaderWebView(
                     },
                     "AndroidActionBridge",
                 )
+                var lastSyncedWidthCss = 0
+                var lastSyncedHeightCss = 0
+                val listener = View.OnLayoutChangeListener { view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+                    val newW = right - left
+                    val newH = bottom - top
+                    val oldW = oldRight - oldLeft
+                    val oldH = oldBottom - oldTop
+                    if (newW == oldW && newH == oldH) return@OnLayoutChangeListener
+                    val density = view.resources.displayMetrics.density.coerceAtLeast(1f)
+                    val widthCssPx = (newW / density).toInt()
+                    val heightCssPx = (newH / density).toInt()
+                    if (widthCssPx < 120 || heightCssPx < 120) return@OnLayoutChangeListener
+                    if (widthCssPx == lastSyncedWidthCss && heightCssPx == lastSyncedHeightCss) return@OnLayoutChangeListener
+                    lastSyncedWidthCss = widthCssPx
+                    lastSyncedHeightCss = heightCssPx
+                    val activeSession = currentSessionState.value
+                    if (activeSession.state.value.readingMode == com.readerengine.core.model.ReadingMode.PAGINATED) {
+                        val cmd = ReaderJsBridge.setViewportSizeCommand(widthCssPx, heightCssPx)
+                            .removePrefix("javascript:")
+                        (view as? WebView)?.evaluateJavascript(cmd) { raw ->
+                            ReaderJsBridge.parseSubPageState(raw)?.let { (sub, total) ->
+                                activeSession.onSubPageReported(sub, total)
+                            }
+                        }
+                    }
+                }
+                addOnLayoutChangeListener(listener)
+                layoutChangeListener = listener
                 webViewRef = this
                 currentOnWebViewCreated.value?.invoke(this)
             }

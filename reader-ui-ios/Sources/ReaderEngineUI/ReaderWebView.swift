@@ -68,6 +68,7 @@ public struct ReaderWebView: UIViewRepresentable {
         webView.backgroundColor = resolvedBg
         webView.scrollView.backgroundColor = resolvedBg
         context.coordinator.webView = webView
+        context.coordinator.attachBoundsObserver(to: webView)
         context.coordinator.loadCurrentDocumentIfNeeded()
         return webView
     }
@@ -102,6 +103,8 @@ public struct ReaderWebView: UIViewRepresentable {
         private var schemeBase: String
         private var stateSub: FlowSubscription?
         private var effectsSub: FlowSubscription?
+        private var boundsObservation: NSKeyValueObservation?
+        private var lastSyncedViewport: (Int32, Int32) = (0, 0)
 
         weak var webView: WKWebView?
         var currentState: ReaderState?
@@ -142,11 +145,60 @@ public struct ReaderWebView: UIViewRepresentable {
         }
 
         func detach() {
+            boundsObservation?.invalidate()
+            boundsObservation = nil
             stateSub?.cancel()
             stateSub = nil
             effectsSub?.cancel()
             effectsSub = nil
             webView = nil
+        }
+
+        func attachBoundsObserver(to webView: WKWebView) {
+            boundsObservation?.invalidate()
+            boundsObservation = webView.observe(\.bounds, options: [.old, .new]) { [weak self, weak webView] _, change in
+                guard let self = self, let webView = webView else { return }
+                if change.oldValue?.size == change.newValue?.size {
+                    return
+                }
+                DispatchQueue.main.async {
+                    self.syncViewportSizeIfNeeded(webView: webView, force: false)
+                }
+            }
+        }
+
+        private func syncViewportSizeIfNeeded(webView: WKWebView, force: Bool) {
+            guard let session = session, currentState?.readingMode == ReadingMode.paginated else { return }
+            let w = Int32(floor(webView.bounds.width))
+            let h = Int32(floor(webView.bounds.height))
+            guard w >= 120 && h >= 120 else {
+                if force {
+                    webView.evaluateJavaScript("readerJS.getSubPageState()") { result, _ in
+                        guard let raw = result as? String,
+                              let pair = ReaderJsBridge.shared.parseSubPageState(rawJsValue: raw),
+                              let sub = pair.first?.int32Value,
+                              let total = pair.second?.int32Value else { return }
+                        DispatchQueue.main.async {
+                            session.onSubPageReported(currentSubPage: sub, totalSubPages: total)
+                        }
+                    }
+                }
+                return
+            }
+            if !force && lastSyncedViewport == (w, h) {
+                return
+            }
+            lastSyncedViewport = (w, h)
+            let cmd = ReaderJsBridge.shared.setViewportSizeCommand(widthCssPx: w, heightCssPx: h)
+            webView.evaluateJavaScript(Self.stripJsPrefix(cmd)) { result, _ in
+                guard let raw = result as? String,
+                      let pair = ReaderJsBridge.shared.parseSubPageState(rawJsValue: raw),
+                      let sub = pair.first?.int32Value,
+                      let total = pair.second?.int32Value else { return }
+                DispatchQueue.main.async {
+                    session.onSubPageReported(currentSubPage: sub, totalSubPages: total)
+                }
+            }
         }
 
         private func subscribe(to session: ReaderSession) {
@@ -263,7 +315,7 @@ public struct ReaderWebView: UIViewRepresentable {
         }
 
         public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            guard let session = session, let state = currentState else { return }
+            guard session != nil, let state = currentState else { return }
 
             if !state.currentPageSerializedHighlights.isEmpty {
                 let cmd = ReaderJsBridge.shared.setHighlightsCommand(
@@ -290,15 +342,7 @@ public struct ReaderWebView: UIViewRepresentable {
             }
 
             if state.readingMode == ReadingMode.paginated {
-                webView.evaluateJavaScript("readerJS.getSubPageState()") { result, _ in
-                    guard let raw = result as? String,
-                          let pair = ReaderJsBridge.shared.parseSubPageState(rawJsValue: raw),
-                          let sub = pair.first?.int32Value,
-                          let total = pair.second?.int32Value else { return }
-                    DispatchQueue.main.async {
-                        session.onSubPageReported(currentSubPage: sub, totalSubPages: total)
-                    }
-                }
+                syncViewportSizeIfNeeded(webView: webView, force: true)
             }
         }
 

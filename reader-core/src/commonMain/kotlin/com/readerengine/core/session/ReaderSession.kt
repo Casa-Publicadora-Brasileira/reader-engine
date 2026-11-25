@@ -338,6 +338,7 @@ public class ReaderSession(
     private val backStack = ArrayDeque<NavigationEntry>()
     private val forwardStack = ArrayDeque<NavigationEntry>()
     private var pendingOpenAtLastSubPage: Boolean = false
+    private var pendingSubPageRatio: Float? = null
     private var nextBookmarkSeq: Int = bookmarks.size + 1
     private var lastEmittedProgressPage: Int = -1
     private var lastEmittedProgressScrollY: Int = -1000
@@ -748,12 +749,14 @@ public class ReaderSession(
             }
 
             is ReaderCommand.SetTheme -> {
+                capturePendingSubPageRatioIfPaginated(current)
                 val updated = current.copy(theme = command.theme)
                 _state.value = updated
                 emitPreferencesChanged(updated)
             }
 
             is ReaderCommand.SetFontScale -> {
+                capturePendingSubPageRatioIfPaginated(current)
                 val clamped = command.scale.coerceIn(0.5f, 3.0f)
                 val updated = current.copy(fontScale = clamped)
                 _state.value = updated
@@ -761,6 +764,7 @@ public class ReaderSession(
             }
 
             is ReaderCommand.SetFontFamily -> {
+                capturePendingSubPageRatioIfPaginated(current)
                 val updated = current.copy(fontFamily = command.fontFamily)
                 _state.value = updated
                 _uiEffects.tryEmit(
@@ -770,6 +774,7 @@ public class ReaderSession(
             }
 
             is ReaderCommand.SetFontSizeClass -> {
+                capturePendingSubPageRatioIfPaginated(current)
                 val updated = current.copy(fontSizeClass = command.fontSizeClass)
                 _state.value = updated
                 _uiEffects.tryEmit(
@@ -788,6 +793,7 @@ public class ReaderSession(
             }
 
             is ReaderCommand.SetReadingMode -> {
+                pendingSubPageRatio = null
                 val updated = current.copy(
                     readingMode = command.mode,
                     currentSubPage = 0,
@@ -1201,6 +1207,8 @@ public class ReaderSession(
             ?: throw ReaderException.InvalidContent("Spine vazio ou índice inválido (${current.pageIndex})")
         val openAtLast = pendingOpenAtLastSubPage
         pendingOpenAtLastSubPage = false
+        val targetRatio = pendingSubPageRatio
+        pendingSubPageRatio = null
         val targetInitialSubPage = when {
             current.readingMode != ReadingMode.PAGINATED -> 0
             openAtLast -> ReaderJsBridge.INITIAL_SUB_PAGE_LAST
@@ -1229,6 +1237,7 @@ public class ReaderSession(
                 spread = publication.metadata.spread,
                 initialSubPage = targetInitialSubPage,
                 language = publication.metadata.language,
+                initialSubPageRatio = if (current.readingMode == ReadingMode.PAGINATED && !openAtLast) targetRatio else null,
             )
         }
         return RenderedDocument(
@@ -1915,6 +1924,12 @@ public class ReaderSession(
         stack.addLast(entry)
     }
 
+    private fun capturePendingSubPageRatioIfPaginated(state: ReaderState) {
+        if (state.readingMode == ReadingMode.PAGINATED && state.totalSubPages > 1 && pendingSubPageRatio == null) {
+            pendingSubPageRatio = (state.currentSubPage.toFloat() / state.totalSubPages.toFloat()).coerceIn(0f, 1f)
+        }
+    }
+
     private fun navigateToPageInternal(
         targetPageIndex: Int,
         scrollY: Int,
@@ -1928,6 +1943,7 @@ public class ReaderSession(
             forwardStack.clear()
         }
         pendingOpenAtLastSubPage = openAtLastSubPage
+        pendingSubPageRatio = null
         val newProgress = buildProgress(
             pageIndex = targetPageIndex,
             scrollY = scrollY,

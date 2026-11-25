@@ -171,7 +171,15 @@ public open class ReaderResourceWebViewClient(
         }
 
         if (state.readingMode == ReadingMode.PAGINATED) {
-            webView.evaluateJavascript("readerJS.getSubPageState()") { raw ->
+            val density = webView.resources.displayMetrics.density.coerceAtLeast(1f)
+            val widthCssPx = (webView.width / density).toInt()
+            val heightCssPx = (webView.height / density).toInt()
+            val script = if (widthCssPx >= 120 && heightCssPx >= 120) {
+                ReaderJsBridge.setViewportSizeCommand(widthCssPx, heightCssPx).removePrefix("javascript:")
+            } else {
+                "readerJS.getSubPageState()"
+            }
+            webView.evaluateJavascript(script) { raw ->
                 ReaderJsBridge.parseSubPageState(raw)?.let { (sub, total) ->
                     session.onSubPageReported(sub, total)
                 }

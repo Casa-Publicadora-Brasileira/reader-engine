@@ -66,6 +66,16 @@ public object ReaderJsBridge {
 
     public fun goToLastSubPageCommand(): String = SCRIPT_GO_TO_LAST_SUB_PAGE
 
+    /**
+     * Sincroniza explicitamente as dimensões reais da WebView (em CSS pixels / dp / pt)
+     * com o motor de paginação JS e retorna o novo estado JSON `{subPage, totalSubPages}`.
+     */
+    public fun setViewportSizeCommand(widthCssPx: Int, heightCssPx: Int): String {
+        val safeW = widthCssPx.coerceAtLeast(0)
+        val safeH = heightCssPx.coerceAtLeast(0)
+        return "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.setViewportSize){return readerJS.setViewportSize($safeW,$safeH);}return '{\"subPage\":0,\"totalSubPages\":1}';})();"
+    }
+
     public fun scrollToSearchMatchCommand(query: String, occurrenceInPage: Int = 0): String {
         val literal = jsStringLiteral(query.trim())
         val safeOcc = occurrenceInPage.coerceAtLeast(0)
@@ -111,13 +121,22 @@ public object ReaderJsBridge {
     public fun setFontFamilyCommand(fontFamily: String): String {
         val target = if (fontFamily == "Default" || fontFamily == "defaultFont") "" else fontFamily
         val literal = jsStringLiteral(target)
-        return "javascript:(function(){var f=$literal;var els=document.getElementsByTagName('*');for(var i=0;i<els.length;i++){els[i].style.fontFamily=f;}})();"
+        return "javascript:(function(){var f=$literal;var els=document.getElementsByTagName('*');for(var i=0;i<els.length;i++){els[i].style.fontFamily=f;}if(document.documentElement&&document.documentElement.classList.contains('reader-paginated')&&typeof readerJS!=='undefined'&&readerJS.reflowPaginated){return readerJS.reflowPaginated(true);}return '';})();"
     }
 
     public fun setFontSizeClassCommand(fontSizeClass: String): String {
         val sanitized = sanitizeClassToken(fontSizeClass)
         val literal = jsStringLiteral(sanitized)
-        return "javascript:if(typeof setFontSize==='function'){setFontSize($literal);}"
+        return "javascript:(function(){if(typeof setFontSize==='function'){setFontSize($literal);}if(document.documentElement&&document.documentElement.classList.contains('reader-paginated')&&typeof readerJS!=='undefined'&&readerJS.reflowPaginated){return readerJS.reflowPaginated(true);}return '';})();"
+    }
+
+    /**
+     * Ajusta dinamicamente o tamanho base da fonte (em CSS px) via JavaScript e recalcula
+     * as colunas do modo paginado preservando a posição proporcional de leitura.
+     */
+    public fun setFontScaleCommand(fontSizePx: Float): String {
+        val safePx = fontSizePx.coerceIn(8f, 144f)
+        return "javascript:(function(){var h=document.documentElement;if(h){h.style.setProperty('font-size','${safePx}px','important');}if(document.body){document.body.style.setProperty('font-size','${safePx}px','important');}if(h&&h.classList.contains('reader-paginated')&&typeof readerJS!=='undefined'&&readerJS.reflowPaginated){return readerJS.reflowPaginated(true);}return '';})();"
     }
 
     public fun setNightModeCommand(enabled: Boolean): String =
@@ -201,8 +220,41 @@ public object ReaderJsBridge {
     )
 
     /**
+     * Sobrecarga compatível com chamadas de 12 parâmetros mantendo compatibilidade binária e Swift.
+     */
+    public fun injectThemeAndBridge(
+        rawHtml: String,
+        theme: ThemeTokens,
+        fontScale: Float,
+        fontFamily: String,
+        fontSizeClass: String,
+        isNightMode: Boolean,
+        readingMode: ReadingMode,
+        layout: RenditionLayout,
+        direction: PageProgressionDirection,
+        spread: RenditionSpread,
+        initialSubPage: Int,
+        language: String?,
+    ): String = injectThemeAndBridge(
+        rawHtml = rawHtml,
+        theme = theme,
+        fontScale = fontScale,
+        fontFamily = fontFamily,
+        fontSizeClass = fontSizeClass,
+        isNightMode = isNightMode,
+        readingMode = readingMode,
+        layout = layout,
+        direction = direction,
+        spread = spread,
+        initialSubPage = initialSubPage,
+        language = language,
+        initialSubPageRatio = null,
+    )
+
+    /**
      * Injeta o CSS do tema, classes opcionais de tamanho/modo noturno/paginação horizontal,
-     * `data-reader-subpage` (incluindo `"last"` via [INITIAL_SUB_PAGE_LAST]), `lang` automático
+     * `data-reader-subpage` (incluindo `"last"` via [INITIAL_SUB_PAGE_LAST]) e `data-reader-subpage-ratio`
+     * (para preservar a posição proporcional em mudanças de fonte/tema), `lang` automático
      * para hifenização correta e o polyfill `readerJS` completo (suportando grifos no DOM,
      * paginação por colunas CSS, detecção de gestos swipe/tap, zoom de imagens, busca destacada e preservação de viewport).
      */
@@ -219,6 +271,7 @@ public object ReaderJsBridge {
         spread: RenditionSpread,
         initialSubPage: Int,
         language: String?,
+        initialSubPageRatio: Float?,
     ): String {
         val css = theme.toContentCss(
             fontScale = fontScale,
@@ -255,6 +308,13 @@ public object ReaderJsBridge {
             initialSubPage > 0 -> initialSubPage.toString()
             else -> null
         }
+        val ratioValue = if (initialSubPageRatio != null && initialSubPageRatio > 0f && initialSubPage != INITIAL_SUB_PAGE_LAST) {
+            val clamped = initialSubPageRatio.coerceIn(0f, 1f)
+            val scaled = (clamped * 10000f).toInt().coerceIn(0, 10000)
+            "${scaled / 10000}.${(scaled % 10000).toString().padStart(4, '0')}"
+        } else {
+            null
+        }
 
         var processedHtml = if (classes.isNotEmpty() && htmlOpenRegex.containsMatchIn(rawHtml)) {
             rawHtml.replaceFirst(htmlOpenRegex, Regex.escapeReplacement("<html class=\"$classes\""))
@@ -266,6 +326,13 @@ public object ReaderJsBridge {
             processedHtml = processedHtml.replaceFirst(
                 htmlOpenRegex,
                 Regex.escapeReplacement("<html data-reader-subpage=\"$subPageValue\""),
+            )
+        }
+
+        if (ratioValue != null && htmlOpenRegex.containsMatchIn(processedHtml)) {
+            processedHtml = processedHtml.replaceFirst(
+                htmlOpenRegex,
+                Regex.escapeReplacement("<html data-reader-subpage-ratio=\"$ratioValue\""),
             )
         }
 
@@ -305,7 +372,8 @@ public object ReaderJsBridge {
                 val dirAttr = if (isRtl && !hasDirAttr) " dir=\"rtl\"" else ""
                 val langAttr = if (safeLang != null && !hasLangAttr) " lang=\"$safeLang\"" else ""
                 val subPageAttr = if (subPageValue != null) " data-reader-subpage=\"$subPageValue\"" else ""
-                "<!doctype html><html$langAttr$dirAttr$classAttr$subPageAttr><head>$headInjection</head><body>$processedHtml</body></html>"
+                val ratioAttr = if (ratioValue != null) " data-reader-subpage-ratio=\"$ratioValue\"" else ""
+                "<!doctype html><html$langAttr$dirAttr$classAttr$subPageAttr$ratioAttr><head>$headInjection</head><body>$processedHtml</body></html>"
             }
         }
     }
@@ -662,19 +730,28 @@ public object ReaderJsBridge {
 
     private const val FALLBACK_READER_JS = """
         (function(){
+            var _nativeViewportWidth = 0;
+            var _nativeViewportHeight = 0;
+            var _lastTotalSubPages = 1;
             function _resolvePaginatedWidth() {
-                var cw = document.documentElement ? (document.documentElement.clientWidth || 0) : 0;
-                var iw = window.innerWidth || 0;
-                var w = cw > 0 ? cw : iw;
-                if (w >= 120) return w;
+                if (_nativeViewportWidth >= 120) return Math.floor(_nativeViewportWidth);
+                var vvw = (window.visualViewport && window.visualViewport.width >= 120) ? Math.floor(window.visualViewport.width) : 0;
+                if (vvw >= 120) return vvw;
+                var iw = (window.innerWidth && window.innerWidth >= 120) ? Math.floor(window.innerWidth) : 0;
+                if (iw >= 120) return iw;
+                var cw = (document.documentElement && document.documentElement.clientWidth >= 120) ? Math.floor(document.documentElement.clientWidth) : 0;
+                if (cw >= 120) return cw;
                 var sw = (window.screen && (window.screen.availWidth || window.screen.width)) ? (window.screen.availWidth || window.screen.width) : 360;
-                return Math.max(240, sw);
+                return Math.max(240, Math.floor(sw));
             }
             if (typeof window.readerJS === 'undefined') {
                 var _serialized = '';
                 var _items = [];
                 var _nextId = 1;
                 var _rawSubAttr = (document.documentElement && document.documentElement.getAttribute('data-reader-subpage')) || '0';
+                var _rawRatioAttr = (document.documentElement && document.documentElement.getAttribute('data-reader-subpage-ratio')) || '';
+                var _parsedRatio = _rawRatioAttr ? parseFloat(_rawRatioAttr) : NaN;
+                var _pendingSubPageRatio = (!isNaN(_parsedRatio) && _parsedRatio >= 0 && _parsedRatio <= 1) ? _parsedRatio : -1;
                 var _pendingLastSubPage = (_rawSubAttr === 'last');
                 var _subPage = _pendingLastSubPage ? 0 : (parseInt(_rawSubAttr, 10) || 0);
                 function _rebuildSerialized() {
@@ -882,22 +959,33 @@ public object ReaderJsBridge {
                     }
                 }
                 function _resolvePaginatedHeight() {
-                    var ih = window.innerHeight || 0;
-                    var ch = document.documentElement ? (document.documentElement.clientHeight || 0) : 0;
-                    var sh = (window.screen && (window.screen.availHeight || window.screen.height)) ? (window.screen.availHeight || window.screen.height) : 720;
-                    var maxReasonable = Math.max(400, Math.round(sh * 0.85));
-                    var minReasonable = Math.max(240, Math.round(sh * 0.40));
-                    var measured = ih >= ch ? ih : ch;
-                    if (measured >= minReasonable && measured <= maxReasonable) {
-                        return measured;
-                    }
-                    return Math.max(360, Math.round(sh * 0.68));
+                    if (_nativeViewportHeight >= 120) return Math.floor(_nativeViewportHeight);
+                    var vvh = (window.visualViewport && window.visualViewport.height >= 120) ? Math.floor(window.visualViewport.height) : 0;
+                    if (vvh >= 120) return vvh;
+                    var ih = (window.innerHeight && window.innerHeight >= 120) ? Math.floor(window.innerHeight) : 0;
+                    if (ih >= 120) return ih;
+                    var ch = (document.documentElement && document.documentElement.clientHeight >= 120) ? Math.floor(document.documentElement.clientHeight) : 0;
+                    if (ch >= 120) return ch;
+                    var sh = (window.screen && (window.screen.availHeight || window.screen.height)) ? (window.screen.availHeight || window.screen.height) : 640;
+                    return Math.max(240, Math.floor(sh));
                 }
                 function _syncPaginatedMetrics() {
                     var root = document.documentElement;
                     if (!root || !root.classList.contains('reader-paginated')) return;
+                    var vw = _resolvePaginatedWidth();
                     var vh = _resolvePaginatedHeight();
+                    root.style.setProperty('--reader-page-width', vw + 'px');
                     root.style.setProperty('--reader-page-height', vh + 'px');
+                    var cs = window.getComputedStyle ? window.getComputedStyle(root) : null;
+                    var basePad = cs ? (parseInt(cs.getPropertyValue('--reader-base-pad-h'), 10) || 24) : 24;
+                    var maxLine = cs ? (parseInt(cs.getPropertyValue('--reader-max-line-width'), 10) || 0) : 0;
+                    var bodyCs = (document.body && window.getComputedStyle) ? window.getComputedStyle(document.body) : null;
+                    var colCount = bodyCs ? (parseInt(bodyCs.columnCount || bodyCs.getPropertyValue('column-count'), 10) || 1) : 1;
+                    var effectivePad = basePad;
+                    if (colCount < 2 && maxLine > 0 && vw > maxLine + (basePad * 2)) {
+                        effectivePad = Math.max(basePad, Math.floor((vw - maxLine) / 2));
+                    }
+                    root.style.setProperty('--reader-pad-h', effectivePad + 'px');
                     if (window.scrollY > 0 || root.scrollTop > 0) {
                         window.scrollTo(0, 0);
                         root.scrollTop = 0;
@@ -911,7 +999,8 @@ public object ReaderJsBridge {
                     var bodySw = document.body ? (document.body.scrollWidth || 0) : 0;
                     var docSw = document.documentElement ? (document.documentElement.scrollWidth || 0) : 0;
                     var sw = Math.max(vw, bodySw, docSw);
-                    var total = Math.max(1, Math.round(sw / vw));
+                    var total = Math.max(1, Math.ceil((sw - 4) / vw));
+                    _lastTotalSubPages = total;
                     if (t0 > 0 && window.ReaderEngine && window.ReaderEngine.postAction) {
                         var elapsed = Math.round((performance.now() - t0) * 100) / 100;
                         window.ReaderEngine.postAction('reader_js_metric', JSON.stringify({
@@ -932,6 +1021,24 @@ public object ReaderJsBridge {
                         document.body.style.transform = 'translateX(' + (offsetPx === 0 ? '0px' : (sign + offsetPx + 'px')) + ')';
                         document.body.style.transition = 'transform 0.18s ease-out';
                     }
+                }
+                function _resolvePendingSubPage(total) {
+                    if (_pendingLastSubPage) {
+                        _pendingLastSubPage = false;
+                        _pendingSubPageRatio = -1;
+                        _subPage = Math.max(0, total - 1);
+                        return true;
+                    }
+                    if (_pendingSubPageRatio >= 0) {
+                        if (total > 1) {
+                            _subPage = Math.max(0, Math.min(total - 1, Math.round(_pendingSubPageRatio * total)));
+                            _pendingSubPageRatio = -1;
+                        } else {
+                            _subPage = 0;
+                        }
+                        return true;
+                    }
+                    return false;
                 }
                 window.readerJS = {
                     getHighlights: function() { return _serialized; },
@@ -1019,6 +1126,7 @@ public object ReaderJsBridge {
                     },
                     nextSubPage: function() {
                         var total = _computeTotalSubPages();
+                        _pendingSubPageRatio = -1;
                         if (_subPage + 1 < total) {
                             _subPage++;
                             _applySubPageOffset();
@@ -1028,6 +1136,7 @@ public object ReaderJsBridge {
                     },
                     prevSubPage: function() {
                         var total = _computeTotalSubPages();
+                        _pendingSubPageRatio = -1;
                         if (_subPage > 0) {
                             _subPage--;
                             _applySubPageOffset();
@@ -1037,10 +1146,7 @@ public object ReaderJsBridge {
                     },
                     getSubPageState: function() {
                         var total = _computeTotalSubPages();
-                        if (_pendingLastSubPage) {
-                            _pendingLastSubPage = false;
-                            _subPage = Math.max(0, total - 1);
-                        } else if (_subPage >= total) {
+                        if (!_resolvePendingSubPage(total) && _subPage >= total) {
                             _subPage = Math.max(0, total - 1);
                         }
                         if (document.documentElement && document.documentElement.classList.contains('reader-paginated')) {
@@ -1051,6 +1157,7 @@ public object ReaderJsBridge {
                     goToSubPage: function(index) {
                         var total = _computeTotalSubPages();
                         _pendingLastSubPage = false;
+                        _pendingSubPageRatio = -1;
                         _subPage = Math.max(0, Math.min(total - 1, parseInt(index, 10) || 0));
                         _applySubPageOffset();
                         return JSON.stringify({ subPage: _subPage, totalSubPages: total });
@@ -1058,18 +1165,84 @@ public object ReaderJsBridge {
                     goToLastSubPage: function() {
                         var total = _computeTotalSubPages();
                         _pendingLastSubPage = false;
+                        _pendingSubPageRatio = -1;
                         _subPage = Math.max(0, total - 1);
                         _applySubPageOffset();
                         return JSON.stringify({ subPage: _subPage, totalSubPages: total });
                     },
+                    setViewportSize: function(widthPx, heightPx) {
+                        var w = parseInt(widthPx, 10) || 0;
+                        var h = parseInt(heightPx, 10) || 0;
+                        if (w >= 120) _nativeViewportWidth = w;
+                        if (h >= 120) _nativeViewportHeight = h;
+                        if (document.documentElement && document.documentElement.classList.contains('reader-paginated')) {
+                            var prevTotal = Math.max(1, _lastTotalSubPages);
+                            var ratio = (!_pendingLastSubPage && _pendingSubPageRatio < 0 && prevTotal > 1) ? (_subPage / prevTotal) : 0;
+                            var total = _computeTotalSubPages();
+                            if (!_resolvePendingSubPage(total)) {
+                                if (ratio > 0) {
+                                    _subPage = Math.max(0, Math.min(total - 1, Math.round(ratio * total)));
+                                } else if (_subPage >= total) {
+                                    _subPage = Math.max(0, total - 1);
+                                }
+                            }
+                            _applySubPageOffset();
+                            return JSON.stringify({ subPage: _subPage, totalSubPages: total });
+                        }
+                        return JSON.stringify({ subPage: 0, totalSubPages: 1 });
+                    },
+                    reflowPaginated: function(preserveRatio) {
+                        if (!document.documentElement || !document.documentElement.classList.contains('reader-paginated')) {
+                            return JSON.stringify({ subPage: 0, totalSubPages: 1 });
+                        }
+                        var prevTotal = Math.max(1, _lastTotalSubPages);
+                        var ratio = (preserveRatio !== false && prevTotal > 1) ? (_subPage / prevTotal) : -1;
+                        var total = _computeTotalSubPages();
+                        if (!_resolvePendingSubPage(total)) {
+                            if (ratio >= 0 && total > 1) {
+                                _subPage = Math.max(0, Math.min(total - 1, Math.round(ratio * total)));
+                            } else if (_subPage >= total) {
+                                _subPage = Math.max(0, total - 1);
+                            }
+                        }
+                        _applySubPageOffset();
+                        var st = JSON.stringify({ subPage: _subPage, totalSubPages: total });
+                        if (window.ReaderEngine && window.ReaderEngine.postAction) {
+                            window.ReaderEngine.postAction('reader_sub_page_changed', st, false);
+                        }
+                        return st;
+                    },
                     resetSubPage: function() {
                         _subPage = 0;
+                        _pendingSubPageRatio = -1;
                         if (document.body) {
                             document.body.style.transform = '';
                             document.body.style.transition = '';
                         }
                         return JSON.stringify({ subPage: 0, totalSubPages: 1 });
                     }
+                };
+            }
+            if (typeof window.readerJS !== 'undefined' && typeof window.readerJS.reflowPaginated !== 'function') {
+                window.readerJS.reflowPaginated = function(preserveRatio) {
+                    if (typeof window.readerJS.getSubPageState === 'function') {
+                        return window.readerJS.getSubPageState();
+                    }
+                    return JSON.stringify({ subPage: 0, totalSubPages: 1 });
+                };
+            }
+            if (typeof window.readerJS !== 'undefined' && typeof window.readerJS.setViewportSize !== 'function') {
+                window.readerJS.setViewportSize = function(widthPx, heightPx) {
+                    var w = parseInt(widthPx, 10) || 0;
+                    var h = parseInt(heightPx, 10) || 0;
+                    if (document.documentElement) {
+                        if (w >= 120) document.documentElement.style.setProperty('--reader-page-width', w + 'px');
+                        if (h >= 120) document.documentElement.style.setProperty('--reader-page-height', h + 'px');
+                    }
+                    if (typeof window.readerJS.getSubPageState === 'function') {
+                        return window.readerJS.getSubPageState();
+                    }
+                    return JSON.stringify({ subPage: 0, totalSubPages: 1 });
                 };
             }
             if (typeof window.ReaderEngine === 'undefined') {
@@ -1531,6 +1704,7 @@ public object ReaderJsBridge {
             if (typeof window.__readerPaginatedHooked === 'undefined') {
                 window.__readerPaginatedHooked = true;
                 var _lastReportedSubState = '';
+                var _resizeTimer = null;
                 var _onPaginatedReady = function() {
                     if (document.documentElement && document.documentElement.classList.contains('reader-paginated')) {
                         if (typeof window.readerJS !== 'undefined' && window.readerJS.getSubPageState) {
@@ -1542,13 +1716,49 @@ public object ReaderJsBridge {
                         }
                     }
                 };
+                var _onViewportResized = function() {
+                    if (_resizeTimer) clearTimeout(_resizeTimer);
+                    _resizeTimer = setTimeout(function() {
+                        if (!document.documentElement || !document.documentElement.classList.contains('reader-paginated')) return;
+                        if (typeof window.readerJS === 'undefined') return;
+                        if (_nativeViewportWidth >= 120 || _nativeViewportHeight >= 120) {
+                            var iw = window.innerWidth || 0;
+                            var ih = window.innerHeight || 0;
+                            if (iw >= 120 && Math.abs(iw - _nativeViewportWidth) >= 24) _nativeViewportWidth = 0;
+                            if (ih >= 120 && Math.abs(ih - _nativeViewportHeight) >= 24) _nativeViewportHeight = 0;
+                        }
+                        var prevState = null;
+                        try { prevState = JSON.parse(_lastReportedSubState || '{}'); } catch (e) {}
+                        var prevSub = prevState && typeof prevState.subPage === 'number' ? prevState.subPage : 0;
+                        var prevTotal = prevState && typeof prevState.totalSubPages === 'number' ? prevState.totalSubPages : 1;
+                        var st = window.readerJS.getSubPageState ? window.readerJS.getSubPageState() : '';
+                        if (prevTotal > 1 && prevSub > 0 && st && window.readerJS.goToSubPage) {
+                            try {
+                                var nextState = JSON.parse(st);
+                                if (nextState && nextState.totalSubPages > 1) {
+                                    var mapped = Math.max(0, Math.min(nextState.totalSubPages - 1, Math.round((prevSub / prevTotal) * nextState.totalSubPages)));
+                                    if (mapped !== nextState.subPage) {
+                                        st = window.readerJS.goToSubPage(mapped);
+                                    }
+                                }
+                            } catch (e) {}
+                        }
+                        if (st && st !== _lastReportedSubState && window.ReaderEngine && window.ReaderEngine.postAction) {
+                            _lastReportedSubState = st;
+                            window.ReaderEngine.postAction('reader_sub_page_changed', st, false);
+                        }
+                    }, 60);
+                };
                 if (document.readyState === 'complete' || document.readyState === 'interactive') {
                     setTimeout(_onPaginatedReady, 0);
                 } else {
                     window.addEventListener('DOMContentLoaded', _onPaginatedReady);
                 }
                 window.addEventListener('load', _onPaginatedReady);
-                window.addEventListener('resize', _onPaginatedReady);
+                window.addEventListener('resize', _onViewportResized);
+                if (window.visualViewport && window.visualViewport.addEventListener) {
+                    window.visualViewport.addEventListener('resize', _onViewportResized);
+                }
             }
             if (typeof window.__readerObservabilityHooked === 'undefined') {
                 window.__readerObservabilityHooked = true;

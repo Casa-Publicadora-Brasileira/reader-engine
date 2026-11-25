@@ -2,6 +2,16 @@
 
 Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 
+## [1.3.1] - 2026-11-25
+
+### Fixed & Improved
+- **Paginação Full-Viewport e Responsividade para Múltiplos Tamanhos de Tela (`:reader-core`, `:reader-ui-android`, `reader-ui-ios`):**
+  - Removida a heurística de cap `0.85 * screenHeight` / fallback `0.68 * screenHeight` em `_resolvePaginatedHeight()` (`ReaderJsBridge`) e o fallback CSS fixo de `560px` em `ThemeTokens`, permitindo que o conteúdo paginado ocupe 100% da altura útil da `WebView` em modo imersivo, *split-screen*, *foldables* e diferentes densidades de tela.
+  - Adicionado `ReaderJsBridge.setViewportSizeCommand(widthCssPx, heightCssPx)` / `readerJS.setViewportSize(w, h)` com cálculo exato de `--reader-page-width`, `--reader-page-height` e margem responsiva `--reader-pad-h` respeitando `maxLineWidthPx`.
+  - Sincronização nativa automática de dimensões da `WebView` ao finalizar o carregamento e em eventos de layout/redimensionamento no `:reader-ui-android` (`OnLayoutChangeListener` + `onPageFinished`) e no `reader-ui-ios` (`NSKeyValueObservation` em `bounds` + `didFinish`).
+  - Atualizados os *breakpoints* de *spread* em 2 colunas para `@media (min-width: 840px)` (e `@media (min-width: 840px) and (orientation: landscape)`), preservando a proporção de leitura durante rotação e *resize* via `visualViewport`.
+  - **Reflow e preservação de posição em mudanças de fonte:** `SetFontScale`, `SetFontFamily`, `SetFontSizeClass` e `SetTheme` agora preservam a fração da página (`data-reader-subpage-ratio`) ao recarregar no modo `PAGINATED`; CSS reforçado com `font-size !important` em `html,body` + `1em` nos parágrafos e `overflow-wrap: break-word` nas colunas para fontes grandes (`2.0x–3.0x`), além de recálculo automático via `readerJS.reflowPaginated(true)` e novo helper `ReaderJsBridge.setFontScaleCommand`.
+
 ## [1.3.0] - 2026-11-24
 
 ### Added

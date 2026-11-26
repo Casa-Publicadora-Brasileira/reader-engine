@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version name (e.g. 1.3.0) when not tagging"
+        description: "Version name (e.g. 1.4.0) when not tagging"
         required: false
-        default: "1.3.0"
+        default: "1.4.0"
       build_ios:
         description: "Build iOS XCFramework (requires macOS runner enabled in org)"
         required: false

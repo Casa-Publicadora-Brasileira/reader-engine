@@ -21,6 +21,8 @@ import com.readerengine.core.model.MediaOverlay
 import com.readerengine.core.model.MediaOverlayClip
 import com.readerengine.core.model.Metadata
 import com.readerengine.core.model.PageProgressionDirection
+import com.readerengine.core.model.PageTransitionDirection
+import com.readerengine.core.model.PageTurnAnimation
 import com.readerengine.core.model.ProgressMergePolicy
 import com.readerengine.core.model.Publication
 import com.readerengine.core.model.ReaderStrings
@@ -954,7 +956,7 @@ class ReaderEngineTest {
             fontScale = 1.0f,
             isNightMode = true,
         )
-        assertTrue(injectedBareHtml.contains("<html class=\"nightMode\">"))
+        assertTrue(Regex("""<html\b[^>]*\bclass="nightMode"[^>]*>""").containsMatchIn(injectedBareHtml))
         assertTrue(injectedBareHtml.contains("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"))
 
         // Inject into <html lang="pt"> tag preserving existing attributes
@@ -964,7 +966,7 @@ class ReaderEngineTest {
             fontScale = 1.0f,
             isNightMode = true,
         )
-        assertTrue(injectedWithAttr.contains("<html class=\"nightMode\" lang=\"pt\">"))
+        assertTrue(Regex("""<html\b[^>]*\bclass="nightMode"[^>]*\blang="pt"[^>]*>""").containsMatchIn(injectedWithAttr))
     }
 
     @Test
@@ -2715,6 +2717,71 @@ class ReaderEngineTest {
             val scaleCmd = ReaderJsBridge.setFontScaleCommand(28f)
             assertTrue(scaleCmd.contains("font-size") && scaleCmd.contains("reflowPaginated(true)"))
         } finally {
+            session.close()
+        }
+    }
+
+    @Test
+    fun pageTurnAnimationAndChapterTransitionDirectionWorkAcrossSessionAndJsBridge() {
+        val engine = ReaderEngine()
+        val session = engine.open(
+            name = "sample.epub",
+            bytes = readFixture("sample.epub"),
+            initialState = InitialBookState(
+                readingMode = ReadingMode.PAGINATED,
+                pageTurnAnimation = PageTurnAnimation.FADE,
+            ),
+        )
+        val events = mutableListOf<ReaderEvent>()
+        val effects = mutableListOf<ReaderUiEffect>()
+        val evSub = session.watchEvents { events.add(it) }
+        val efSub = session.watchUiEffects { effects.add(it) }
+        try {
+            assertEquals(PageTurnAnimation.FADE, session.state.value.pageTurnAnimation)
+            assertTrue(session.currentHtml().contains("data-reader-animation=\"fade\""))
+
+            session.dispatch(ReaderCommand.SetPageTurnAnimation(PageTurnAnimation.SLIDE))
+            assertEquals(PageTurnAnimation.SLIDE, session.state.value.pageTurnAnimation)
+            assertTrue(events.filterIsInstance<ReaderEvent.PreferencesChanged>().last().pageTurnAnimation == PageTurnAnimation.SLIDE)
+            assertTrue(
+                effects.filterIsInstance<ReaderUiEffect.EvaluateJs>()
+                    .any { it.script.contains("setPageTurnAnimation(\"slide\")") },
+            )
+
+            // Avanço para o próximo capítulo deve carregar direção FORWARD e emitir data-reader-enter uma única vez
+            session.onSubPageReported(currentSubPage = 0, totalSubPages = 1)
+            session.dispatch(ReaderCommand.NextPage)
+            if (session.state.value.spineLen > 1) {
+                assertEquals(1, session.state.value.pageIndex)
+                assertEquals(PageTransitionDirection.FORWARD, session.state.value.lastTransitionDirection)
+                val nextDoc = session.currentDocument()
+                assertEquals(PageTransitionDirection.FORWARD, nextDoc.transitionDirection)
+                assertTrue(nextDoc.html.contains("data-reader-enter=\"forward\""))
+                assertTrue(nextDoc.html.contains("translate3d("))
+                assertTrue(nextDoc.html.contains("prefers-reduced-motion"))
+                assertTrue(nextDoc.html.contains("will-change:transform,opacity;"))
+                assertTrue(nextDoc.html.contains("_dragAxis"))
+
+                // Segunda leitura do mesmo capítulo não re-emite data-reader-enter na tag <html>
+                val repeatDoc = session.currentDocument()
+                assertEquals(PageTransitionDirection.NONE, repeatDoc.transitionDirection)
+                assertFalse(Regex("""<html\b[^>]*\bdata-reader-enter=""", RegexOption.IGNORE_CASE).containsMatchIn(repeatDoc.html))
+
+                // Retrocesso para o capítulo anterior emite BACKWARD
+                session.onSubPageReported(currentSubPage = 0, totalSubPages = 1)
+                session.dispatch(ReaderCommand.PrevPage)
+                assertEquals(0, session.state.value.pageIndex)
+                val prevDoc = session.currentDocument()
+                assertEquals(PageTransitionDirection.BACKWARD, prevDoc.transitionDirection)
+                assertTrue(prevDoc.html.contains("data-reader-enter=\"backward\""))
+
+                // Salto direto (GoToPage) não dispara slide direcional
+                session.dispatch(ReaderCommand.GoToPage(1))
+                assertEquals(PageTransitionDirection.NONE, session.currentDocument().transitionDirection)
+            }
+        } finally {
+            evSub.cancel()
+            efSub.cancel()
             session.close()
         }
     }

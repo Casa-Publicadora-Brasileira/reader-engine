@@ -126,7 +126,19 @@ public open class ReaderResourceWebViewClient(
     private val sessionProvider: () -> ReaderSession?,
     private val scheme: String = "book",
     private val host: String = "content",
+    private val onPageLoaded: (() -> Unit)? = null,
 ) : WebViewClient() {
+
+    public constructor(
+        sessionProvider: () -> ReaderSession?,
+        scheme: String = "book",
+        host: String = "content",
+    ) : this(
+        sessionProvider = sessionProvider,
+        scheme = scheme,
+        host = host,
+        onPageLoaded = null,
+    )
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -183,7 +195,10 @@ public open class ReaderResourceWebViewClient(
                 ReaderJsBridge.parseSubPageState(raw)?.let { (sub, total) ->
                     session.onSubPageReported(sub, total)
                 }
+                onPageLoaded?.invoke()
             }
+        } else {
+            onPageLoaded?.invoke()
         }
     }
 

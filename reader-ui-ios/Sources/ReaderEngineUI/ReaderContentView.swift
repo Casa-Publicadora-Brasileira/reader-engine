@@ -10,6 +10,7 @@ public struct ReaderContentView: View {
     public let schemeBase: String
     public let backgroundColor: UIColor?
     public let pdfRenderWidthPx: Int32
+    public let pageTurnAnimation: PageTurnAnimation?
     public let onUiEffect: ((any ReaderUiEffect) -> Void)?
 
     public init(
@@ -17,12 +18,14 @@ public struct ReaderContentView: View {
         schemeBase: String = ReaderSession.companion.DEFAULT_BOOK_BASE_URL,
         backgroundColor: UIColor? = nil,
         pdfRenderWidthPx: Int32 = 1600,
+        pageTurnAnimation: PageTurnAnimation? = nil,
         onUiEffect: ((any ReaderUiEffect) -> Void)? = nil
     ) {
         self.session = session
         self.schemeBase = schemeBase
         self.backgroundColor = backgroundColor
         self.pdfRenderWidthPx = pdfRenderWidthPx
+        self.pageTurnAnimation = pageTurnAnimation
         self.onUiEffect = onUiEffect
     }
 
@@ -40,6 +43,7 @@ public struct ReaderContentView: View {
                 session: session,
                 schemeBase: schemeBase,
                 backgroundColor: backgroundColor,
+                pageTurnAnimation: pageTurnAnimation,
                 onUiEffect: onUiEffect
             )
         }

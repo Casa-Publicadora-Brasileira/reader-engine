@@ -305,7 +305,7 @@ public data class ThemeTokens(
                     append("html:not(.reader-paginated) body{max-width:${safeMaxWidth}px;margin-left:auto !important;margin-right:auto !important;}")
                 }
                 append("html.reader-paginated{height:var(--reader-page-height,100vh) !important;min-height:var(--reader-page-height,100vh) !important;max-height:var(--reader-page-height,100vh) !important;width:var(--reader-page-width,100%) !important;overflow:hidden !important;margin:0 !important;padding:0 !important;box-sizing:border-box !important;}")
-                append("html.reader-paginated body{height:var(--reader-page-height,100vh) !important;min-height:var(--reader-page-height,100vh) !important;max-height:var(--reader-page-height,100vh) !important;width:var(--reader-page-width,100%) !important;overflow:visible !important;margin:0 !important;box-sizing:border-box !important;}")
+                append("html.reader-paginated body{height:var(--reader-page-height,100vh) !important;min-height:var(--reader-page-height,100vh) !important;max-height:var(--reader-page-height,100vh) !important;width:var(--reader-page-width,100%) !important;overflow:visible !important;margin:0 !important;box-sizing:border-box !important;will-change:transform,opacity;}")
                 append("html.reader-paginated body{column-width:calc(var(--reader-page-width,100vw) - (var(--reader-pad-h,${padH}px) * 2));column-gap:calc(var(--reader-pad-h,${padH}px) * 2);column-fill:auto;padding:16px var(--reader-pad-h,${padH}px) !important;}")
                 append("html.reader-paginated body,html.reader-paginated body *{overflow-wrap:break-word;word-wrap:break-word;}")
                 append("html.reader-paginated body > div,html.reader-paginated body > section,html.reader-paginated body > article,html.reader-paginated body > main{height:auto !important;min-height:0 !important;max-height:none !important;overflow:visible !important;}")
@@ -320,6 +320,13 @@ public data class ThemeTokens(
                     }
                     RenditionSpread.NONE -> Unit
                 }
+                append("@keyframes readerEnterFade{from{opacity:0;}to{opacity:1;}}")
+                append("@keyframes readerEnterScrollForward{from{opacity:0;transform:translate3d(24px,0,0);}to{opacity:1;transform:translate3d(0,0,0);}}")
+                append("@keyframes readerEnterScrollBackward{from{opacity:0;transform:translate3d(-24px,0,0);}to{opacity:1;transform:translate3d(0,0,0);}}")
+                append("html[data-reader-animation=\"fade\"][data-reader-enter=\"forward\"] body,html[data-reader-animation=\"fade\"][data-reader-enter=\"backward\"] body,html.reader-paginated[data-reader-animation=\"slide\"][data-reader-enter=\"forward\"] body,html.reader-paginated[data-reader-animation=\"slide\"][data-reader-enter=\"backward\"] body{animation:readerEnterFade 180ms ease-out;}")
+                append("html:not(.reader-paginated)[data-reader-animation=\"slide\"][data-reader-enter=\"forward\"] body{animation:readerEnterScrollForward 220ms cubic-bezier(0.22,1,0.36,1);}")
+                append("html:not(.reader-paginated)[data-reader-animation=\"slide\"][data-reader-enter=\"backward\"] body{animation:readerEnterScrollBackward 220ms cubic-bezier(0.22,1,0.36,1);}")
+                append("@media (prefers-reduced-motion: reduce){html.reader-paginated body,html[data-reader-enter] body{transition:none !important;animation:none !important;}}")
             }
             append("a,a *:not([class*=\"highlight_\"]){color:$linkColor !important;}")
             append("img,svg,video{max-width:100%;height:auto;}")

@@ -29,22 +29,30 @@ public struct ReaderWebView: UIViewRepresentable {
     public let session: ReaderSession
     public let schemeBase: String
     public let backgroundColor: UIColor?
+    public let pageTurnAnimation: PageTurnAnimation?
     public let onUiEffect: ((any ReaderUiEffect) -> Void)?
 
     public init(
         session: ReaderSession,
         schemeBase: String = ReaderSession.companion.DEFAULT_BOOK_BASE_URL,
         backgroundColor: UIColor? = nil,
+        pageTurnAnimation: PageTurnAnimation? = nil,
         onUiEffect: ((any ReaderUiEffect) -> Void)? = nil
     ) {
         self.session = session
         self.schemeBase = schemeBase
         self.backgroundColor = backgroundColor
+        self.pageTurnAnimation = pageTurnAnimation
         self.onUiEffect = onUiEffect
     }
 
     public func makeCoordinator() -> Coordinator {
-        Coordinator(session: session, schemeBase: schemeBase, onUiEffect: onUiEffect)
+        Coordinator(
+            session: session,
+            schemeBase: schemeBase,
+            pageTurnAnimationOverride: pageTurnAnimation,
+            onUiEffect: onUiEffect
+        )
     }
 
     public func makeUIView(context: Context) -> WKWebView {
@@ -75,6 +83,7 @@ public struct ReaderWebView: UIViewRepresentable {
 
     public func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.onUiEffect = onUiEffect
+        context.coordinator.pageTurnAnimationOverride = pageTurnAnimation
         context.coordinator.bind(session: session, schemeBase: schemeBase)
         let isNight = context.coordinator.currentState?.isNightMode ?? false
         let resolvedBg = resolvedBackgroundColor(isNightMode: isNight)
@@ -105,9 +114,14 @@ public struct ReaderWebView: UIViewRepresentable {
         private var effectsSub: FlowSubscription?
         private var boundsObservation: NSKeyValueObservation?
         private var lastSyncedViewport: (Int32, Int32) = (0, 0)
+        private weak var transitionSnapshotView: UIView?
+        private var pendingTransitionDirection: PageTransitionDirection = .none
+        private var pendingTransitionWorkItem: DispatchWorkItem?
+        private var lastLoadedPageIndex: Int32?
 
         weak var webView: WKWebView?
         var currentState: ReaderState?
+        var pageTurnAnimationOverride: PageTurnAnimation?
         var onUiEffect: ((any ReaderUiEffect) -> Void)?
         var lastLoadedSignature: String?
         let schemeHandler: ReaderBookSchemeHandler
@@ -115,10 +129,12 @@ public struct ReaderWebView: UIViewRepresentable {
         init(
             session: ReaderSession,
             schemeBase: String,
+            pageTurnAnimationOverride: PageTurnAnimation?,
             onUiEffect: ((any ReaderUiEffect) -> Void)?
         ) {
             self.session = session
             self.schemeBase = schemeBase
+            self.pageTurnAnimationOverride = pageTurnAnimationOverride
             self.onUiEffect = onUiEffect
             self.schemeHandler = ReaderBookSchemeHandler(schemeBase: schemeBase) { [weak session] in
                 session
@@ -136,7 +152,9 @@ public struct ReaderWebView: UIViewRepresentable {
             if self.session !== newSession {
                 self.session = newSession
                 self.lastLoadedSignature = nil
+                self.lastLoadedPageIndex = nil
                 self.currentState = nil
+                clearTransitionSnapshot()
                 schemeHandler.updateSessionProvider { [weak newSession] in
                     newSession
                 }
@@ -145,6 +163,7 @@ public struct ReaderWebView: UIViewRepresentable {
         }
 
         func detach() {
+            clearTransitionSnapshot()
             boundsObservation?.invalidate()
             boundsObservation = nil
             stateSub?.cancel()
@@ -152,6 +171,21 @@ public struct ReaderWebView: UIViewRepresentable {
             effectsSub?.cancel()
             effectsSub = nil
             webView = nil
+        }
+
+        private func clearTransitionSnapshot() {
+            pendingTransitionWorkItem?.cancel()
+            pendingTransitionWorkItem = nil
+            pendingTransitionDirection = .none
+            transitionSnapshotView?.removeFromSuperview()
+            transitionSnapshotView = nil
+        }
+
+        private func effectiveAnimationMode() -> PageTurnAnimation {
+            if UIAccessibility.isReduceMotionEnabled {
+                return .none
+            }
+            return pageTurnAnimationOverride ?? currentState?.pageTurnAnimation ?? .slide
         }
 
         func attachBoundsObserver(to webView: WKWebView) {
@@ -237,9 +271,81 @@ public struct ReaderWebView: UIViewRepresentable {
             let signature = "\(doc.baseUrl)|\(doc.href)|\(doc.html.hashValue)"
             guard lastLoadedSignature != signature else { return }
             lastLoadedSignature = signature
+
+            let currentPageIndex = currentState?.pageIndex
+            let chapterChanged = lastLoadedPageIndex != nil && currentPageIndex != nil && lastLoadedPageIndex != currentPageIndex
+            lastLoadedPageIndex = currentPageIndex
+
+            let anim = effectiveAnimationMode()
+            if chapterChanged,
+               doc.transitionDirection != .none,
+               anim != .none,
+               webView.bounds.width > 0,
+               webView.bounds.height > 0,
+               let snapshot = webView.snapshotView(afterScreenUpdates: false) {
+                clearTransitionSnapshot()
+                snapshot.frame = webView.bounds
+                snapshot.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                snapshot.isUserInteractionEnabled = false
+                webView.addSubview(snapshot)
+                transitionSnapshotView = snapshot
+                pendingTransitionDirection = doc.transitionDirection
+
+                let fallbackWork = DispatchWorkItem { [weak self, weak webView] in
+                    guard let self = self, let webView = webView else { return }
+                    self.completeChapterTransition(in: webView)
+                }
+                pendingTransitionWorkItem = fallbackWork
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: fallbackWork)
+            }
+
             let baseURL = URL(string: doc.baseUrl) ?? URL(string: schemeBase)
             let htmlToLoad = doc.html.isEmpty ? "<html><body></body></html>" : doc.html
             webView.loadHTMLString(htmlToLoad, baseURL: baseURL)
+        }
+
+        private func completeChapterTransition(in webView: WKWebView) {
+            pendingTransitionWorkItem?.cancel()
+            pendingTransitionWorkItem = nil
+            guard let snapshot = transitionSnapshotView else { return }
+            transitionSnapshotView = nil
+            let direction = pendingTransitionDirection
+            pendingTransitionDirection = .none
+            let anim = effectiveAnimationMode()
+
+            guard anim != .none, direction != .none else {
+                snapshot.removeFromSuperview()
+                return
+            }
+
+            let isRtl = currentState?.metadata.pageProgressionDirection == .rtl
+            if anim == .fade {
+                UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseOut]) {
+                    snapshot.alpha = 0
+                } completion: { _ in
+                    snapshot.removeFromSuperview()
+                }
+            } else {
+                let width = webView.bounds.width
+                let sign: CGFloat
+                switch direction {
+                case .forward:
+                    sign = isRtl ? 1.0 : -1.0
+                case .backward:
+                    sign = isRtl ? -1.0 : 1.0
+                default:
+                    sign = 0.0
+                }
+                UIView.animate(
+                    withDuration: 0.24,
+                    delay: 0,
+                    options: [.curveEaseOut]
+                ) {
+                    snapshot.transform = CGAffineTransform(translationX: sign * width, y: 0)
+                } completion: { _ in
+                    snapshot.removeFromSuperview()
+                }
+            }
         }
 
         private func handleUiEffect(_ effect: any ReaderUiEffect) {
@@ -344,6 +450,7 @@ public struct ReaderWebView: UIViewRepresentable {
             if state.readingMode == ReadingMode.paginated {
                 syncViewportSizeIfNeeded(webView: webView, force: true)
             }
+            completeChapterTransition(in: webView)
         }
 
         public func userContentController(

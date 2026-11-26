@@ -6,6 +6,8 @@ import com.readerengine.core.model.HighlightStyle
 import com.readerengine.core.model.Locator
 import com.readerengine.core.model.PageFormState
 import com.readerengine.core.model.PageProgressionDirection
+import com.readerengine.core.model.PageTransitionDirection
+import com.readerengine.core.model.PageTurnAnimation
 import com.readerengine.core.model.ReadingMode
 import com.readerengine.core.model.RenditionLayout
 import com.readerengine.core.model.RenditionSpread
@@ -147,6 +149,13 @@ public object ReaderJsBridge {
         return "javascript:(function(){var h=document.documentElement;if(h){if($isPaginated){h.classList.add('reader-paginated');if(typeof readerJS!=='undefined'&&readerJS.getSubPageState){var st=readerJS.getSubPageState();if(window.ReaderEngine&&window.ReaderEngine.postAction){window.ReaderEngine.postAction('$ACTION_SUB_PAGE_CHANGED',st,false);}return st;}}else{h.classList.remove('reader-paginated');if(typeof readerJS!=='undefined'&&readerJS.resetSubPage){readerJS.resetSubPage();}else if(document.body){document.body.style.transform='';document.body.style.transition='';}window.scrollTo(0,0);}}return '{\"subPage\":0,\"totalSubPages\":1}';})();"
     }
 
+    /** Atualiza em tempo real o estilo de animação de virada de página (`slide`, `fade`, `none`). */
+    public fun setPageTurnAnimationCommand(animation: PageTurnAnimation): String {
+        val token = animation.name.lowercase()
+        val literal = jsStringLiteral(token)
+        return "javascript:(function(){var h=document.documentElement;if(h){h.setAttribute('data-reader-animation',$literal);}if(typeof readerJS!=='undefined'&&readerJS.setPageTurnAnimation){readerJS.setPageTurnAnimation($literal);}})();"
+    }
+
     public fun goToSubPageCommand(subPage: Int): String {
         val clamped = subPage.coerceAtLeast(0)
         return "javascript:(function(){if(typeof readerJS!=='undefined'&&readerJS.goToSubPage){return readerJS.goToSubPage($clamped);}return '{\"subPage\":0,\"totalSubPages\":1}';})();"
@@ -252,11 +261,7 @@ public object ReaderJsBridge {
     )
 
     /**
-     * Injeta o CSS do tema, classes opcionais de tamanho/modo noturno/paginação horizontal,
-     * `data-reader-subpage` (incluindo `"last"` via [INITIAL_SUB_PAGE_LAST]) e `data-reader-subpage-ratio`
-     * (para preservar a posição proporcional em mudanças de fonte/tema), `lang` automático
-     * para hifenização correta e o polyfill `readerJS` completo (suportando grifos no DOM,
-     * paginação por colunas CSS, detecção de gestos swipe/tap, zoom de imagens, busca destacada e preservação de viewport).
+     * Sobrecarga compatível com chamadas de 13 parâmetros mantendo compatibilidade binária e Swift.
      */
     public fun injectThemeAndBridge(
         rawHtml: String,
@@ -272,6 +277,47 @@ public object ReaderJsBridge {
         initialSubPage: Int,
         language: String?,
         initialSubPageRatio: Float?,
+    ): String = injectThemeAndBridge(
+        rawHtml = rawHtml,
+        theme = theme,
+        fontScale = fontScale,
+        fontFamily = fontFamily,
+        fontSizeClass = fontSizeClass,
+        isNightMode = isNightMode,
+        readingMode = readingMode,
+        layout = layout,
+        direction = direction,
+        spread = spread,
+        initialSubPage = initialSubPage,
+        language = language,
+        initialSubPageRatio = initialSubPageRatio,
+        pageTurnAnimation = PageTurnAnimation.SLIDE,
+        enterTransition = PageTransitionDirection.NONE,
+    )
+
+    /**
+     * Injeta o CSS do tema, classes opcionais de tamanho/modo noturno/paginação horizontal,
+     * `data-reader-subpage` (incluindo `"last"` via [INITIAL_SUB_PAGE_LAST]), `data-reader-subpage-ratio`,
+     * `data-reader-animation` / `data-reader-enter`, `lang` automático para hifenização correta
+     * e o polyfill `readerJS` completo (suportando grifos no DOM, paginação por colunas CSS,
+     * swipe interativo 1:1 com o dedo, zoom de imagens, busca destacada e preservação de viewport).
+     */
+    public fun injectThemeAndBridge(
+        rawHtml: String,
+        theme: ThemeTokens,
+        fontScale: Float,
+        fontFamily: String,
+        fontSizeClass: String,
+        isNightMode: Boolean,
+        readingMode: ReadingMode,
+        layout: RenditionLayout,
+        direction: PageProgressionDirection,
+        spread: RenditionSpread,
+        initialSubPage: Int,
+        language: String?,
+        initialSubPageRatio: Float?,
+        pageTurnAnimation: PageTurnAnimation,
+        enterTransition: PageTransitionDirection,
     ): String {
         val css = theme.toContentCss(
             fontScale = fontScale,
@@ -315,11 +361,27 @@ public object ReaderJsBridge {
         } else {
             null
         }
+        val animationValue = pageTurnAnimation.name.lowercase()
+        val enterValue = if (enterTransition != PageTransitionDirection.NONE) enterTransition.name.lowercase() else null
 
         var processedHtml = if (classes.isNotEmpty() && htmlOpenRegex.containsMatchIn(rawHtml)) {
             rawHtml.replaceFirst(htmlOpenRegex, Regex.escapeReplacement("<html class=\"$classes\""))
         } else {
             rawHtml
+        }
+
+        if (htmlOpenRegex.containsMatchIn(processedHtml)) {
+            processedHtml = processedHtml.replaceFirst(
+                htmlOpenRegex,
+                Regex.escapeReplacement("<html data-reader-animation=\"$animationValue\""),
+            )
+        }
+
+        if (enterValue != null && htmlOpenRegex.containsMatchIn(processedHtml)) {
+            processedHtml = processedHtml.replaceFirst(
+                htmlOpenRegex,
+                Regex.escapeReplacement("<html data-reader-enter=\"$enterValue\""),
+            )
         }
 
         if (subPageValue != null && htmlOpenRegex.containsMatchIn(processedHtml)) {
@@ -373,7 +435,9 @@ public object ReaderJsBridge {
                 val langAttr = if (safeLang != null && !hasLangAttr) " lang=\"$safeLang\"" else ""
                 val subPageAttr = if (subPageValue != null) " data-reader-subpage=\"$subPageValue\"" else ""
                 val ratioAttr = if (ratioValue != null) " data-reader-subpage-ratio=\"$ratioValue\"" else ""
-                "<!doctype html><html$langAttr$dirAttr$classAttr$subPageAttr$ratioAttr><head>$headInjection</head><body>$processedHtml</body></html>"
+                val animAttr = " data-reader-animation=\"$animationValue\""
+                val enterAttr = if (enterValue != null) " data-reader-enter=\"$enterValue\"" else ""
+                "<!doctype html><html$langAttr$dirAttr$classAttr$animAttr$enterAttr$subPageAttr$ratioAttr><head>$headInjection</head><body>$processedHtml</body></html>"
             }
         }
     }
@@ -728,7 +792,14 @@ public object ReaderJsBridge {
         return out.decodeToString(0, outIdx)
     }
 
-    private const val FALLBACK_READER_JS = """
+    private val FALLBACK_READER_JS: String by lazy {
+        buildString(FALLBACK_READER_JS_CORE.length + FALLBACK_READER_JS_EVENTS.length) {
+            append(FALLBACK_READER_JS_CORE)
+            append(FALLBACK_READER_JS_EVENTS)
+        }
+    }
+
+    private const val FALLBACK_READER_JS_CORE = """
         (function(){
             var _nativeViewportWidth = 0;
             var _nativeViewportHeight = 0;
@@ -752,8 +823,18 @@ public object ReaderJsBridge {
                 var _rawRatioAttr = (document.documentElement && document.documentElement.getAttribute('data-reader-subpage-ratio')) || '';
                 var _parsedRatio = _rawRatioAttr ? parseFloat(_rawRatioAttr) : NaN;
                 var _pendingSubPageRatio = (!isNaN(_parsedRatio) && _parsedRatio >= 0 && _parsedRatio <= 1) ? _parsedRatio : -1;
+                var _rawAnimAttr = (document.documentElement && document.documentElement.getAttribute('data-reader-animation')) || 'slide';
+                var _pageTurnAnimation = (_rawAnimAttr === 'fade' || _rawAnimAttr === 'none') ? _rawAnimAttr : 'slide';
                 var _pendingLastSubPage = (_rawSubAttr === 'last');
                 var _subPage = _pendingLastSubPage ? 0 : (parseInt(_rawSubAttr, 10) || 0);
+                function _getEffectiveAnimation() {
+                    try {
+                        if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+                            return 'none';
+                        }
+                    } catch (e) {}
+                    return _pageTurnAnimation;
+                }
                 function _rebuildSerialized() {
                     if (!_items.length) { _serialized = ''; return; }
                     _serialized = 'type:textContent|' + _items.map(function(i){
@@ -1011,15 +1092,41 @@ public object ReaderJsBridge {
                     }
                     return total;
                 }
-                function _applySubPageOffset() {
-                    _syncPaginatedMetrics();
+                function _computeTargetTranslateX() {
                     var vw = _resolvePaginatedWidth();
-                    if (document.body) {
-                        var isRtl = (document.documentElement && document.documentElement.dir === 'rtl') || (document.body && document.body.dir === 'rtl');
-                        var sign = isRtl ? '' : '-';
-                        var offsetPx = _subPage * vw;
-                        document.body.style.transform = 'translateX(' + (offsetPx === 0 ? '0px' : (sign + offsetPx + 'px')) + ')';
-                        document.body.style.transition = 'transform 0.18s ease-out';
+                    var isRtl = (document.documentElement && document.documentElement.dir === 'rtl') || (document.body && document.body.dir === 'rtl');
+                    return isRtl ? (_subPage * vw) : -(_subPage * vw);
+                }
+                var _fadeAnimTimer = null;
+                function _applySubPageOffset(animate) {
+                    _syncPaginatedMetrics();
+                    if (!document.body) return;
+                    var xPx = _computeTargetTranslateX();
+                    var targetTransform = 'translate3d(' + xPx + 'px, 0, 0)';
+                    var shouldAnimate = animate !== false;
+                    var anim = shouldAnimate ? _getEffectiveAnimation() : 'none';
+                    if (_fadeAnimTimer) {
+                        clearTimeout(_fadeAnimTimer);
+                        _fadeAnimTimer = null;
+                    }
+                    if (anim === 'none') {
+                        document.body.style.transition = 'none';
+                        document.body.style.transform = targetTransform;
+                        document.body.style.opacity = '1';
+                    } else if (anim === 'fade') {
+                        document.body.style.transition = 'none';
+                        document.body.style.opacity = '0.25';
+                        document.body.style.transform = targetTransform;
+                        void document.body.offsetWidth;
+                        document.body.style.transition = 'opacity 170ms ease-out';
+                        document.body.style.opacity = '1';
+                        _fadeAnimTimer = setTimeout(function() {
+                            if (document.body) document.body.style.transition = 'none';
+                        }, 190);
+                    } else {
+                        document.body.style.opacity = '1';
+                        document.body.style.transition = 'transform 240ms cubic-bezier(0.22, 1, 0.36, 1)';
+                        document.body.style.transform = targetTransform;
                     }
                 }
                 function _resolvePendingSubPage(total) {
@@ -1129,7 +1236,7 @@ public object ReaderJsBridge {
                         _pendingSubPageRatio = -1;
                         if (_subPage + 1 < total) {
                             _subPage++;
-                            _applySubPageOffset();
+                            _applySubPageOffset(true);
                             return JSON.stringify({ subPage: _subPage, totalSubPages: total, advanced: true });
                         }
                         return JSON.stringify({ subPage: _subPage, totalSubPages: total, advanced: false });
@@ -1139,7 +1246,7 @@ public object ReaderJsBridge {
                         _pendingSubPageRatio = -1;
                         if (_subPage > 0) {
                             _subPage--;
-                            _applySubPageOffset();
+                            _applySubPageOffset(true);
                             return JSON.stringify({ subPage: _subPage, totalSubPages: total, advanced: true });
                         }
                         return JSON.stringify({ subPage: _subPage, totalSubPages: total, advanced: false });
@@ -1150,7 +1257,7 @@ public object ReaderJsBridge {
                             _subPage = Math.max(0, total - 1);
                         }
                         if (document.documentElement && document.documentElement.classList.contains('reader-paginated')) {
-                            _applySubPageOffset();
+                            _applySubPageOffset(false);
                         }
                         return JSON.stringify({ subPage: _subPage, totalSubPages: total });
                     },
@@ -1159,7 +1266,7 @@ public object ReaderJsBridge {
                         _pendingLastSubPage = false;
                         _pendingSubPageRatio = -1;
                         _subPage = Math.max(0, Math.min(total - 1, parseInt(index, 10) || 0));
-                        _applySubPageOffset();
+                        _applySubPageOffset(true);
                         return JSON.stringify({ subPage: _subPage, totalSubPages: total });
                     },
                     goToLastSubPage: function() {
@@ -1167,7 +1274,7 @@ public object ReaderJsBridge {
                         _pendingLastSubPage = false;
                         _pendingSubPageRatio = -1;
                         _subPage = Math.max(0, total - 1);
-                        _applySubPageOffset();
+                        _applySubPageOffset(false);
                         return JSON.stringify({ subPage: _subPage, totalSubPages: total });
                     },
                     setViewportSize: function(widthPx, heightPx) {
@@ -1186,7 +1293,7 @@ public object ReaderJsBridge {
                                     _subPage = Math.max(0, total - 1);
                                 }
                             }
-                            _applySubPageOffset();
+                            _applySubPageOffset(false);
                             return JSON.stringify({ subPage: _subPage, totalSubPages: total });
                         }
                         return JSON.stringify({ subPage: 0, totalSubPages: 1 });
@@ -1205,12 +1312,19 @@ public object ReaderJsBridge {
                                 _subPage = Math.max(0, total - 1);
                             }
                         }
-                        _applySubPageOffset();
+                        _applySubPageOffset(false);
                         var st = JSON.stringify({ subPage: _subPage, totalSubPages: total });
                         if (window.ReaderEngine && window.ReaderEngine.postAction) {
                             window.ReaderEngine.postAction('reader_sub_page_changed', st, false);
                         }
                         return st;
+                    },
+                    setPageTurnAnimation: function(mode) {
+                        _pageTurnAnimation = (mode === 'fade' || mode === 'none') ? mode : 'slide';
+                        if (document.documentElement) {
+                            document.documentElement.setAttribute('data-reader-animation', _pageTurnAnimation);
+                        }
+                        return _pageTurnAnimation;
                     },
                     resetSubPage: function() {
                         _subPage = 0;
@@ -1218,9 +1332,19 @@ public object ReaderJsBridge {
                         if (document.body) {
                             document.body.style.transform = '';
                             document.body.style.transition = '';
+                            document.body.style.opacity = '';
                         }
                         return JSON.stringify({ subPage: 0, totalSubPages: 1 });
                     }
+                };
+            }
+            if (typeof window.readerJS !== 'undefined' && typeof window.readerJS.setPageTurnAnimation !== 'function') {
+                window.readerJS.setPageTurnAnimation = function(mode) {
+                    var normalized = (mode === 'fade' || mode === 'none') ? mode : 'slide';
+                    if (document.documentElement) {
+                        document.documentElement.setAttribute('data-reader-animation', normalized);
+                    }
+                    return normalized;
                 };
             }
             if (typeof window.readerJS !== 'undefined' && typeof window.readerJS.reflowPaginated !== 'function') {
@@ -1245,6 +1369,9 @@ public object ReaderJsBridge {
                     return JSON.stringify({ subPage: 0, totalSubPages: 1 });
                 };
             }
+"""
+
+    private const val FALLBACK_READER_JS_EVENTS = """
             if (typeof window.ReaderEngine === 'undefined') {
                 window.ReaderEngine = {
                     postAction: function(name, payload, allowUrlFallback) {
@@ -1283,14 +1410,14 @@ public object ReaderJsBridge {
                                 source: src
                             }));
                         }
-                        return true;
+                        return 'subpage';
                     }
                 }
                 if (window.ReaderEngine && window.ReaderEngine.postAction) {
                     var actionName = (dir === 'next') ? 'reader_gesture_next_page' : 'reader_gesture_prev_page';
                     window.ReaderEngine.postAction(actionName, JSON.stringify({ source: src }));
                 }
-                return true;
+                return 'chapter';
             }
             if (typeof window.readerJS !== 'undefined' && typeof window.readerJS.handlePageTurnGesture !== 'function') {
                 window.readerJS.handlePageTurnGesture = _dispatchPageTurnGesture;
@@ -1545,6 +1672,10 @@ public object ReaderJsBridge {
                 var _startY = 0;
                 var _startTime = 0;
                 var _lastTouchTime = 0;
+                var _dragAxis = '';
+                var _dragBaseX = 0;
+                var _dragVw = 360;
+                var _lastDx = 0;
                 function _hasActiveTextSelection() {
                     var sel = window.getSelection ? window.getSelection() : null;
                     return !!(sel && sel.toString && sel.toString().trim().length > 0);
@@ -1644,6 +1775,10 @@ public object ReaderJsBridge {
                     if (e.touches && e.touches.length > 1) {
                         _multiTouch = true;
                         _touchActive = false;
+                        if (_dragAxis === 'h') {
+                            _dragAxis = '';
+                            _applySubPageOffset(true);
+                        }
                         return;
                     }
                     var touch = (e.touches && e.touches[0]) ? e.touches[0] : null;
@@ -1655,40 +1790,111 @@ public object ReaderJsBridge {
                     _startTime = Date.now();
                     _startedInteractive = _isInteractiveTarget(e.target);
                     _hadSelectionAtStart = _hasActiveTextSelection();
+                    _dragAxis = '';
+                    _lastDx = 0;
+                    _dragVw = _resolvePaginatedWidth();
+                    _dragBaseX = _computeTargetTranslateX();
                 }, { passive: true });
                 document.addEventListener('touchmove', function(e) {
                     if (e.touches && e.touches.length > 1) {
                         _multiTouch = true;
                         _touchActive = false;
+                        if (_dragAxis === 'h') {
+                            _dragAxis = '';
+                            _applySubPageOffset(true);
+                        }
+                        return;
+                    }
+                    if (!_touchActive || _startedInteractive || _hadSelectionAtStart || _hasActiveTextSelection()) return;
+                    var isPaginated = !!(document.documentElement && document.documentElement.classList.contains('reader-paginated'));
+                    if (!isPaginated || _getEffectiveAnimation() !== 'slide' || !document.body) return;
+                    var touch = (e.touches && e.touches[0]) ? e.touches[0] : null;
+                    if (!touch) return;
+                    var dx = touch.clientX - _startX;
+                    var dy = touch.clientY - _startY;
+                    var absDx = Math.abs(dx);
+                    var absDy = Math.abs(dy);
+                    _lastDx = dx;
+                    if (!_dragAxis) {
+                        if (absDy >= 12 && absDy > absDx) {
+                            _dragAxis = 'v';
+                            return;
+                        }
+                        if (absDx >= 10 && absDx > absDy * 1.2) {
+                            _dragAxis = 'h';
+                        } else {
+                            return;
+                        }
+                    }
+                    if (_dragAxis === 'h') {
+                        var isRtl = _isRtlDocument();
+                        var goingPrev = isRtl ? (dx < 0) : (dx > 0);
+                        var atBoundary = goingPrev ? (_subPage <= 0) : (_subPage >= Math.max(0, _lastTotalSubPages - 1));
+                        var effectiveDx = atBoundary ? (dx * 0.28) : dx;
+                        document.body.style.transition = 'none';
+                        document.body.style.transform = 'translate3d(' + (_dragBaseX + effectiveDx) + 'px, 0, 0)';
                     }
                 }, { passive: true });
                 document.addEventListener('touchcancel', function() {
                     _touchActive = false;
                     _multiTouch = false;
+                    if (_dragAxis === 'h') {
+                        _dragAxis = '';
+                        _applySubPageOffset(true);
+                    } else {
+                        _dragAxis = '';
+                    }
                 }, { passive: true });
                 document.addEventListener('touchend', function(e) {
                     if (_multiTouch) {
                         if (!e.touches || e.touches.length === 0) _multiTouch = false;
                         _touchActive = false;
+                        if (_dragAxis === 'h') {
+                            _dragAxis = '';
+                            _applySubPageOffset(true);
+                        } else {
+                            _dragAxis = '';
+                        }
                         return;
                     }
                     if (!_touchActive) return;
                     _touchActive = false;
-                    _lastTouchTime = Date.now();
+                    var wasHorizontalDrag = (_dragAxis === 'h');
+                    _dragAxis = '';
+                    var touchEndTs = Date.now();
+                    _lastTouchTime = touchEndTs;
                     if (_startedInteractive || _hadSelectionAtStart || _hasActiveTextSelection()) {
+                        if (wasHorizontalDrag) _applySubPageOffset(true);
                         return;
                     }
                     var touch = (e.changedTouches && e.changedTouches[0]) ? e.changedTouches[0] : null;
-                    if (!touch) return;
+                    if (!touch) {
+                        if (wasHorizontalDrag) _applySubPageOffset(true);
+                        return;
+                    }
                     var dx = touch.clientX - _startX;
                     var dy = touch.clientY - _startY;
-                    var dt = _lastTouchTime - _startTime;
+                    var dt = Math.max(1, touchEndTs - _startTime);
                     var absDx = Math.abs(dx);
                     var absDy = Math.abs(dy);
-                    if (dt <= 800 && absDx >= 48 && absDx > absDy * 1.5) {
+                    var velocity = absDx / dt;
+                    var dragTriggered = wasHorizontalDrag && (absDx >= Math.max(48, _dragVw * 0.22) || (absDx >= 36 && velocity >= 0.35));
+                    var flickTriggered = dt <= 800 && absDx >= 48 && absDx > absDy * 1.5;
+                    if (dragTriggered || flickTriggered) {
                         var isRtl = _isRtlDocument();
                         var dir = (isRtl ? (dx > 0) : (dx < 0)) ? 'next' : 'prev';
-                        _dispatchPageTurnGesture(dir, 'swipe');
+                        var turnKind = _dispatchPageTurnGesture(dir, 'swipe');
+                        if (wasHorizontalDrag && turnKind === 'chapter') {
+                            setTimeout(function() {
+                                if (document.body && _lastTouchTime === touchEndTs) {
+                                    _applySubPageOffset(true);
+                                }
+                            }, 180);
+                        }
+                        return;
+                    }
+                    if (wasHorizontalDrag) {
+                        _applySubPageOffset(true);
                         return;
                     }
                     if (dt < 320 && absDx < 14 && absDy < 14) {

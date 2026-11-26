@@ -116,16 +116,16 @@ No `build.gradle.kts` do módulo consumidor:
 ```kotlin
 dependencies {
     // Em um projeto Kotlin Multiplatform (commonMain):
-    implementation("com.readerengine:reader-core:1.3.0")
+    implementation("com.readerengine:reader-core:1.4.0")
 
     // Ou diretamente em um projeto Android puro (headless):
-    implementation("com.readerengine:reader-core-android:1.3.0")
+    implementation("com.readerengine:reader-core-android:1.4.0")
 
     // Ou Android UI drop-in (Jetpack Compose + WebView HTTP 206 + PdfReaderCanvas, já inclui :reader-core):
-    implementation("com.readerengine:reader-ui-android:1.3.0")
+    implementation("com.readerengine:reader-ui-android:1.4.0")
 
     // Ou em um projeto JVM puro (Desktop / Backend):
-    implementation("com.readerengine:reader-core-jvm:1.3.0")
+    implementation("com.readerengine:reader-core-jvm:1.4.0")
 }
 ```
 
@@ -167,10 +167,10 @@ repositories {
 
 dependencies {
     // Recomendado para apps Jetpack Compose (já inclui reader-core-android):
-    implementation("com.readerengine:reader-ui-android:1.3.0")
+    implementation("com.readerengine:reader-ui-android:1.4.0")
 
     // Ou apenas o motor headless sem UI:
-    // implementation("com.readerengine:reader-core-android:1.3.0")
+    // implementation("com.readerengine:reader-core-android:1.4.0")
 }
 ```
 
@@ -183,7 +183,7 @@ O pipeline de release gera o binário universal **`ReaderCore.xcframework.zip`**
 #### Opção A: Via `Package.swift` (Swift Package Manager)
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Casa-Publicadora-Brasileira/reader-engine.git", from: "1.3.0")
+    .package(url: "https://github.com/Casa-Publicadora-Brasileira/reader-engine.git", from: "1.4.0")
 ]
 ```
 Ou localmente apontando para `reader-ui-ios/` após gerar `ReaderCore.xcframework` em `release`:
@@ -613,6 +613,7 @@ val engine = ReaderEngine(
 | `ReaderCommand.GoToLocator(locator)` | Navega utilizando um objeto `Locator` (ex.: vindo de um `SearchResult`). |
 | `ReaderCommand.UpdateScroll(scrollY, contentHeightPx, viewportHeightPx)` | Atualiza a posição de rolagem e recalcula o `ReadingProgress` monotônico (com *throttling* de 2px). |
 | `ReaderCommand.SetReadingMode(mode)` | Alterna entre `ReadingMode.SCROLL` e `ReadingMode.PAGINATED`. |
+| `ReaderCommand.SetPageTurnAnimation(animation)` | Configura a animação de virada de página e capítulo (`PageTurnAnimation.SLIDE`, `FADE` ou `NONE`). |
 | `ReaderCommand.SetTheme(theme)` | Aplica um `ThemeTokens` (`material3()`, `hig()`, `fluent()`, `custom(...)`). |
 | `ReaderCommand.SetNightMode(enabled)` | Ativa ou desativa o modo noturno. |
 | `ReaderCommand.SetFontScale(scale)` | Define o multiplicador tipográfico (`0.5f..3.0f`). |

@@ -1,11 +1,16 @@
 package com.readerengine.ui
 
 import android.annotation.SuppressLint
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.view.View
 import android.webkit.JsResult
 import android.webkit.WebChromeClient
 import android.webkit.WebView
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -18,10 +23,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -34,12 +41,19 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.viewinterop.AndroidView
 import com.readerengine.core.bridge.ReaderJsBridge
+import com.readerengine.core.model.PageProgressionDirection
+import com.readerengine.core.model.PageTransitionDirection
+import com.readerengine.core.model.PageTurnAnimation
+import com.readerengine.core.model.ReadingMode
 import com.readerengine.core.session.ReaderCommand
 import com.readerengine.core.session.ReaderSession
 import com.readerengine.core.session.ReaderUiEffect
 import com.readerengine.core.session.RenderedDocument
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Cor de fundo padrão do leitor no modo claro (`#F3FAF7`). */
 public val DefaultLightReaderBackground: Int = 0xFFF3FAF7.toInt()
@@ -64,6 +78,7 @@ public fun ReaderWebView(
     modifier: Modifier = Modifier,
     schemeBase: String = ReaderSession.DEFAULT_BOOK_BASE_URL,
     backgroundColor: Int? = null,
+    pageTurnAnimation: PageTurnAnimation? = null,
     onUiEffect: ((ReaderUiEffect) -> Unit)? = null,
     onJsAlert: ((message: String) -> Unit)? = null,
     onShowFullscreenView: ((view: View, callback: WebChromeClient.CustomViewCallback) -> Unit)? = null,
@@ -78,7 +93,16 @@ public fun ReaderWebView(
     val currentOnWebViewCreated = rememberUpdatedState(onWebViewCreated)
 
     val readerState by session.state.collectAsState()
+    val effectiveAnimation = pageTurnAnimation ?: readerState.pageTurnAnimation
+    val isRtl = readerState.metadata.pageProgressionDirection == PageProgressionDirection.RTL
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
+
+    var transitionSnapshot by remember { mutableStateOf<ImageBitmap?>(null) }
+    var transitionDirection by remember { mutableStateOf(PageTransitionDirection.NONE) }
+    var transitionReadyToAnimate by remember { mutableStateOf(false) }
+    val transitionReadyState = rememberUpdatedState(transitionReadyToAnimate)
+    val transitionProgress = remember { Animatable(0f) }
+    var lastRenderedPageIndex by remember(session) { mutableIntStateOf(readerState.pageIndex) }
 
     val currentDoc: RenderedDocument = remember(
         session,
@@ -152,19 +176,54 @@ public fun ReaderWebView(
         }
     }
 
+    LaunchedEffect(transitionSnapshot) {
+        val snap = transitionSnapshot ?: return@LaunchedEffect
+        try {
+            transitionProgress.snapTo(0f)
+            if (!transitionReadyState.value) {
+                withTimeoutOrNull(450L) {
+                    snapshotFlow { transitionReadyState.value }.filter { it }.first()
+                }
+            }
+            transitionProgress.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
+            )
+        } finally {
+            if (transitionSnapshot === snap) {
+                transitionSnapshot = null
+                transitionDirection = PageTransitionDirection.NONE
+                transitionProgress.snapTo(0f)
+            }
+        }
+    }
+
     val resolvedBg = backgroundColor ?: if (readerState.isNightMode) {
         DefaultDarkReaderBackground
     } else {
         DefaultLightReaderBackground
     }
 
-    AndroidView(
-        modifier = modifier,
-        factory = { ctx ->
-            WebView(ctx).apply {
-                webViewClient = ReaderResourceWebViewClient(
-                    sessionProvider = { currentSessionState.value },
-                )
+    Box(modifier = modifier.clipToBounds()) {
+        AndroidView(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    if (transitionSnapshot != null && effectiveAnimation == PageTurnAnimation.SLIDE && size.width > 0f) {
+                        val sign = when (transitionDirection) {
+                            PageTransitionDirection.FORWARD -> if (isRtl) -1f else 1f
+                            PageTransitionDirection.BACKWARD -> if (isRtl) 1f else -1f
+                            PageTransitionDirection.NONE -> 0f
+                        }
+                        translationX = sign * size.width * 0.25f * (1f - transitionProgress.value)
+                    }
+                },
+            factory = { ctx ->
+                WebView(ctx).apply {
+                    webViewClient = ReaderResourceWebViewClient(
+                        sessionProvider = { currentSessionState.value },
+                        onPageLoaded = { transitionReadyToAnimate = true },
+                    )
                 webChromeClient = object : WebChromeClient() {
                     override fun onShowCustomView(view: View, callback: CustomViewCallback) {
                         currentOnShowFullscreen.value?.invoke(view, callback)
@@ -231,7 +290,7 @@ public fun ReaderWebView(
                     lastSyncedWidthCss = widthCssPx
                     lastSyncedHeightCss = heightCssPx
                     val activeSession = currentSessionState.value
-                    if (activeSession.state.value.readingMode == com.readerengine.core.model.ReadingMode.PAGINATED) {
+                    if (activeSession.state.value.readingMode == ReadingMode.PAGINATED) {
                         val cmd = ReaderJsBridge.setViewportSizeCommand(widthCssPx, heightCssPx)
                             .removePrefix("javascript:")
                         (view as? WebView)?.evaluateJavascript(cmd) { raw ->
@@ -250,6 +309,25 @@ public fun ReaderWebView(
         update = { webView ->
             webView.setBackgroundColor(resolvedBg)
             if (webView.tag != currentDoc) {
+                val chapterChanged = readerState.pageIndex != lastRenderedPageIndex
+                lastRenderedPageIndex = readerState.pageIndex
+                if (chapterChanged &&
+                    currentDoc.transitionDirection != PageTransitionDirection.NONE &&
+                    effectiveAnimation != PageTurnAnimation.NONE &&
+                    webView.width > 0 &&
+                    webView.height > 0
+                ) {
+                    val captured = runCatching {
+                        Bitmap.createBitmap(webView.width, webView.height, Bitmap.Config.RGB_565).also { bmp ->
+                            webView.draw(Canvas(bmp))
+                        }.asImageBitmap()
+                    }.getOrNull()
+                    if (captured != null) {
+                        transitionDirection = currentDoc.transitionDirection
+                        transitionReadyToAnimate = false
+                        transitionSnapshot = captured
+                    }
+                }
                 webView.tag = currentDoc
                 webView.loadDataWithBaseURL(
                     currentDoc.baseUrl,
@@ -260,7 +338,38 @@ public fun ReaderWebView(
                 )
             }
         },
-    )
+        )
+
+        val snapshot = transitionSnapshot
+        if (snapshot != null) {
+            Image(
+                bitmap = snapshot,
+                contentDescription = null,
+                contentScale = ContentScale.FillBounds,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        val progress = transitionProgress.value
+                        when (effectiveAnimation) {
+                            PageTurnAnimation.SLIDE -> {
+                                val sign = when (transitionDirection) {
+                                    PageTransitionDirection.FORWARD -> if (isRtl) 1f else -1f
+                                    PageTransitionDirection.BACKWARD -> if (isRtl) -1f else 1f
+                                    PageTransitionDirection.NONE -> 0f
+                                }
+                                translationX = sign * size.width * progress
+                            }
+                            PageTurnAnimation.FADE -> {
+                                alpha = 1f - progress
+                            }
+                            PageTurnAnimation.NONE -> {
+                                alpha = 0f
+                            }
+                        }
+                    },
+            )
+        }
+    }
 }
 
 /**
@@ -351,6 +460,7 @@ public fun ReaderContentView(
     schemeBase: String = ReaderSession.DEFAULT_BOOK_BASE_URL,
     backgroundColor: Int? = null,
     pdfRenderWidthPx: Int = 1600,
+    pageTurnAnimation: PageTurnAnimation? = null,
     onUiEffect: ((ReaderUiEffect) -> Unit)? = null,
     onJsAlert: ((message: String) -> Unit)? = null,
     onShowFullscreenView: ((view: View, callback: WebChromeClient.CustomViewCallback) -> Unit)? = null,
@@ -376,6 +486,7 @@ public fun ReaderContentView(
             modifier = modifier,
             schemeBase = schemeBase,
             backgroundColor = backgroundColor,
+            pageTurnAnimation = pageTurnAnimation,
             onUiEffect = onUiEffect,
             onJsAlert = onJsAlert,
             onShowFullscreenView = onShowFullscreenView,

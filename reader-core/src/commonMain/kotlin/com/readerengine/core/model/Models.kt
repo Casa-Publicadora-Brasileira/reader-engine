@@ -55,6 +55,32 @@ public enum class ReadingMode {
     PAGINATED,
 }
 
+/** Estilo de animação ao virar páginas ou capítulos. */
+@Serializable
+public enum class PageTurnAnimation {
+    @SerialName("slide")
+    SLIDE,
+
+    @SerialName("fade")
+    FADE,
+
+    @SerialName("none")
+    NONE,
+}
+
+/** Direção da transição de capítulo para orientar animações nativas de entrada/saída. */
+@Serializable
+public enum class PageTransitionDirection {
+    @SerialName("none")
+    NONE,
+
+    @SerialName("forward")
+    FORWARD,
+
+    @SerialName("backward")
+    BACKWARD,
+}
+
 /** Direção de progressão das páginas (EPUB 3 `page-progression-direction` no spine). */
 @Serializable
 public enum class PageProgressionDirection {
@@ -511,7 +537,45 @@ public data class InitialBookState(
     val savedBookmarks: List<Bookmark> = emptyList(),
     /** Textos localizados usados para rótulos padrão de página, capítulo e mensagens. */
     val strings: ReaderStrings = ReaderStrings.portuguese(),
-)
+    /** Animação padrão ao virar páginas ou capítulos. */
+    val pageTurnAnimation: PageTurnAnimation = PageTurnAnimation.SLIDE,
+) {
+    /** Construtor secundário compatível com versões <= 1.3.1 (inclusive Swift). */
+    public constructor(
+        documentId: String = "",
+        initialPageIndex: Int = 0,
+        initialScrollY: Int = 0,
+        initialSubPage: Int = 0,
+        isNightMode: Boolean = false,
+        readingMode: ReadingMode = ReadingMode.SCROLL,
+        fontFamily: String = "Default",
+        fontSizeClass: String = "",
+        fontScale: Float = 1.0f,
+        theme: ThemeTokens? = null,
+        savedPageHighlights: Map<Int, String> = emptyMap(),
+        savedHighlightNotes: Map<Int, String> = emptyMap(),
+        savedPageForms: Map<Int, String> = emptyMap(),
+        savedBookmarks: List<Bookmark> = emptyList(),
+        strings: ReaderStrings = ReaderStrings.portuguese(),
+    ) : this(
+        documentId = documentId,
+        initialPageIndex = initialPageIndex,
+        initialScrollY = initialScrollY,
+        initialSubPage = initialSubPage,
+        isNightMode = isNightMode,
+        readingMode = readingMode,
+        fontFamily = fontFamily,
+        fontSizeClass = fontSizeClass,
+        fontScale = fontScale,
+        theme = theme,
+        savedPageHighlights = savedPageHighlights,
+        savedHighlightNotes = savedHighlightNotes,
+        savedPageForms = savedPageForms,
+        savedBookmarks = savedBookmarks,
+        strings = strings,
+        pageTurnAnimation = PageTurnAnimation.SLIDE,
+    )
+}
 
 /**
  * Snapshot completo e serializável do estado do leitor para backup, sincronização

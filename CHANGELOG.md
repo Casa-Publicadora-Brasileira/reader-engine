@@ -2,6 +2,14 @@
 
 Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 
+## [1.4.0] - 2026-11-26
+
+### Added & Improved
+- **Animações Interativas de Virada de Página & Capítulo (`PageTurnAnimation`):**
+  - Novos enums `PageTurnAnimation` (`SLIDE`, `FADE`, `NONE`), `PageTransitionDirection` (`NONE`, `FORWARD`, `BACKWARD`), `ReaderCommand.SetPageTurnAnimation`, campo `InitialBookState.pageTurnAnimation`, `ReaderState.lastTransitionDirection` e `RenderedDocument.transitionDirection` (com construtores secundários para compatibilidade binária e Swift).
+  - **Arraste 1:1 com o dedo em GPU (`ReaderJsBridge`):** em `ReadingMode.PAGINATED` + `SLIDE`, o conteúdo acompanha o dedo em tempo real via `translate3d`, aplica resistência elástica (*rubber-band*) nas bordas do capítulo, decide virada por distância (22%) ou velocidade (*flick*) e anima com curva `cubic-bezier(0.22, 1, 0.36, 1)` (respeitando RTL e `@media (prefers-reduced-motion: reduce)`).
+  - **Transições de Capítulo Sem *Flicker* (`:reader-ui-android` & `reader-ui-ios`):** captura de *snapshot* leve do capítulo anterior em `ReaderWebView` (Compose Bitmap / iOS `snapshotView`), exibido durante o reload da `WebView` e animado suavemente (`SLIDE` / `FADE`) assim que o novo capítulo termina de carregar, além de fallback CSS para consumidores *headless*.
+
 ## [1.3.1] - 2026-11-25
 
 ### Fixed & Improved

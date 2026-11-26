@@ -20,6 +20,8 @@ import com.readerengine.core.model.NavigationEntry
 import com.readerengine.core.model.PageFormState
 import com.readerengine.core.model.PagePreview
 import com.readerengine.core.model.PageProgressionDirection
+import com.readerengine.core.model.PageTransitionDirection
+import com.readerengine.core.model.PageTurnAnimation
 import com.readerengine.core.model.ProgressMergePolicy
 import com.readerengine.core.model.Publication
 import com.readerengine.core.model.ReaderStrings
@@ -75,7 +77,20 @@ public data class RenderedDocument(
     val html: String,
     val href: String,
     val baseUrl: String,
-)
+    val transitionDirection: PageTransitionDirection = PageTransitionDirection.NONE,
+) {
+    /** Construtor secundário compatível com versões <= 1.3.1. */
+    public constructor(
+        html: String,
+        href: String,
+        baseUrl: String,
+    ) : this(
+        html = html,
+        href = href,
+        baseUrl = baseUrl,
+        transitionDirection = PageTransitionDirection.NONE,
+    )
+}
 
 /** Estado reativo completo observado pela UI nativa (Compose / SwiftUI / View / UIKit). */
 public data class ReaderState(
@@ -87,6 +102,8 @@ public data class ReaderState(
     val currentSubPage: Int = 0,
     val totalSubPages: Int = 1,
     val readingMode: ReadingMode = ReadingMode.SCROLL,
+    val pageTurnAnimation: PageTurnAnimation = PageTurnAnimation.SLIDE,
+    val lastTransitionDirection: PageTransitionDirection = PageTransitionDirection.NONE,
     val progress: ReadingProgress,
     val toc: List<TocItem>,
     val theme: ThemeTokens,
@@ -148,7 +165,26 @@ public sealed interface ReaderEvent {
         val isNightMode: Boolean,
         val readingMode: ReadingMode = ReadingMode.SCROLL,
         val theme: ThemeTokens,
-    ) : ReaderEvent
+        val pageTurnAnimation: PageTurnAnimation = PageTurnAnimation.SLIDE,
+    ) : ReaderEvent {
+        /** Construtor secundário compatível com versões <= 1.3.1. */
+        public constructor(
+            fontFamily: String,
+            fontSizeClass: String,
+            fontScale: Float,
+            isNightMode: Boolean,
+            readingMode: ReadingMode = ReadingMode.SCROLL,
+            theme: ThemeTokens,
+        ) : this(
+            fontFamily = fontFamily,
+            fontSizeClass = fontSizeClass,
+            fontScale = fontScale,
+            isNightMode = isNightMode,
+            readingMode = readingMode,
+            theme = theme,
+            pageTurnAnimation = PageTurnAnimation.SLIDE,
+        )
+    }
 
     public data class ActionTriggered(
         val action: String,
@@ -240,6 +276,7 @@ public sealed interface ReaderCommand {
     public data class SetFontSizeClass(val fontSizeClass: String) : ReaderCommand
     public data class SetNightMode(val enabled: Boolean) : ReaderCommand
     public data class SetReadingMode(val mode: ReadingMode) : ReaderCommand
+    public data class SetPageTurnAnimation(val animation: PageTurnAnimation) : ReaderCommand
     public data class ApplyHighlightStyle(val style: HighlightStyle) : ReaderCommand
     public data object RemoveSelectedHighlight : ReaderCommand
     public data class SelectHighlightItem(val item: HighlightItem) : ReaderCommand
@@ -339,6 +376,7 @@ public class ReaderSession(
     private val forwardStack = ArrayDeque<NavigationEntry>()
     private var pendingOpenAtLastSubPage: Boolean = false
     private var pendingSubPageRatio: Float? = null
+    private var pendingChapterTransition: PageTransitionDirection = PageTransitionDirection.NONE
     private var nextBookmarkSeq: Int = bookmarks.size + 1
     private var lastEmittedProgressPage: Int = -1
     private var lastEmittedProgressScrollY: Int = -1000
@@ -379,6 +417,8 @@ public class ReaderSession(
                 currentSubPage = startSubPage,
                 totalSubPages = 1,
                 readingMode = initialBookState.readingMode,
+                pageTurnAnimation = initialBookState.pageTurnAnimation,
+                lastTransitionDirection = PageTransitionDirection.NONE,
                 progress = initialProgress,
                 toc = resolvedToc,
                 theme = startTheme,
@@ -621,7 +661,15 @@ public class ReaderSession(
                 } else {
                     val nextIdx = (current.pageIndex + 1).coerceAtMost(lastIndex)
                     if (nextIdx != current.pageIndex || current.scrollY != 0) {
-                        navigateToPageInternal(nextIdx, scrollY = 0)
+                        navigateToPageInternal(
+                            targetPageIndex = nextIdx,
+                            scrollY = 0,
+                            transitionDirection = if (nextIdx != current.pageIndex) {
+                                PageTransitionDirection.FORWARD
+                            } else {
+                                PageTransitionDirection.NONE
+                            },
+                        )
                     }
                 }
             }
@@ -640,7 +688,16 @@ public class ReaderSession(
                     val prevIdx = (current.pageIndex - 1).coerceAtLeast(0)
                     if (prevIdx != current.pageIndex || current.scrollY != 0) {
                         val openAtLast = prevIdx != current.pageIndex && current.readingMode == ReadingMode.PAGINATED
-                        navigateToPageInternal(prevIdx, scrollY = 0, openAtLastSubPage = openAtLast)
+                        navigateToPageInternal(
+                            targetPageIndex = prevIdx,
+                            scrollY = 0,
+                            openAtLastSubPage = openAtLast,
+                            transitionDirection = if (prevIdx != current.pageIndex) {
+                                PageTransitionDirection.BACKWARD
+                            } else {
+                                PageTransitionDirection.NONE
+                            },
+                        )
                     }
                 }
             }
@@ -801,6 +858,15 @@ public class ReaderSession(
                 _state.value = updated
                 _uiEffects.tryEmit(
                     ReaderUiEffect.EvaluateJs(ReaderJsBridge.setReadingModeCommand(command.mode)),
+                )
+                emitPreferencesChanged(updated)
+            }
+
+            is ReaderCommand.SetPageTurnAnimation -> {
+                val updated = current.copy(pageTurnAnimation = command.animation)
+                _state.value = updated
+                _uiEffects.tryEmit(
+                    ReaderUiEffect.EvaluateJs(ReaderJsBridge.setPageTurnAnimationCommand(command.animation)),
                 )
                 emitPreferencesChanged(updated)
             }
@@ -1209,6 +1275,8 @@ public class ReaderSession(
         pendingOpenAtLastSubPage = false
         val targetRatio = pendingSubPageRatio
         pendingSubPageRatio = null
+        val enterTransition = pendingChapterTransition
+        pendingChapterTransition = PageTransitionDirection.NONE
         val targetInitialSubPage = when {
             current.readingMode != ReadingMode.PAGINATED -> 0
             openAtLast -> ReaderJsBridge.INITIAL_SUB_PAGE_LAST
@@ -1238,12 +1306,15 @@ public class ReaderSession(
                 initialSubPage = targetInitialSubPage,
                 language = publication.metadata.language,
                 initialSubPageRatio = if (current.readingMode == ReadingMode.PAGINATED && !openAtLast) targetRatio else null,
+                pageTurnAnimation = current.pageTurnAnimation,
+                enterTransition = enterTransition,
             )
         }
         return RenderedDocument(
             html = html,
             href = href,
             baseUrl = currentBaseUrl(schemeBase),
+            transitionDirection = enterTransition,
         )
     }
 
@@ -1936,6 +2007,7 @@ public class ReaderSession(
         targetSubPage: Int = 0,
         recordHistory: Boolean = false,
         openAtLastSubPage: Boolean = false,
+        transitionDirection: PageTransitionDirection = PageTransitionDirection.NONE,
     ) {
         val current = _state.value
         if (recordHistory) {
@@ -1944,6 +2016,7 @@ public class ReaderSession(
         }
         pendingOpenAtLastSubPage = openAtLastSubPage
         pendingSubPageRatio = null
+        pendingChapterTransition = transitionDirection
         val newProgress = buildProgress(
             pageIndex = targetPageIndex,
             scrollY = scrollY,
@@ -1957,6 +2030,7 @@ public class ReaderSession(
             scrollY = scrollY,
             currentSubPage = targetSubPage,
             totalSubPages = 1,
+            lastTransitionDirection = transitionDirection,
             progress = newProgress,
             currentPageSerializedHighlights = pageSerializedHighlights[targetPageIndex].orEmpty(),
             currentPageHighlights = pageHighlightSummaries[targetPageIndex].orEmpty(),
@@ -1988,7 +2062,12 @@ public class ReaderSession(
             ReaderJsBridge.ACTION_GESTURE_NEXT_PAGE -> {
                 val nextIdx = (current.pageIndex + 1).coerceAtMost(lastIndex)
                 if (nextIdx != current.pageIndex) {
-                    navigateToPageInternal(nextIdx, scrollY = 0, targetSubPage = 0)
+                    navigateToPageInternal(
+                        targetPageIndex = nextIdx,
+                        scrollY = 0,
+                        targetSubPage = 0,
+                        transitionDirection = PageTransitionDirection.FORWARD,
+                    )
                 }
                 _events.tryEmit(ReaderEvent.ActionTriggered(action, payload))
             }
@@ -1997,7 +2076,13 @@ public class ReaderSession(
                 val prevIdx = (current.pageIndex - 1).coerceAtLeast(0)
                 if (prevIdx != current.pageIndex) {
                     val openAtLast = current.readingMode == ReadingMode.PAGINATED
-                    navigateToPageInternal(prevIdx, scrollY = 0, targetSubPage = 0, openAtLastSubPage = openAtLast)
+                    navigateToPageInternal(
+                        targetPageIndex = prevIdx,
+                        scrollY = 0,
+                        targetSubPage = 0,
+                        openAtLastSubPage = openAtLast,
+                        transitionDirection = PageTransitionDirection.BACKWARD,
+                    )
                 }
                 _events.tryEmit(ReaderEvent.ActionTriggered(action, payload))
             }
@@ -2108,6 +2193,7 @@ public class ReaderSession(
                 isNightMode = state.isNightMode,
                 readingMode = state.readingMode,
                 theme = state.theme,
+                pageTurnAnimation = state.pageTurnAnimation,
             ),
         )
     }
